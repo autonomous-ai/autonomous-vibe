@@ -1,0 +1,7 @@
+# cadpy is vendored at build time by scripts/build/build-skill-runtimes.sh.
+# Only the README is tracked in source control — everything else here is
+# generated and must stay out of git so source edits route to the canonical
+# packages/cadpy/ tree.
+*
+!.gitignore
+!README.md

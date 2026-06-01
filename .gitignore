@@ -1,0 +1,55 @@
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Local debugging scratch (Playwright MCP output, ad-hoc app screenshots)
+.playwright-mcp/
+/panda-*.png
+
+# Node
+node_modules/
+dist/
+build/
+!scripts/build/
+*.tsbuildinfo
+.next/
+coverage/
+.nyc_output/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# Rust / Tauri
+target/
+*.lock.bak
+
+# Local
+tmp/
+*.log
+.env
+.env.local
+
+# Bundled sidecars — populated by scripts/build/build-all-sidecars.sh.
+#
+# The placeholder files (zero-byte) and the .installed markers are tracked
+# explicitly so Tauri's externalBin resolution works in a fresh checkout.
+# Everything ELSE under resources/python/ and resources/slicer/ — the
+# downloaded Python prefix and the OrcaSlicer.app bundle — is ignored.
+#
+# Note: after running build-all-sidecars.sh, the placeholder files will be
+# overwritten by real binaries / symlinks. Don't commit those changes; the
+# placeholders are meant to stay zero-byte on `main`.
+desktop/src-tauri/resources/python/**
+!desktop/src-tauri/resources/python/
+!desktop/src-tauri/resources/python/.installed
+!desktop/src-tauri/resources/python/bin/
+!desktop/src-tauri/resources/python/bin/python3-*-*-*
+desktop/src-tauri/resources/slicer/**
+!desktop/src-tauri/resources/slicer/
+!desktop/src-tauri/resources/slicer/.installed
+!desktop/src-tauri/resources/slicer/orcaslicer-*-*-*

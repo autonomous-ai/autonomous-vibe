@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability set for Panda's main window",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "shell:default",
+    "dialog:default",
+    "opener:default"
+  ]
+}

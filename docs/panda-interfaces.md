@@ -1,0 +1,612 @@
+# Panda — Frozen Interface Contracts
+
+Three contracts that all parallel implementation tracks must code against.
+Frozen for v1.0; any change here requires re-coordination across tracks.
+
+Document version: **v1.0-post-merge** (2026-05-28).
+
+Changes since pre-flight:
+- AppSettings gained `hasOnboarded: boolean` (Track E; mirrored in Rust as `has_onboarded`)
+- §1 documents the concrete `generate_step()` signature now that Track A's follow-up wrapper has landed
+- §2 added `app_install_claude_code()` + `claude_install_progress` event for Track I (one-click Claude Code install from the first-run wizard)
+
+- [1. `gen_step()` CadQuery contract](#1-gen_step-cadquery-contract) — Tracks A, B
+- [2. Tauri IPC schema](#2-tauri-ipc-schema) — Tracks C, D, E
+- [3. Skill stdout + artifact contract](#3-skill-stdout--artifact-contract) — Tracks B, C
+
+---
+
+## 1. `gen_step()` CadQuery contract
+
+### Scope
+
+Defines what a Panda CAD project's `gen_step()` function may return and what
+`cadpy.generation.generate_step()` produces. v1 adds CadQuery support to the
+existing build123d-only entry path; both libraries are accepted by the same
+function, dispatched on the input's Python type. Build123d behavior is
+unchanged (regression rule).
+
+### Project shape
+
+A "project" is a directory under the workspace containing at minimum:
+
+```
+<project>/
+├── main.py           required — defines gen_step(); imported as a module
+├── params.py         optional — dataclass Params with all dimensions
+├── parts/            optional — one Python module per physical part
+├── features/         optional — reusable feature functions
+└── assemblies/       optional — positioning + union of parts
+```
+
+The runner adds the project dir to `sys.path` so `from params import Params`
+and `from parts.base import …` resolve. `main.py` must define `gen_step()`
+at module scope. The legacy single-file `result = <shape>` form is also
+accepted; the runner treats it as if `gen_step()` returned `result`.
+
+### Accepted return values
+
+`gen_step()` returns **one** of:
+
+| Form | Type | Meaning |
+|---|---|---|
+| **Shape (CadQuery)** | `cq.Workplane` or `cq.Shape` | Single-solid part. Internally normalized to `{"shape": cq_obj}`. |
+| **Shape (build123d)** | `build123d.Shape` | Same, for backward compat. |
+| **Assembly (CadQuery)** | `cq.Assembly` | Named hierarchy. Walked into `{"children": [...]}` of instances. |
+| **List** | `list[Instance]` | Manual assembly composition (see `assembly_spec.AssemblyInstance`). |
+| **Envelope dict** | `dict` | Explicit form, see below. |
+
+### Envelope dict keys
+
+A dict return must contain **exactly one** of `shape`, `instances`,
+`children`, plus any of the optional output-control keys. Unknown keys raise
+`TypeError`.
+
+```python
+{
+    # Exactly one content key:
+    "shape":     <cq.Workplane | cq.Shape | build123d.Shape>,
+    "instances": list[AssemblyInstance],
+    "children":  list[Shape | Workplane | AssemblyInstance],
+
+    # Optional output controls (all bypass-able):
+    "step_output":           str | Path,   # override the STEP path
+    "stl":                   bool | str,   # also write STL (path optional)
+    "3mf":                   bool | str,   # also write 3MF (path optional)
+    "mesh_tolerance":        float,        # linear, mm; default 0.05
+    "mesh_angular_tolerance": float,       # deg; default 3.0
+}
+```
+
+### Library-agnostic resolution
+
+`generation.py` MUST resolve the input via duck-typing on `.wrapped` —
+**not** isinstance checks against `cq.Workplane` or `build123d.Shape`
+exclusively. The rule, in order:
+
+1. If `result` is a `dict`, dispatch on `(shape|instances|children)` key.
+2. If `result` is a `list`, treat as `{"children": result}`.
+3. If `result` has callable `.val()` and `.val().wrapped` is a
+   `TopoDS_Shape`, treat as `{"shape": result}` (CadQuery `Workplane`).
+4. If `result.wrapped` is a `TopoDS_Shape`, treat as `{"shape": result}`
+   (CadQuery `Shape`, build123d `Shape`, or any future `TopoDS_Shape`
+   wrapper).
+5. If `result` is a `cq.Assembly` (has `.children` and `.toCompound()`),
+   walk it into `{"children": [...]}`.
+6. Otherwise raise `TypeError` with the offending type name.
+
+This keeps the contract open to future OCP wrappers without invasive
+edits.
+
+### Topology-ID stability
+
+`@cad[…#f3]` face / edge / vertex ordinals MUST come from
+`TopExp.MapShapes_s(shape.wrapped, TopAbs_*)` over the OCCT topology tree —
+**not** from CadQuery-specific tags or build123d-specific selectors. This is
+already true for build123d in v0; the CadQuery path must follow the same
+rule so refs are interchangeable.
+
+A regression test in `tests/test_cadquery_generation.py` MUST assert that a
+build123d `Box(20, 20, 5)` and `cq.Workplane().box(20, 20, 5)` produce
+**identical face-ID ordinals** for their top face.
+
+### Public entry point
+
+```python
+def generate_step(
+    project_dir: Path | str,
+    output_path: Path | str,
+    *,
+    mesh_tolerance: float = DEFAULT_MESH_TOLERANCE,
+    mesh_angular_tolerance: float = DEFAULT_MESH_ANGULAR_TOLERANCE,
+) -> dict[str, object]
+```
+
+Loads `<project_dir>/main.py`, calls `gen_step()` (or picks up legacy
+module-level `result`), and writes the artifacts below. Returns a dict
+with `step_path`, `glb_path`, `topology_path`, `metadata_path`, optional
+`stl_path` / `threemf_path`, plus `is_solid`, `volume_mm3`, and `bbox`.
+
+`generate_step_targets()` remains the multi-target CLI entry; the new
+`generate_step()` is the single-project wrapper Panda's runner uses.
+
+### Artifacts written per call
+
+`generate_step(project_dir, output_path, ...)` produces these files; paths
+shown relative to `output_path`'s parent.
+
+| File | Always written? | Purpose |
+|---|---|---|
+| `<stem>.step` | yes | B-rep archival, labels + colors via XCAF |
+| `<stem>.glb` | yes | Preview mesh with embedded face-ID extension |
+| `<stem>.topology.json` | yes | Map of face/edge/vertex ordinal → STEP entity |
+| `<stem>.step.json` | yes | Source hash, generator metadata, validation summary |
+| `<stem>.stl` | only if `envelope["stl"]` truthy | Slicer-ready mesh |
+| `<stem>.3mf` | only if `envelope["3mf"]` truthy | Alt mesh format |
+
+`<stem>` is the basename of `output_path`. The driver's mtime snapshotter
+(contract §3) watches all six extensions.
+
+### Error contract
+
+All errors raised by `generate_step()` MUST be subclasses of
+`cadpy.generation.GenerationError`. The runner catches these, prints a
+single-line JSON error result (contract §3), and exits 1.
+
+### Regression rule
+
+The existing 12 pytest cases in `packages/cadpy/tests/` MUST still pass
+after Track A's changes. Track A's new tests
+(`test_cadquery_generation.py`) are additive only.
+
+---
+
+## 2. Tauri IPC schema
+
+### Scope
+
+All IPC calls between the React viewer and the Tauri Rust shell. The schema
+is duplicated as:
+
+- **Rust side**: `desktop/src-tauri/src/ipc/types.rs` — `serde` structs
+  with `#[derive(Serialize, Deserialize)]`
+- **TypeScript side**: `viewer/src/client/lib/transport.ts` — interface
+  declarations, plus a `tauri()` helper that picks `invoke()` on Tauri and
+  `fetch()` on the browser dev server (fallback).
+
+Both sides MUST stay in lockstep. The Rust struct is the source of truth;
+TS is generated or hand-mirrored.
+
+### Naming convention
+
+- Commands: `snake_case`, namespaced by domain: `catalog_*`, `file_*`,
+  `step_*`, `chat_*`, `printer_*`, `slice_*`, `project_*`, `app_*`.
+- Events: `snake_case`, broadcast via Tauri's `emit()`; namespace mirrors
+  commands.
+- All commands return `Result<T, IpcError>` in Rust;
+  `Promise<T>` (rejecting on error) in TS.
+
+### Inherited (from viewer's HTTP routes)
+
+These replace `viewer/src/server/server.mjs` 1:1.
+
+```typescript
+// app_info — replaces GET /__cad/server
+interface AppInfo {
+  rootPath: string;             // workspace root (data-dir/projects)
+  appVersion: string;
+  pid: number;
+}
+function app_info(): Promise<AppInfo>;
+
+// catalog_read — replaces GET /__cad/catalog
+//
+// Scoped to the OPEN project: the scanner walks only the active project's
+// dir (`<data-dir>/projects/<id>/`), set by project_open / project_create.
+// So entry `file` paths are project-relative (bare, e.g. `model.step`,
+// `parts/base.py`) and the rail never shows sibling projects or bundled
+// resources. With no project open, returns `{ entries: [], rootPath: "" }`.
+// file_read_bytes / file_reveal resolve these bare refs under the same dir.
+interface CatalogEntry {
+  file: string;                 // project-relative path (bare)
+  kind: "step" | "stl" | "glb" | "gcode" | "py" | "json" | "png";
+  sourceKind: "python" | "static" | null;
+  url: string;                  // tauri:// URI for fetching bytes
+  artifact?: {
+    glbUrl?: string;
+    topologyUrl?: string;
+    metadataUrl?: string;
+  };
+  relations?: Record<string, string>;
+}
+interface Catalog {
+  entries: CatalogEntry[];
+  rootPath: string;             // active project dir, or "" if none open
+  revision: number;             // increments when scan finds changes
+}
+function catalog_read(): Promise<Catalog>;
+
+// generation_status_read — replaces GET /__cad/generation-status
+interface GenerationStatus {
+  queue: Array<{ file: string; startedAt: number; kind: "step" | "glb" }>;
+  pythonAvailable: boolean;
+  lastError?: { file: string; message: string; at: number };
+}
+function generation_status_read(): Promise<GenerationStatus>;
+
+// file_read_bytes — replaces GET /__cad/download
+type AssetKind = "output" | "source" | "artifact";
+function file_read_bytes(file: string, asset: AssetKind): Promise<Uint8Array>;
+
+// file_reveal — replaces POST /__cad/reveal
+function file_reveal(file: string, asset: AssetKind): Promise<void>;
+
+// step_source_status_read — replaces GET /__cad/step-source-status
+interface StepSourceStatus {
+  hasSource: boolean;
+  sourcePath?: string;
+  sourceKind?: "python";
+}
+function step_source_status_read(file: string): Promise<StepSourceStatus>;
+
+// step_artifact_regenerate — replaces POST /__cad/step-artifact
+function step_artifact_regenerate(file: string, force: boolean): Promise<void>;
+```
+
+### New Panda commands
+
+#### Chat (drives the host `claude` CLI)
+
+```typescript
+interface StartTurnRequest {
+  projectId: string;
+  userMessage: string;
+}
+interface StartTurnResponse { turnId: string; }
+function chat_start_turn(req: StartTurnRequest): Promise<StartTurnResponse>;
+
+function chat_cancel_turn(turnId: string): Promise<void>;
+
+interface ChatSessionState {
+  sessionId: string;
+  turnInProgress: boolean;
+  history: Array<{ role: "user" | "assistant"; content: string; at: number }>;
+}
+function chat_session_state(projectId: string): Promise<ChatSessionState>;
+
+// Events emitted while a turn is in flight (see Events section below)
+// - "chat_event" with payload ChatEvent
+```
+
+#### Slicer
+
+```typescript
+interface SliceRequest {
+  meshFile: string;             // workspace-relative .stl/.3mf
+  printerId: string;
+  filament: "PLA" | "PETG" | "TPU";
+}
+interface SliceStats {
+  durationSeconds: number;      // estimated print time
+  filamentGrams: number;
+  filamentMeters: number;
+  layerCount: number;
+  supportsUsed: boolean;
+  gcodeFile: string;            // workspace-relative .gcode
+}
+function slice_run(req: SliceRequest): Promise<SliceStats>;
+
+interface SliceStatus {
+  inFlight: boolean;
+  stage?: "preparing" | "slicing" | "writing";
+  progress?: number;            // 0..1
+}
+function slice_status(): Promise<SliceStatus>;
+```
+
+#### Printer (Bambu)
+
+```typescript
+interface PrinterCard {
+  id: string;                   // serial-derived
+  model: string;                // "X1C", "P1S", "A1", …
+  ipAddress: string;
+  hostName: string;
+}
+function printer_discover(): Promise<PrinterCard[]>;
+
+interface AddPrinterRequest {
+  ipAddress: string;
+  accessCode: string;
+  serial?: string;              // optional override; else pulled from TLS cert
+}
+function printer_add(req: AddPrinterRequest): Promise<PrinterCard>;
+
+function printer_list(): Promise<PrinterCard[]>;
+
+interface PrinterStatus {
+  online: boolean;
+  state: "idle" | "printing" | "paused" | "error";
+  job?: { name: string; progress: number; etaSeconds: number };
+}
+function printer_status(printerId: string): Promise<PrinterStatus>;
+
+interface UploadGcodeRequest {
+  printerId: string;
+  gcodeFile: string;            // workspace-relative
+  remoteName?: string;          // defaults to basename
+}
+function printer_upload_gcode(req: UploadGcodeRequest): Promise<void>;
+
+interface StartPrintRequest {
+  printerId: string;
+  remoteName: string;           // already-uploaded G-code on the printer
+  confirmed: true;              // explicit consumer-facing confirm — see plan
+}
+function printer_start_print(req: StartPrintRequest): Promise<void>;
+```
+
+#### Projects
+
+```typescript
+interface ProjectSummary {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  hasModel: boolean;
+}
+function project_list(): Promise<ProjectSummary[]>;
+
+interface CreateProjectRequest { name: string; }
+function project_create(req: CreateProjectRequest): Promise<ProjectSummary>;
+
+function project_open(id: string): Promise<{ workspaceRoot: string }>;
+
+function project_delete(id: string): Promise<void>;
+```
+
+**Naming.** The UI never prompts for a project name. `project_create` is called
+with a placeholder (`"New project"`); there is no rename command by design.
+Instead `project_list` self-heals: while a project still carries the placeholder
+(or an empty name), `read_project_summary` reads the latest `ai-title` line Claude
+Code wrote to that project's session JSONL
+(`~/.claude/projects/<encode_cwd>/<session_id>.jsonl`) and persists it back to
+`project.json`. So a project's display name upgrades from `"New project"` to
+Claude's AI-generated title on the first list refresh after a title exists.
+
+#### App
+
+```typescript
+interface PrereqCheck {
+  claudeCli: { found: boolean; version?: string };
+  python: { found: boolean };
+  slicer: { found: boolean; binaryPath: string };
+}
+function app_prereq_check(): Promise<PrereqCheck>;
+
+interface AppSettings {
+  defaultFilament: "PLA" | "PETG" | "TPU";
+  slicerBinaryPath: string;     // empty = bundled
+  usePandaCloud: boolean;       // v2 hook; default false
+  pandaToken?: string;          // v2 hook
+  hasOnboarded: boolean;        // gates the first-run wizard (added during Track E merge)
+}
+function app_settings_read(): Promise<AppSettings>;
+function app_settings_write(s: AppSettings): Promise<void>;
+
+// Track I — auto-install Claude Code from the first-run wizard.
+//
+// Fetches Anthropic's official installer over HTTPS, runs it through
+// /bin/sh, then re-runs the same detection used by app_prereq_check.
+// Resolves with the post-install version + binary path; rejects with
+// one of:
+//   - "PLATFORM_UNSUPPORTED"      — Windows (upstream installer rejects it)
+//   - "INSTALLER_INSECURE_URL"    — script URL was not https://
+//   - "INSTALLER_FETCH_FAILED"    — network or non-2xx response
+//   - "INSTALLER_TOO_LARGE"       — body exceeded the 100 KB cap
+//   - "INSTALL_FAILED"            — installer subprocess exited non-zero
+//                                   (detail: { exitCode, stderrTail })
+//   - "INSTALL_VERIFIED_MISSING"  — installer exited cleanly but no
+//                                   claude binary appeared on PATH
+interface InstalledClaude {
+  version: string;
+  binaryPath: string;
+}
+function app_install_claude_code(): Promise<InstalledClaude>;
+```
+
+### Events (Tauri `emit`)
+
+```typescript
+// "chat_event" — driven by the Claude CLI subprocess's stream-json
+type ChatEvent =
+  | { kind: "turn_start"; turnId: string }
+  | { kind: "text_delta"; turnId: string; text: string }
+  | { kind: "thinking_delta"; turnId: string; text: string }
+  | { kind: "tool_use_start"; turnId: string; tool: string; input: unknown }
+  | { kind: "tool_use_end"; turnId: string; tool: string; ok: boolean }
+  | { kind: "artifact_changed"; turnId: string; file: string; reason: "new" | "modified" }
+  | { kind: "turn_end"; turnId: string }
+  | { kind: "error"; turnId: string; message: string };
+
+// "catalog_changed" — fires when the Rust catalog scanner notices new/modified files
+interface CatalogChangedEvent { revision: number; }
+
+// "slice_progress" — fires during slice_run
+interface SliceProgressEvent { stage: string; progress: number; }
+
+// "print_progress" — fires when polling printer_status returns a delta
+interface PrintProgressEvent { printerId: string; state: string; progress: number; }
+
+// "claude_install_progress" — streams during app_install_claude_code.
+// Driven by the upstream installer's stdout/stderr; tag is the
+// snake_case stage name. Stages may repeat (e.g., the bootstrap script
+// downloads then re-downloads the release tarball).
+type ClaudeInstallProgress =
+  | { stage: "downloading"; receivedBytes?: number; totalBytes?: number }
+  | { stage: "running" }
+  | { stage: "verifying" }
+  | { stage: "done"; version: string; binaryPath: string }
+  | { stage: "error"; message: string };
+```
+
+### Error shape
+
+```typescript
+interface IpcError {
+  code: string;                 // e.g., "PRINTER_OFFLINE", "PYTHON_MISSING"
+  message: string;              // human-readable
+  detail?: unknown;             // optional structured detail
+}
+```
+
+---
+
+## 3. Skill stdout + artifact contract
+
+### Scope
+
+How the `cadcode` skill communicates results to the Tauri Rust driver, and
+which files in the workspace dir count as "agent-produced artifacts" for
+the driver's mtime snapshotter.
+
+### Skill invocation
+
+```bash
+python -m cad <project_dir> [--out-dir <dir>] [--mesh-tolerance <mm>] \
+  [--angular-tolerance <deg>] [--wall-clock-s <s>]
+```
+
+The skill is shipped as a Python package at `skills/cadcode/scripts/` and
+invoked via `python -m cad` after the cadcode skill installs its
+`scripts/` parent dir onto `PYTHONPATH`. (Internal detail; the Rust driver
+doesn't invoke this directly — the `claude` CLI does, as a tool call.)
+
+### Stdout: single JSON line
+
+The skill MUST print **exactly one** JSON line to stdout containing the
+result. Stderr is for human-readable logs and warnings.
+
+```typescript
+interface CadcodeResult {
+  ok: boolean;
+
+  // Always present on success:
+  step_path?: string;           // workspace-relative
+  stl_path?: string;            // optional, only if STL requested
+  glb_path?: string;
+  topology_path?: string;
+  metadata_path?: string;       // <stem>.step.json
+  png_path?: string;            // optional canonical preview
+
+  // Geometry facts (success):
+  is_solid?: boolean;
+  volume_mm3?: number;
+  bbox?: { min: [number, number, number]; max: [number, number, number] };
+
+  // On failure:
+  error?: {
+    code: string;               // "VALIDATION_FAILED", "SANDBOX_TIMEOUT", "EXPORT_ERROR", "SYNTAX_ERROR", "RUNTIME_ERROR"
+    message: string;
+    traceback?: string;
+  };
+}
+```
+
+The Tauri driver's `check` variant (mtime-clean inspection) re-uses this
+schema but with `step_path`/`stl_path`/etc. omitted (results from a
+tempdir).
+
+### Artifact files written per turn
+
+The cadcode skill writes these into `<out-dir>` (defaults to the project
+dir):
+
+| Extension | Source | Always? |
+|---|---|---|
+| `.step` | cadpy STEP export with XCAF labels | yes (on success) |
+| `.glb` | cadpy GLB with face-ID extension | yes (on success) |
+| `.topology.json` | cadpy topology sidecar (face/edge/vertex IDs) | yes (on success) |
+| `.step.json` | cadpy metadata (source hash, generator, validation) | yes (on success) |
+| `.stl` | cadpy mesh export | only if envelope `stl=True` |
+| `.3mf` | cadpy mesh export | only if envelope `3mf=True` |
+| `.png` | optional preview render from GLB | only if explicitly requested |
+| `.py` (any) | the agent's `gen_step()` source | written by the agent's `Write` tool, not by the skill itself |
+
+### mtime snapshot watchlist
+
+The Rust driver (`desktop/src-tauri/src/commands/claude_driver.rs`)
+snapshots all files in the per-session workspace dir before each turn and
+diffs after. A file counts as an "artifact event" if:
+
+1. Its extension is one of: `.step .stp .stl .3mf .glb .gcode .png .py
+   .json` (lowercase, case-sensitive)
+2. AND it was created, OR its mtime moved forward by ≥ 1 second.
+
+Snapshot must be recursive into subdirectories (projects can have `parts/`,
+`features/`, etc).
+
+For each artifact event, the driver emits a `chat_event`:
+
+```typescript
+{
+  kind: "artifact_changed",
+  turnId: <currentTurnId>,
+  file: <workspace-relative path>,
+  reason: <"new" | "modified">
+}
+```
+
+### Workspace dir layout
+
+```
+~/Library/Application Support/Panda/projects/<projectId>/
+├── main.py                  ← agent-written, gen_step() entry
+├── params.py                ← agent-written, all dimensions
+├── parts/                   ← optional, agent-written
+│   ├── __init__.py
+│   ├── base.py
+│   └── lid.py
+├── features/                ← optional
+├── assemblies/              ← optional
+├── model.step               ← cadpy STEP
+├── model.glb                ← cadpy GLB preview
+├── model.topology.json      ← cadpy topology sidecar
+├── model.step.json          ← cadpy metadata
+├── model.stl                ← cadpy mesh (slice-input)
+├── model.gcode              ← OrcaSlicer output
+└── chat.jsonl               ← Panda-managed chat history (one event per line)
+```
+
+The Rust catalog scanner (`commands/catalog.rs`) builds the `CatalogEntry`
+records by mapping the above naming convention to entries; the React
+viewer reads the catalog via `catalog_read()`.
+
+### Sandboxing (carried over from cadcode skill)
+
+The cadcode skill runs `gen_step()` in a sandboxed subprocess with:
+
+- `RLIMIT_AS` ≤ 1 GiB
+- `RLIMIT_CPU` ≤ 20 s
+- `RLIMIT_NOFILE` ≤ 64
+- Import allow-list (no `os`, `subprocess`, `urllib`, …)
+
+The artifact files appear in the workspace only after the sandbox exits
+cleanly. A failed sandbox writes nothing — the driver sees no
+`artifact_changed` events, just the JSON error result on stdout.
+
+---
+
+## Contract change discipline
+
+If you find a real reason to change one of these contracts during
+implementation:
+
+1. Open a discussion in `panda/docs/panda-interfaces-CHANGES.md` (not yet
+   created — add one when needed).
+2. Note which tracks are affected.
+3. Land the change on `main` BEFORE the affected tracks merge so worktrees
+   can rebase.
+
+Contracts are frozen, not immutable — but every change costs coordination.

@@ -1,0 +1,178 @@
+"""Tests for the cadlib helper library + recipes.
+
+These run each helper with representative params through the real sandbox
+(``scripts/cad``) — same path the agent uses — so they catch sandbox
+allow-list regressions and helper bugs in one shot.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import pytest
+
+
+SKILL_DIR = Path(__file__).resolve().parents[1]
+SCRIPTS = SKILL_DIR / "scripts"
+
+
+def _run_cad(*args: str, timeout: int = 40) -> dict:
+    cmd = [sys.executable, str(SCRIPTS / "cad"), *args]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    out = (proc.stdout or "").strip().splitlines()
+    if not out:
+        return {
+            "ok": False,
+            "error": {
+                "code": "RUNTIME_ERROR",
+                "message": f"no stdout (stderr: {proc.stderr[:300]!r})",
+            },
+        }
+    return json.loads(out[-1])
+
+
+def _err_message(payload: dict) -> str:
+    """Pull the human-readable string out of contract §3's error shape."""
+    err = payload.get("error")
+    if isinstance(err, dict):
+        return str(err.get("message", ""))
+    return str(err or "")
+
+
+# -- Helpers compile in the sandbox -------------------------------------------
+
+HELPER_PROBES = {
+    "enclosure.hollow_box": """
+from cadlib.enclosure import hollow_box
+result = hollow_box(length=60, width=40, height=20, wall=2, corner_radius=3)
+""",
+    "enclosure.add_lid_lip": """
+from cadlib.enclosure import add_lid_lip, hollow_box
+base = hollow_box(length=60, width=40, height=20, wall=2)
+result = add_lid_lip(base, length=60, width=40, wall=2)
+""",
+    "enclosure.lid_plate": """
+from cadlib.enclosure import lid_plate
+result = lid_plate(length=60, width=40, thickness=3, lip_clearance=0.3, wall=2, lip_height=2)
+""",
+    "mounting.add_screw_post": """
+from cadlib.mounting import add_screw_post
+from cadlib.layout import four_corner_points
+import cadquery as cq
+body = cq.Workplane("XY").box(40, 40, 4)
+result = add_screw_post(
+    body,
+    positions=four_corner_points(length=40, width=40, margin=5),
+    screw_size="M3", boss_height=8,
+)
+""",
+    "mounting.add_heat_set_pocket": """
+from cadlib.mounting import add_heat_set_pocket
+import cadquery as cq
+body = cq.Workplane("XY").box(40, 40, 12)
+result = add_heat_set_pocket(body, positions=[(0, 0)], insert_size="M3")
+""",
+    "mounting.add_nut_trap": """
+from cadlib.mounting import add_nut_trap
+import cadquery as cq
+body = cq.Workplane("XY").box(30, 30, 10)
+result = add_nut_trap(body, positions=[(0, 0)], nut_size="M3")
+""",
+    "cutouts.add_press_fit_pocket": """
+from cadlib.cutouts import add_press_fit_pocket
+import cadquery as cq
+body = cq.Workplane("XY").box(40, 40, 10)
+result = add_press_fit_pocket(body, positions=[(0, 0)], insert_diameter=8, insert_depth=6)
+""",
+    "cutouts.add_magnet_pocket": """
+from cadlib.cutouts import add_magnet_pocket
+import cadquery as cq
+body = cq.Workplane("XY").box(40, 40, 8)
+result = add_magnet_pocket(body, positions=[(0, 0)], magnet_size="10x3")
+""",
+    "cutouts.add_bearing_seat": """
+from cadlib.cutouts import add_bearing_seat
+import cadquery as cq
+body = cq.Workplane("XY").box(40, 40, 12)
+result = add_bearing_seat(body, positions=[(0, 0)], bearing="608")
+""",
+    "cutouts.add_cable_channel": """
+from cadlib.cutouts import add_cable_channel
+import cadquery as cq
+body = cq.Workplane("XY").box(60, 40, 8)
+result = add_cable_channel(body, centerline=[(-25, 0), (25, 0)], cable_diameter=4.5)
+""",
+    "mechanical.add_dovetail_slot": """
+from cadlib.mechanical import add_dovetail_slot
+import cadquery as cq
+body = cq.Workplane("XY").box(50, 30, 10)
+result = add_dovetail_slot(body, position=(0, 0, 5), length=50, base_width=10, depth=4)
+""",
+    "mechanical.add_rib_stiffener": """
+from cadlib.mechanical import add_rib_stiffener
+import cadquery as cq
+body = cq.Workplane("XY").box(60, 40, 2)
+result = add_rib_stiffener(body, start=(-25, 0, 1), end=(25, 0, 1), height=8, thickness=1.2)
+""",
+    "layout.four_corner_points": """
+import cadquery as cq
+from cadlib.layout import four_corner_points
+pts = four_corner_points(length=40, width=30, margin=5)
+assert len(pts) == 4
+result = cq.Workplane("XY").pushPoints(pts).circle(2).extrude(5)
+""",
+    "layout.grid_points": """
+import cadquery as cq
+from cadlib.layout import grid_points
+pts = grid_points(n_x=3, n_y=2, pitch_x=10)
+result = cq.Workplane("XY").pushPoints(pts).circle(2).extrude(5)
+""",
+}
+
+
+@pytest.mark.parametrize("name,code", list(HELPER_PROBES.items()), ids=list(HELPER_PROBES))
+def test_helper_compiles(name: str, code: str):
+    """Each helper produces a valid solid when called with representative params."""
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / f"{name.replace('.', '_')}.py"
+        src.write_text(code)
+        payload = _run_cad(str(src), "--out-dir", tmp)
+        assert payload.get("ok"), f"{name} failed: {payload}"
+        assert payload.get("is_solid"), f"{name} produced non-solid"
+        assert payload.get("volume_mm3", 0) > 0
+
+
+# -- Recipes produce STLs -----------------------------------------------------
+
+RECIPES = sorted((SKILL_DIR / "recipes").glob("*.py")) if (SKILL_DIR / "recipes").exists() else []
+
+
+@pytest.mark.parametrize("recipe", RECIPES, ids=lambda p: p.stem)
+def test_recipe_produces_stl(recipe: Path):
+    """Each recipe in skills/cadcode/recipes/ must compile and export STL."""
+    with tempfile.TemporaryDirectory() as tmp:
+        payload = _run_cad(str(recipe), "--out-dir", tmp)
+        assert payload.get("ok"), f"{recipe.name} failed: {payload}"
+        assert payload.get("is_solid"), f"{recipe.name} non-solid"
+        stl = Path(tmp) / f"{recipe.stem}.stl"
+        assert stl.exists() and stl.stat().st_size > 1000, (
+            f"{recipe.name} did not produce a real STL"
+        )
+
+
+# -- Sandbox still blocks third-party imports ---------------------------------
+
+
+def test_sandbox_still_blocks_unknown_libs():
+    """Adding cadlib to the allow-list shouldn't have opened up other libs."""
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "bad.py"
+        src.write_text("import cq_warehouse\nresult = None\n")
+        payload = _run_cad(str(src), "--out-dir", tmp)
+        assert not payload["ok"]
+        msg = _err_message(payload).lower()
+        assert "cq_warehouse" in msg or "not allowed" in msg

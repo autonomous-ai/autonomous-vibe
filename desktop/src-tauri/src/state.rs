@@ -1,0 +1,126 @@
+//! Process-wide runtime state held by Tauri's managed-state registry.
+//!
+//! Single source of truth for cross-command data: the catalog revision
+//! counter, the generation queue, in-flight slice/chat turns, the
+//! discovered/registered printer list.
+
+use crate::ipc::types::{
+    ChatSessionState, GenerationLastError, GenerationQueueItem, PrinterCard, SliceStatus,
+};
+use parking_lot::Mutex;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+pub struct AppState {
+    /// Monotonic counter incremented when the catalog scanner detects
+    /// a change. Surfaced via the `catalog_changed` event so the React
+    /// client can invalidate its cached view.
+    catalog_revision: AtomicU64,
+
+    /// In-progress STEP/GLB regeneration jobs (contract §2:
+    /// `GenerationStatus.queue`).
+    generation_queue: Mutex<Vec<GenerationQueueItem>>,
+    last_generation_error: Mutex<Option<GenerationLastError>>,
+
+    /// In-progress slice. Track C only models a single slice at a
+    /// time; that matches the contract's `SliceStatus` shape.
+    slice_status: Mutex<SliceStatus>,
+
+    /// Per-project chat session state.
+    chat_sessions: Mutex<HashMap<String, ChatSessionState>>,
+
+    /// The project the viewer currently has open. Set by `project_open`
+    /// / `project_create`, cleared by `project_delete`. The catalog
+    /// scanner and asset resolvers scope all filesystem access to this
+    /// project's dir so the Models rail and `file_read_bytes` never see
+    /// other projects or bundled resources.
+    active_project: Mutex<Option<String>>,
+
+    /// Registered Bambu printers (Track C stubs return canned data,
+    /// real impl persists to `bambu-printers.json`).
+    printers: Mutex<Vec<PrinterCard>>,
+}
+
+impl AppState {
+    pub fn new() -> Self {
+        Self {
+            catalog_revision: AtomicU64::new(1),
+            generation_queue: Mutex::new(Vec::new()),
+            last_generation_error: Mutex::new(None),
+            slice_status: Mutex::new(SliceStatus::default()),
+            chat_sessions: Mutex::new(HashMap::new()),
+            printers: Mutex::new(Vec::new()),
+            active_project: Mutex::new(None),
+        }
+    }
+
+    pub fn active_project(&self) -> Option<String> {
+        self.active_project.lock().clone()
+    }
+
+    pub fn set_active_project(&self, id: Option<String>) {
+        *self.active_project.lock() = id;
+    }
+
+    pub fn current_revision(&self) -> u64 {
+        self.catalog_revision.load(Ordering::Acquire)
+    }
+
+    pub fn bump_revision(&self) -> u64 {
+        self.catalog_revision.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    pub fn generation_queue_snapshot(&self) -> Vec<GenerationQueueItem> {
+        self.generation_queue.lock().clone()
+    }
+
+    pub fn last_generation_error(&self) -> Option<GenerationLastError> {
+        self.last_generation_error.lock().clone()
+    }
+
+    pub fn push_generation_job(&self, item: GenerationQueueItem) {
+        self.generation_queue.lock().push(item);
+    }
+
+    pub fn pop_generation_job(&self, file: &str) {
+        self.generation_queue.lock().retain(|item| item.file != file);
+    }
+
+    pub fn record_generation_error(&self, err: GenerationLastError) {
+        *self.last_generation_error.lock() = Some(err);
+    }
+
+    pub fn slice_status_snapshot(&self) -> SliceStatus {
+        self.slice_status.lock().clone()
+    }
+
+    pub fn set_slice_status(&self, status: SliceStatus) {
+        *self.slice_status.lock() = status;
+    }
+
+    pub fn chat_session_snapshot(&self, project_id: &str) -> Option<ChatSessionState> {
+        self.chat_sessions.lock().get(project_id).cloned()
+    }
+
+    pub fn put_chat_session(&self, project_id: String, state: ChatSessionState) {
+        self.chat_sessions.lock().insert(project_id, state);
+    }
+
+    pub fn printers_snapshot(&self) -> Vec<PrinterCard> {
+        self.printers.lock().clone()
+    }
+
+    pub fn add_printer(&self, card: PrinterCard) {
+        let mut list = self.printers.lock();
+        if list.iter().any(|p| p.id == card.id) {
+            return;
+        }
+        list.push(card);
+    }
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}

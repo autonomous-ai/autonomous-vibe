@@ -1,0 +1,1381 @@
+//! Rust port of cadcode's `api/src/cadcode/claude_cli/driver.py`.
+//!
+//! Track F replaces the Track C scaffold with a working subprocess
+//! driver: it spawns the host `claude -p` CLI, parses stream-json
+//! stdout line-by-line, forwards translated `ChatEvent`s to a caller
+//! callback, snapshots the workspace before/after for artifact diffs,
+//! and supports external cancellation via `CancellationToken`.
+//!
+//! v1 inherits the user's Claude Code subscription auth from the host
+//! environment. The Panda-Cloud env override (`use_panda_cloud`) is a
+//! v2 hook — wired via [`build_env`] so the v2 settings toggle is a
+//! purely additive change.
+
+use crate::ipc::types::{ArtifactReason, ChatEvent, TurnPhaseTag};
+use serde_json::Value;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::SystemTime;
+use thiserror::Error;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::{Child, Command};
+use tokio_util::sync::CancellationToken;
+use walkdir::WalkDir;
+
+/// Extensions watched per contract §3: `.step .stp .stl .3mf .glb .gcode
+/// .png .py .json` (lowercase, case-sensitive).
+pub const WATCHED_EXTENSIONS: &[&str] = &[
+    "step", "stp", "stl", "3mf", "glb", "gcode", "png", "py", "json",
+];
+
+/// Stdout read buffer raised to 32 MiB to match cadcode's reference
+/// implementation. Claude emits whole `tool_result` blocks (including
+/// base64-encoded PNG image content) as single JSONL lines that
+/// routinely exceed the default 64 KiB.
+pub const STDOUT_BUFFER_BYTES: usize = 32 * 1024 * 1024;
+
+/// One file's mtime, captured pre-turn so we can diff after the turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MtimeEntry {
+    pub mtime: SystemTime,
+}
+
+/// A `(workspace_relative_path, MtimeEntry)` snapshot of every watched
+/// file under a session workspace dir. Recursive into subdirs per
+/// contract §3.
+pub type MtimeSnapshot = HashMap<String, MtimeEntry>;
+
+/// Which phase of the chat workflow a turn runs in. Maps directly onto
+/// Claude Code's native `--permission-mode` so the model itself enforces
+/// the read-only-while-planning / writes-while-building split.
+///
+/// - `Plan`: `--permission-mode plan` — the model explores read-only,
+///   designs the part, and ends by calling the built-in `ExitPlanMode`
+///   tool. File writes are blocked by the CLI, so no geometry is produced.
+/// - `Implement`: `--permission-mode bypassPermissions` — runs unattended.
+///   `acceptEdits` is NOT enough: it auto-applies Edit/Write but still
+///   prompts for Bash, and the cadcode generator is a Bash command
+///   (`python ~/.claude/skills/cadcode/scripts/cad <file>`). In headless
+///   `-p` mode there is no human to answer that prompt, so generation was
+///   denied — the source `.py` got written but no STL/STEP/GLB was ever
+///   produced. `bypassPermissions` lets the build phase run the generator.
+///   This is safe here: the turn is non-interactive by design, the workspace
+///   is scoped via `--add-dir <project>`, and the cadcode skill itself runs
+///   sandboxed (RLIMIT_AS / RLIMIT_CPU / import allow-list).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnPhase {
+    Plan,
+    Implement,
+}
+
+impl TurnPhase {
+    /// The `--permission-mode` value passed to `claude -p`.
+    pub fn permission_mode(self) -> &'static str {
+        match self {
+            TurnPhase::Plan => "plan",
+            TurnPhase::Implement => "bypassPermissions",
+        }
+    }
+
+    /// The phase-specific `--append-system-prompt` text.
+    pub fn system_prompt(self) -> &'static str {
+        match self {
+            TurnPhase::Plan => PLAN_SYSTEM_PROMPT,
+            TurnPhase::Implement => IMPLEMENT_SYSTEM_PROMPT,
+        }
+    }
+
+    /// The serializable wire tag for this phase (carried on `TurnStart`).
+    pub fn tag(self) -> TurnPhaseTag {
+        match self {
+            TurnPhase::Plan => TurnPhaseTag::Plan,
+            TurnPhase::Implement => TurnPhaseTag::Implement,
+        }
+    }
+}
+
+/// Inputs to one `claude -p` invocation. Mirrors the cadcode
+/// `ClaudeRunConfig` dataclass.
+#[derive(Debug, Clone)]
+pub struct ClaudeRunConfig {
+    pub prompt: String,
+    pub workspace: PathBuf,
+    pub claude_session_id: Option<String>,
+    pub model: Option<String>,
+    pub use_panda_cloud: bool,
+    pub panda_token: Option<String>,
+    /// The workflow phase → drives `--permission-mode` + system prompt.
+    pub phase: TurnPhase,
+}
+
+/// Planning-phase system prompt. The model designs the part using the
+/// `cadcode` skill's knowledge but produces NO geometry; it asks the user
+/// about genuine preference forks via a `panda-questions` fenced block and
+/// finishes by calling `ExitPlanMode` with the full plan.
+pub const PLAN_SYSTEM_PROMPT: &str = concat!(
+    "You are running inside Panda, the consumer 3D printing desktop app. ",
+    "Every user message is a request for a 3D-printable model. You are in ",
+    "PLANNING mode. Do NOT generate geometry, write .py, or produce ",
+    "STL/STEP/GLB yet. Use the `cadcode` skill's design knowledge only ",
+    "(tolerances, wall thickness, hardware tables, part decomposition, ",
+    "print orientation, assembly base+lid). Write the plan as skimmable ",
+    "markdown for a non-technical user, using these sections in order: ",
+    "a one-sentence **What I'll make** summary; a short **Key details** ",
+    "bullet list (key dimensions, wall thickness & material, clearances & ",
+    "hardware, print orientation); and a **Parts** list naming each part to ",
+    "be generated. Keep it tight and jargon-light — for a trivial change a ",
+    "single line is fine. When there is a genuine preference fork (e.g. ",
+    "material, mounting style, connector, size), ask the user by emitting a ",
+    "fenced code block tagged `panda-questions` whose body is JSON of the ",
+    "form {\"questions\":[{\"question\":\"...\",\"header\":\"<=12 chars\",",
+    "\"multiSelect\":false,\"options\":[{\"label\":\"...\",\"description\":",
+    "\"...\"}]}]}, then STOP — do not call ExitPlanMode in the same turn. ",
+    "When the design is settled, finish by calling the ExitPlanMode tool ",
+    "with the full plan (markdown) in its `plan` field.",
+);
+
+/// Implementation-phase system prompt. The plan is approved; the model
+/// now builds it for real with the `cadcode` skill.
+pub const IMPLEMENT_SYSTEM_PROMPT: &str = concat!(
+    "You are running inside Panda, the consumer 3D printing desktop app. ",
+    "The user has APPROVED a design plan. Implement it now using the ",
+    "`cadcode` skill: write the Python source, generate every part, and ",
+    "produce the STL/STEP/GLB artifacts for each part described in the ",
+    "plan. Follow the cadcode protocol. Do not re-plan or ask further ",
+    "questions unless a blocking ambiguity remains.",
+);
+
+/// Retained for back-compat / reference; superseded by the phase-specific
+/// prompts above. Not used in `build_command` anymore.
+pub const CADCODE_SYSTEM_PROMPT: &str = concat!(
+    "You are running inside Panda, the consumer 3D printing desktop app. ",
+    "Every user message is a request for a 3D-printable model. ",
+    "Use the `cadcode` skill for any CAD work — invoke it early in the turn ",
+    "and follow its protocol.",
+);
+
+/// Driver-level errors. The chat command turns these into `ChatEvent::Error`
+/// payloads (and a final `TurnEnd`); they are never propagated back through
+/// the Tauri command return value (the command resolves with the turn_id
+/// the moment the task is spawned).
+#[derive(Debug, Error)]
+pub enum DriverError {
+    /// `claude` is not on the host PATH. Mapped to `CLAUDE_NOT_INSTALLED`.
+    #[error("claude CLI not found on PATH")]
+    NotInstalled,
+    /// `tokio::process::Command::spawn` failed.
+    #[error("failed to spawn claude: {0}")]
+    Spawn(#[source] std::io::Error),
+    /// stdout read / line decode failure.
+    #[error("io error during stream: {0}")]
+    Io(#[source] std::io::Error),
+}
+
+/// Build the argv for `claude -p` from a [`ClaudeRunConfig`]. The shape
+/// matches cadcode's `build_command` (with model defaulting to `opus`).
+pub fn build_command(cfg: &ClaudeRunConfig) -> Vec<String> {
+    let mut cmd: Vec<String> = vec![
+        "claude".into(),
+        "-p".into(),
+        "--output-format".into(),
+        "stream-json".into(),
+        "--input-format".into(),
+        "text".into(),
+        "--verbose".into(),
+        "--include-partial-messages".into(),
+        "--permission-mode".into(),
+        cfg.phase.permission_mode().into(),
+        "--add-dir".into(),
+        cfg.workspace.display().to_string(),
+        "--append-system-prompt".into(),
+        cfg.phase.system_prompt().into(),
+    ];
+    if let Some(session) = &cfg.claude_session_id {
+        if claude_session_exists(&cfg.workspace, session) {
+            cmd.push("--resume".into());
+        } else {
+            cmd.push("--session-id".into());
+        }
+        cmd.push(session.clone());
+    } else {
+        cmd.push("--no-session-persistence".into());
+    }
+    cmd.push("--model".into());
+    cmd.push(cfg.model.clone().unwrap_or_else(|| "opus".into()));
+    cmd.push(cfg.prompt.clone());
+    cmd
+}
+
+/// Env vars to set on the spawned `claude` process. When
+/// `use_panda_cloud` is true (v2 hook, default off in v1), override
+/// `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY`. Otherwise we inherit the
+/// host environment so the user's existing Claude Code auth applies.
+pub fn build_env(cfg: &ClaudeRunConfig) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = Vec::new();
+    if cfg.use_panda_cloud {
+        env.push(("ANTHROPIC_BASE_URL".into(), "https://api.panda.app/v1".into()));
+        if let Some(token) = &cfg.panda_token {
+            env.push(("ANTHROPIC_API_KEY".into(), token.clone()));
+        }
+    }
+    env
+}
+
+/// Has Claude Code already persisted a session JSONL for this UUID?
+///
+/// Claude Code stores sessions at
+/// `~/.claude/projects/<encoded_cwd>/<uuid>.jsonl` where the encoded
+/// cwd is the absolute path with `/` replaced by `-` (verified
+/// Claude Code 2.1.150).
+///
+/// Returns false on any IO error or missing home dir — the caller then
+/// proceeds with `--session-id` (first-turn semantics).
+pub fn claude_session_exists(workspace: &Path, session_id: &str) -> bool {
+    session_jsonl_path(workspace, session_id)
+        .map(|p| p.exists())
+        .unwrap_or(false)
+}
+
+/// Build the path Claude Code persists a session JSONL at:
+/// `~/.claude/projects/<encode_cwd(workspace)>/<session_id>.jsonl`.
+///
+/// Canonicalizes `workspace` first (falling back to the raw path) so the
+/// encoding matches Claude Code's own `cwd` exactly — see [`encode_cwd`] for
+/// why the packaged-app path (spaces/dots) makes this fiddly. Returns `None`
+/// only when the home dir can't be resolved. Factored out of
+/// [`claude_session_exists`] so other commands (e.g. project auto-naming) can
+/// locate the same JSONL without exposing [`home_dir`].
+pub(crate) fn session_jsonl_path(workspace: &Path, session_id: &str) -> Option<PathBuf> {
+    let home = home_dir()?;
+    let abs = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    let encoded = encode_cwd(&abs);
+    Some(
+        home.join(".claude")
+            .join("projects")
+            .join(encoded)
+            .join(format!("{session_id}.jsonl")),
+    )
+}
+
+/// Encode an absolute path the way Claude Code persists session dirs:
+/// replace every character that is not ASCII alphanumeric with `-`, 1:1
+/// (no collapsing), matching Claude Code's `cwd.replace(/[^a-zA-Z0-9]/g, '-')`
+/// (verified against Claude Code 2.1.159 against
+/// `~/Library/Application Support/app.Panda.Panda/projects/<uuid>`).
+///
+/// NOTE: it is not enough to replace only `/`. The packaged app's projects
+/// live under `Application Support/app.Panda.Panda/...`, whose spaces and
+/// dots Claude also rewrites to `-`. Replacing only `/` produced a
+/// non-matching dir, so `claude_session_exists` always returned false and
+/// the driver passed `--session-id` for an already-existing session —
+/// claude then exits "Session ID already in use", the turn produces nothing,
+/// and the chat hangs on "PLANNING". (Existing `-` map to themselves, so
+/// hyphenated paths/UUIDs are unaffected.)
+pub fn encode_cwd(absolute: &Path) -> String {
+    let s = absolute.to_string_lossy();
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+fn home_dir() -> Option<PathBuf> {
+    // `directories::ProjectDirs` doesn't give us the bare home dir, so
+    // fall back to env. This matches what shells, Python, and the
+    // `claude` CLI itself use.
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+/// PATH for resolving + running `claude`, robust to launch context.
+///
+/// A macOS app launched from Finder/Dock (or via `open`) inherits
+/// launchd's minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) — it does NOT
+/// see the user's shell PATH, so `claude` (commonly at `~/.local/bin`) and
+/// the `node` it needs are invisible. We prepend the usual user/Homebrew
+/// bin dirs to whatever PATH we inherited so both the driver's `claude`
+/// lookup and the child process (claude → node, skill → python) resolve.
+pub fn augmented_path() -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(home) = home_dir() {
+        dirs.push(home.join(".local").join("bin"));
+        dirs.push(home.join("bin"));
+        dirs.push(home.join(".bun").join("bin"));
+        dirs.push(home.join(".volta").join("bin"));
+    }
+    for p in [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ] {
+        dirs.push(PathBuf::from(p));
+    }
+    if let Some(existing) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(dirs).unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
+}
+
+/// Resolve the absolute path to the `claude` binary using the augmented
+/// PATH (see [`augmented_path`]). Returns `None` if it cannot be found —
+/// the driver then reports `CLAUDE_NOT_INSTALLED`.
+pub fn resolve_claude(cwd: &Path) -> Option<PathBuf> {
+    let path = augmented_path();
+    which::which_in("claude", Some(&path), cwd).ok()
+}
+
+/// Snapshot every watched file under `workspace`. Recursive; lowercase
+/// extension matching per contract §3.
+pub fn snapshot_workspace(workspace: &Path) -> MtimeSnapshot {
+    let mut snapshot: MtimeSnapshot = HashMap::new();
+    for entry in WalkDir::new(workspace).follow_links(false) {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let Some(ext) = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+        else {
+            continue;
+        };
+        if !WATCHED_EXTENSIONS.contains(&ext.as_str()) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        let Ok(mtime) = meta.modified() else { continue };
+        let Ok(rel) = path.strip_prefix(workspace) else { continue };
+        let key = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        snapshot.insert(key, MtimeEntry { mtime });
+    }
+    snapshot
+}
+
+/// Diff two snapshots and emit one `ChatEvent::ArtifactChanged` per
+/// file whose mtime moved forward by ≥ 1 second OR was newly created.
+pub fn diff_snapshots(
+    before: &MtimeSnapshot,
+    after: &MtimeSnapshot,
+    turn_id: &str,
+) -> Vec<ChatEvent> {
+    let mut events = Vec::new();
+    let mut paths: Vec<&String> = after.keys().collect();
+    paths.sort();
+    for path in paths {
+        let after_entry = &after[path];
+        let reason = match before.get(path) {
+            None => Some(ArtifactReason::New),
+            Some(before_entry) => {
+                let before_secs = before_entry
+                    .mtime
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let after_secs = after_entry
+                    .mtime
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                if after_secs > before_secs {
+                    Some(ArtifactReason::Modified)
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some(reason) = reason {
+            events.push(ChatEvent::ArtifactChanged {
+                turn_id: turn_id.to_string(),
+                file: path.clone(),
+                reason,
+            });
+        }
+    }
+    events
+}
+
+// ---------------------------------------------------------------------------
+// Stream-json parser
+// ---------------------------------------------------------------------------
+
+/// Translation state carried across stream-json lines. We track tool
+/// names so `ToolUseEnd` can echo the matching `ToolUseStart`'s name, and
+/// whether text has streamed so the consolidated `assistant` message can
+/// emit its text exactly once (see `from_assistant`).
+#[derive(Debug, Default)]
+pub struct StreamState {
+    pending_tools: HashMap<String, String>, // tool_use_id -> tool name
+    /// Did a `text_delta` stream for the *current* assistant message?
+    /// Set by `from_stream_event`, read + reset by `from_assistant` so the
+    /// consolidated message only re-emits text the deltas didn't already
+    /// carry. Per-message, not per-turn.
+    text_delta_streamed: bool,
+    /// Did *any* text reach the UI this turn (via deltas or a consolidated
+    /// message)? Never reset within a turn; lets the `result` line emit a
+    /// last-resort fallback when a turn produced no text at all.
+    any_text_emitted: bool,
+    /// Set when the model called `ExitPlanMode` this turn. The driver reads
+    /// it after each parsed line to deterministically end the plan turn
+    /// (kill the child) and enter the awaiting-approval state.
+    plan_proposed: bool,
+}
+
+/// Parse one line of `claude -p --output-format stream-json` output and
+/// translate it into zero-or-more `ChatEvent`s. Mirrors
+/// cadcode/api/src/cadcode/claude_cli/events.py::raw_event_to_ui_events.
+///
+/// Unrecognized / decorative event types (`hook_started`,
+/// `rate_limit_event`, etc.) return an empty Vec — this keeps the
+/// Panda chat sidebar focused on the contract's eight event kinds.
+pub fn parse_stream_line(
+    line: &str,
+    turn_id: &str,
+    state: &mut StreamState,
+) -> Vec<ChatEvent> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let obj: Value = match serde_json::from_str(trimmed) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(), // non-JSON lines are best-effort skipped
+    };
+    let kind = obj.get("type").and_then(Value::as_str).unwrap_or("");
+    match kind {
+        "stream_event" => from_stream_event(&obj, turn_id, state),
+        "assistant" => from_assistant(&obj, turn_id, state),
+        "user" => from_user(&obj, turn_id, state),
+        "result" => from_result(&obj, turn_id, state),
+        _ => Vec::new(),
+    }
+}
+
+fn from_stream_event(o: &Value, turn_id: &str, state: &mut StreamState) -> Vec<ChatEvent> {
+    let Some(ev) = o.get("event") else { return Vec::new() };
+    let et = ev.get("type").and_then(Value::as_str).unwrap_or("");
+    if et != "content_block_delta" {
+        return Vec::new();
+    }
+    let Some(delta) = ev.get("delta") else { return Vec::new() };
+    let dtype = delta.get("type").and_then(Value::as_str).unwrap_or("");
+    if dtype == "text_delta" {
+        if let Some(text) = delta.get("text").and_then(Value::as_str) {
+            if !text.is_empty() {
+                // Record that text streamed for this message so the
+                // consolidated `assistant` line doesn't re-emit it.
+                state.text_delta_streamed = true;
+                state.any_text_emitted = true;
+                return vec![ChatEvent::TextDelta {
+                    turn_id: turn_id.to_string(),
+                    text: text.to_string(),
+                }];
+            }
+        }
+    }
+    if dtype == "thinking_delta" {
+        if let Some(text) = delta.get("thinking").and_then(Value::as_str) {
+            if !text.is_empty() {
+                return vec![ChatEvent::ThinkingDelta {
+                    turn_id: turn_id.to_string(),
+                    text: text.to_string(),
+                }];
+            }
+        }
+    }
+    Vec::new()
+}
+
+fn from_assistant(o: &Value, turn_id: &str, state: &mut StreamState) -> Vec<ChatEvent> {
+    let mut out: Vec<ChatEvent> = Vec::new();
+    // The consolidated `assistant` message arrives *after* its own
+    // `text_delta` stream events. Snapshot whether text already streamed
+    // for this message, then reset the per-message flag for the next one.
+    // Resetting up-front keeps it correct across the early returns below
+    // and across multi-message turns (text → tool_use → tool_result → …).
+    let text_already_streamed = state.text_delta_streamed;
+    state.text_delta_streamed = false;
+
+    let Some(msg) = o.get("message") else { return out };
+    let Some(content) = msg.get("content").and_then(Value::as_array) else {
+        return out;
+    };
+    for block in content {
+        let bt = block.get("type").and_then(Value::as_str).unwrap_or("");
+        match bt {
+            // Emit the final text only when `--include-partial-messages`
+            // did NOT already stream it as deltas — otherwise it would
+            // duplicate. When deltas are unavailable (model/CLI-version
+            // dependent), this is the only place the response text exists,
+            // so without this the assistant bubble renders empty.
+            "text" if !text_already_streamed => {
+                if let Some(text) = block.get("text").and_then(Value::as_str) {
+                    if !text.is_empty() {
+                        state.any_text_emitted = true;
+                        out.push(ChatEvent::TextDelta {
+                            turn_id: turn_id.to_string(),
+                            text: text.to_string(),
+                        });
+                    }
+                }
+            }
+            "tool_use" => {
+                let name = block
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                // `ExitPlanMode` is the CLI's built-in signal that the
+                // design plan is ready. Surface it as a dedicated
+                // `PlanProposed` event (not a generic tool chip) and flag
+                // the turn so the driver can end it deterministically.
+                if name == "ExitPlanMode" {
+                    let plan = block
+                        .get("input")
+                        .and_then(|i| i.get("plan"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    state.any_text_emitted = true;
+                    state.plan_proposed = true;
+                    out.push(ChatEvent::PlanProposed {
+                        turn_id: turn_id.to_string(),
+                        plan,
+                    });
+                    continue;
+                }
+                let tu_id = block
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let input = block
+                    .get("input")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Object(Default::default()));
+                state.pending_tools.insert(tu_id.clone(), name.clone());
+                out.push(ChatEvent::ToolUseStart {
+                    turn_id: turn_id.to_string(),
+                    tool: name,
+                    input,
+                });
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Last-resort fallback: if a whole turn produced no text at all (neither
+/// streamed deltas nor a consolidated `assistant` text block — e.g. an
+/// unexpected CLI variant), surface the `result` line's top-level
+/// `result` string so the bubble isn't left empty. `turn_end` itself is
+/// still emitted at the driver level.
+fn from_result(o: &Value, turn_id: &str, state: &mut StreamState) -> Vec<ChatEvent> {
+    if state.any_text_emitted {
+        return Vec::new();
+    }
+    if let Some(text) = o.get("result").and_then(Value::as_str) {
+        if !text.is_empty() {
+            state.any_text_emitted = true;
+            return vec![ChatEvent::TextDelta {
+                turn_id: turn_id.to_string(),
+                text: text.to_string(),
+            }];
+        }
+    }
+    Vec::new()
+}
+
+fn from_user(o: &Value, turn_id: &str, state: &mut StreamState) -> Vec<ChatEvent> {
+    let mut out: Vec<ChatEvent> = Vec::new();
+    let Some(msg) = o.get("message") else { return out };
+    let Some(content) = msg.get("content").and_then(Value::as_array) else {
+        return out;
+    };
+    for block in content {
+        if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+            continue;
+        }
+        let tu_id = block
+            .get("tool_use_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let tool_name = state
+            .pending_tools
+            .remove(tu_id)
+            .unwrap_or_default();
+        let is_error = block
+            .get("is_error")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        out.push(ChatEvent::ToolUseEnd {
+            turn_id: turn_id.to_string(),
+            tool: tool_name,
+            ok: !is_error,
+        });
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Subprocess driver
+// ---------------------------------------------------------------------------
+
+/// Spawn `claude -p`, stream its stream-json output, and forward
+/// translated [`ChatEvent`]s to `on_event`. Emits a `TurnStart` first,
+/// `ArtifactChanged` events from the post-turn mtime diff, and a final
+/// `TurnEnd`. Errors are reported as `ChatEvent::Error` followed by
+/// `TurnEnd` — the function still returns `Ok(())` because the caller
+/// (chat command) has already resolved with the turn_id.
+///
+/// On `cancel.cancelled()`, kill the child and emit `Error{ message:
+/// "cancelled" }` + `TurnEnd`.
+pub async fn spawn_turn<F>(
+    workspace_dir: &Path,
+    session_id: uuid::Uuid,
+    user_message: &str,
+    turn_id: &str,
+    phase: TurnPhase,
+    on_event: F,
+    cancel: CancellationToken,
+) -> Result<(), DriverError>
+where
+    F: Fn(ChatEvent) + Send + Sync + 'static,
+{
+    on_event(ChatEvent::TurnStart {
+        turn_id: turn_id.to_string(),
+        phase: phase.tag(),
+    });
+
+    // Pre-flight: resolve the claude CLI against an augmented PATH so a
+    // Finder/Dock-launched app (minimal launchd PATH) still finds it.
+    let claude_path = match resolve_claude(workspace_dir) {
+        Some(p) => p,
+        None => {
+            on_event(ChatEvent::Error {
+                turn_id: turn_id.to_string(),
+                message: "`claude` CLI not found. Install Claude Code (https://claude.ai/install)."
+                    .to_string(),
+            });
+            on_event(ChatEvent::TurnEnd {
+                turn_id: turn_id.to_string(),
+            });
+            return Err(DriverError::NotInstalled);
+        }
+    };
+
+    if let Err(e) = tokio::fs::create_dir_all(workspace_dir).await {
+        on_event(ChatEvent::Error {
+            turn_id: turn_id.to_string(),
+            message: format!("failed to create workspace dir: {e}"),
+        });
+        on_event(ChatEvent::TurnEnd {
+            turn_id: turn_id.to_string(),
+        });
+        return Err(DriverError::Io(e));
+    }
+
+    let pre_snapshot = snapshot_workspace(workspace_dir);
+
+    let cfg = ClaudeRunConfig {
+        prompt: user_message.to_string(),
+        workspace: workspace_dir.to_path_buf(),
+        claude_session_id: Some(session_id.to_string()),
+        model: Some("opus".into()),
+        use_panda_cloud: false,
+        panda_token: None,
+        phase,
+    };
+    let argv = build_command(&cfg);
+    let env = build_env(&cfg);
+
+    // argv[0] is "claude"; the rest are flags + the prompt. We spawn the
+    // resolved absolute path (argv[0] is kept for build_command parity).
+    let mut command = Command::new(&claude_path);
+    command
+        .args(&argv[1..])
+        .current_dir(workspace_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    // Give the child the augmented PATH so claude can find `node` and the
+    // cadcode skill can find its tools, regardless of launch context.
+    command.env("PATH", augmented_path());
+    for (k, v) in &env {
+        command.env(k, v);
+    }
+
+    let mut child: Child = match command.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            on_event(ChatEvent::Error {
+                turn_id: turn_id.to_string(),
+                message: format!("failed to spawn claude: {e}"),
+            });
+            on_event(ChatEvent::TurnEnd {
+                turn_id: turn_id.to_string(),
+            });
+            return Err(DriverError::Spawn(e));
+        }
+    };
+
+    // Drain the child's stderr concurrently. Two reasons: (1) an undrained
+    // piped stderr deadlocks the child once the ~64 KiB pipe buffer fills;
+    // (2) when claude fails fast (bad/duplicate session id, auth, missing
+    // node) it prints the reason here and exits with nothing on stdout — we
+    // capture it so the turn surfaces a real error instead of hanging on
+    // "PLANNING" forever.
+    let stderr_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    if let Some(cerr) = child.stderr.take() {
+        let sink = stderr_buf.clone();
+        tokio::spawn(async move {
+            let mut r = BufReader::new(cerr);
+            let mut l = String::new();
+            loop {
+                l.clear();
+                match r.read_line(&mut l).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        if let Ok(mut g) = sink.lock() {
+                            if g.len() < 8192 {
+                                g.push_str(&l);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    let stdout = match child.stdout.take() {
+        Some(s) => s,
+        None => {
+            // Should never happen because we set `Stdio::piped()`.
+            on_event(ChatEvent::Error {
+                turn_id: turn_id.to_string(),
+                message: "claude subprocess did not expose stdout".to_string(),
+            });
+            on_event(ChatEvent::TurnEnd {
+                turn_id: turn_id.to_string(),
+            });
+            return Err(DriverError::Io(std::io::Error::other(
+                "stdout pipe missing",
+            )));
+        }
+    };
+
+    let mut reader = BufReader::with_capacity(STDOUT_BUFFER_BYTES, stdout);
+    let mut state = StreamState::default();
+    let mut cancelled = false;
+    let mut saw_output = false;
+
+    let mut line = String::new();
+    loop {
+        line.clear();
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                cancelled = true;
+                let _ = child.start_kill();
+                break;
+            }
+            read = reader.read_line(&mut line) => {
+                let n = match read {
+                    Ok(n) => n,
+                    Err(e) => {
+                        on_event(ChatEvent::Error {
+                            turn_id: turn_id.to_string(),
+                            message: format!("read error: {e}"),
+                        });
+                        let _ = child.start_kill();
+                        break;
+                    }
+                };
+                if n == 0 {
+                    break; // EOF
+                }
+                let events = parse_stream_line(&line, turn_id, &mut state);
+                let saw_plan = state.plan_proposed;
+                for ev in events {
+                    saw_output = true;
+                    on_event(ev);
+                }
+                // `ExitPlanMode` ends the plan turn deterministically: kill
+                // the child rather than relying on headless `-p` plan mode
+                // exiting on its own after the tool call. The post-turn
+                // diff finds nothing new (plan mode wrote no files).
+                if saw_plan {
+                    let _ = child.start_kill();
+                    break;
+                }
+            }
+        }
+    }
+
+    // Best-effort wait for the child to settle so the resulting mtimes
+    // reflect any final Edit/Write flushes. `kill_on_drop` will reap if
+    // we returned early.
+    let status = child.wait().await;
+
+    // Silent failure: claude exited without emitting any stream-json (e.g.
+    // duplicate `--session-id`, auth failure, missing `node`). Surface its
+    // stderr so the turn reports a real error instead of hanging on
+    // "PLANNING". A normal plan turn produces output before we kill it, so
+    // `saw_output` stays true there.
+    if !cancelled && !saw_output {
+        let detail = stderr_buf
+            .lock()
+            .ok()
+            .map(|g| g.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                format!("claude exited without output ({status:?})")
+            });
+        on_event(ChatEvent::Error {
+            turn_id: turn_id.to_string(),
+            message: format!("claude produced no response: {detail}"),
+        });
+    }
+
+    // Post-turn workspace diff. Emit artifact_changed for everything
+    // new or with bumped mtime. We do this even when cancelled — the
+    // user still wants to see any artifacts produced before cancel.
+    let post_snapshot = snapshot_workspace(workspace_dir);
+    for ev in diff_snapshots(&pre_snapshot, &post_snapshot, turn_id) {
+        on_event(ev);
+    }
+
+    if cancelled {
+        on_event(ChatEvent::Error {
+            turn_id: turn_id.to_string(),
+            message: "cancelled".to_string(),
+        });
+    }
+    on_event(ChatEvent::TurnEnd {
+        turn_id: turn_id.to_string(),
+    });
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::thread::sleep;
+    use std::time::Duration;
+
+    fn touch(path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, b"").unwrap();
+    }
+
+    #[test]
+    fn snapshot_picks_up_watched_extensions_recursively() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(&root.join("main.py"));
+        touch(&root.join("model.step"));
+        touch(&root.join("parts").join("base.py"));
+        touch(&root.join("readme.txt")); // not watched
+        let snap = snapshot_workspace(root);
+        let mut sorted: Vec<String> = snap.keys().cloned().collect();
+        sorted.sort();
+        assert_eq!(sorted, vec!["main.py", "model.step", "parts/base.py"]);
+    }
+
+    #[test]
+    fn diff_emits_new_then_modified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(&root.join("a.py"));
+        let before = snapshot_workspace(root);
+
+        sleep(Duration::from_millis(1100));
+        touch(&root.join("b.py"));
+        // Bump mtime of a.py forward by a full second.
+        fs::write(root.join("a.py"), b"// updated").unwrap();
+        let after = snapshot_workspace(root);
+
+        let events = diff_snapshots(&before, &after, "t-1");
+        let kinds: Vec<(String, String)> = events
+            .iter()
+            .map(|e| match e {
+                ChatEvent::ArtifactChanged { file, reason, .. } => (
+                    file.clone(),
+                    match reason {
+                        ArtifactReason::New => "new".into(),
+                        ArtifactReason::Modified => "modified".into(),
+                    },
+                ),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert!(kinds.contains(&("b.py".into(), "new".into())));
+        assert!(kinds.contains(&("a.py".into(), "modified".into())));
+    }
+
+    #[test]
+    fn build_command_includes_workspace_and_prompt() {
+        let cfg = ClaudeRunConfig {
+            prompt: "make me a hook".into(),
+            workspace: PathBuf::from("/tmp/proj"),
+            claude_session_id: None,
+            model: None,
+            use_panda_cloud: false,
+            panda_token: None,
+            phase: TurnPhase::Plan,
+        };
+        let cmd = build_command(&cfg);
+        assert_eq!(cmd[0], "claude");
+        assert!(cmd.contains(&"--add-dir".to_string()));
+        assert!(cmd.contains(&"/tmp/proj".to_string()));
+        assert!(cmd.contains(&"make me a hook".to_string()));
+        assert!(cmd.contains(&"--no-session-persistence".to_string()));
+    }
+
+    #[test]
+    fn build_command_plan_phase_uses_plan_mode_and_prompt() {
+        let cfg = ClaudeRunConfig {
+            prompt: "an esp32 enclosure".into(),
+            workspace: PathBuf::from("/tmp/proj"),
+            claude_session_id: None,
+            model: None,
+            use_panda_cloud: false,
+            panda_token: None,
+            phase: TurnPhase::Plan,
+        };
+        let cmd = build_command(&cfg);
+        // --permission-mode plan
+        let pm = cmd.iter().position(|a| a == "--permission-mode").unwrap();
+        assert_eq!(cmd[pm + 1], "plan");
+        // append-system-prompt is the planning prompt
+        let sp = cmd.iter().position(|a| a == "--append-system-prompt").unwrap();
+        assert_eq!(cmd[sp + 1], PLAN_SYSTEM_PROMPT);
+        assert!(cmd[sp + 1].contains("PLANNING mode"));
+    }
+
+    #[test]
+    fn build_command_implement_phase_uses_bypass_permissions_and_prompt() {
+        let cfg = ClaudeRunConfig {
+            prompt: "build it".into(),
+            workspace: PathBuf::from("/tmp/proj"),
+            claude_session_id: None,
+            model: None,
+            use_panda_cloud: false,
+            panda_token: None,
+            phase: TurnPhase::Implement,
+        };
+        let cmd = build_command(&cfg);
+        let pm = cmd.iter().position(|a| a == "--permission-mode").unwrap();
+        // Build phase must run unattended: acceptEdits still prompts for Bash,
+        // which blocks the cadcode generator (a `python … cad` Bash command).
+        assert_eq!(cmd[pm + 1], "bypassPermissions");
+        let sp = cmd.iter().position(|a| a == "--append-system-prompt").unwrap();
+        assert_eq!(cmd[sp + 1], IMPLEMENT_SYSTEM_PROMPT);
+        assert!(cmd[sp + 1].contains("APPROVED"));
+    }
+
+    #[test]
+    fn build_env_panda_cloud_sets_base_url() {
+        let cfg = ClaudeRunConfig {
+            prompt: "hi".into(),
+            workspace: PathBuf::from("/tmp/proj"),
+            claude_session_id: None,
+            model: None,
+            use_panda_cloud: true,
+            panda_token: Some("tok-123".into()),
+            phase: TurnPhase::Plan,
+        };
+        let env = build_env(&cfg);
+        let map: HashMap<String, String> = env.into_iter().collect();
+        assert_eq!(
+            map.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("https://api.panda.app/v1"),
+        );
+        assert_eq!(map.get("ANTHROPIC_API_KEY").map(String::as_str), Some("tok-123"));
+    }
+
+    #[test]
+    fn build_env_default_is_empty() {
+        let cfg = ClaudeRunConfig {
+            prompt: "hi".into(),
+            workspace: PathBuf::from("/tmp/proj"),
+            claude_session_id: None,
+            model: None,
+            use_panda_cloud: false,
+            panda_token: None,
+            phase: TurnPhase::Plan,
+        };
+        assert!(build_env(&cfg).is_empty());
+    }
+
+    #[test]
+    fn encode_cwd_matches_claude_code_convention() {
+        // "/" → "-"; existing hyphens are preserved (map to themselves).
+        let p = PathBuf::from("/Users/alice/auto/panda-wt-driver/projects/foo");
+        let enc = encode_cwd(&p);
+        assert_eq!(enc, "-Users-alice-auto-panda-wt-driver-projects-foo");
+    }
+
+    #[test]
+    fn encode_cwd_rewrites_spaces_and_dots_like_claude() {
+        // Regression: the packaged app's projects live under
+        // `~/Library/Application Support/app.Panda.Panda/projects/<uuid>`.
+        // Claude rewrites spaces AND dots to `-` (not just `/`). Encoding only
+        // `/` produced a non-matching session dir, so `claude_session_exists`
+        // returned false, the driver passed `--session-id` for an existing
+        // session, claude died with "Session ID already in use", and the chat
+        // hung on "PLANNING". This is the exact on-disk dir observed for a real
+        // project (Claude Code 2.1.159).
+        let p = PathBuf::from(
+            "/Users/alice/Library/Application Support/app.Panda.Panda/projects/2f1df09b-468d-4a08-a6f2-03ee6fe40f92",
+        );
+        let enc = encode_cwd(&p);
+        assert_eq!(
+            enc,
+            "-Users-alice-Library-Application-Support-app-Panda-Panda-projects-2f1df09b-468d-4a08-a6f2-03ee6fe40f92",
+        );
+    }
+
+    #[test]
+    fn augmented_path_prepends_user_bin_dirs() {
+        let path = augmented_path();
+        let entries: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        let has_local_bin = entries
+            .iter()
+            .any(|p| p.ends_with(".local/bin") || p.ends_with(".local\\bin"));
+        assert!(has_local_bin, "augmented PATH should include ~/.local/bin: {entries:?}");
+        // Homebrew + system dirs present regardless of inherited PATH.
+        assert!(entries.iter().any(|p| p == &PathBuf::from("/opt/homebrew/bin")));
+        assert!(entries.iter().any(|p| p == &PathBuf::from("/usr/bin")));
+    }
+
+    #[test]
+    fn resolve_claude_finds_binary_when_installed() {
+        // Only meaningful when claude is installed somewhere on the
+        // augmented PATH (dev machines / CI with Claude Code). Skip
+        // otherwise so environments without it stay green.
+        if which::which_in("claude", Some(augmented_path()), std::env::current_dir().unwrap())
+            .is_err()
+        {
+            eprintln!("skipping: claude not installed on augmented PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let resolved = resolve_claude(tmp.path());
+        assert!(resolved.is_some(), "resolve_claude should find an installed claude");
+        assert!(resolved.unwrap().is_absolute());
+    }
+
+    #[test]
+    fn claude_session_exists_false_when_no_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A random uuid almost certainly won't have a session file in
+        // the host's ~/.claude/projects tree.
+        let id = uuid::Uuid::new_v4().to_string();
+        assert!(!claude_session_exists(tmp.path(), &id));
+    }
+
+    #[test]
+    fn build_command_uses_session_id_on_first_turn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = ClaudeRunConfig {
+            prompt: "p".into(),
+            workspace: tmp.path().to_path_buf(),
+            claude_session_id: Some("00000000-0000-0000-0000-000000000001".into()),
+            model: None,
+            use_panda_cloud: false,
+            panda_token: None,
+            phase: TurnPhase::Plan,
+        };
+        let cmd = build_command(&cfg);
+        assert!(cmd.contains(&"--session-id".to_string()));
+        assert!(!cmd.contains(&"--resume".to_string()));
+        assert!(cmd.contains(&"--model".to_string()));
+        assert!(cmd.contains(&"opus".to_string()));
+    }
+
+    // -- stream-json parser --------------------------------------------------
+
+    fn parse_one(line: &str) -> Vec<ChatEvent> {
+        let mut state = StreamState::default();
+        parse_stream_line(line, "T1", &mut state)
+    }
+
+    #[test]
+    fn parse_text_delta() {
+        let line = r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello "}}}"#;
+        let evs = parse_one(line);
+        assert_eq!(evs.len(), 1);
+        match &evs[0] {
+            ChatEvent::TextDelta { turn_id, text } => {
+                assert_eq!(turn_id, "T1");
+                assert_eq!(text, "Hello ");
+            }
+            other => panic!("expected TextDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_thinking_delta() {
+        let line = r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"considering"}}}"#;
+        let evs = parse_one(line);
+        assert_eq!(evs.len(), 1);
+        match &evs[0] {
+            ChatEvent::ThinkingDelta { text, .. } => assert_eq!(text, "considering"),
+            other => panic!("expected ThinkingDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_tool_use_start_then_end_pairs_name() {
+        let mut state = StreamState::default();
+        let asst = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_1","name":"Write","input":{"file_path":"main.py"}}]}}"#;
+        let start = parse_stream_line(asst, "T1", &mut state);
+        assert_eq!(start.len(), 1);
+        match &start[0] {
+            ChatEvent::ToolUseStart { tool, .. } => assert_eq!(tool, "Write"),
+            other => panic!("expected ToolUseStart, got {other:?}"),
+        }
+        let user = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","is_error":false}]}}"#;
+        let end = parse_stream_line(user, "T1", &mut state);
+        assert_eq!(end.len(), 1);
+        match &end[0] {
+            ChatEvent::ToolUseEnd { tool, ok, .. } => {
+                assert_eq!(tool, "Write"); // looked up from pending_tools
+                assert!(*ok);
+            }
+            other => panic!("expected ToolUseEnd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exit_plan_mode_emits_plan_proposed_not_tool_chip() {
+        let mut state = StreamState::default();
+        let asst = r##"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_p","name":"ExitPlanMode","input":{"plan":"# Plan\n- base\n- lid"}}]}}"##;
+        let evs = parse_stream_line(asst, "T1", &mut state);
+        assert_eq!(evs.len(), 1);
+        match &evs[0] {
+            ChatEvent::PlanProposed { turn_id, plan } => {
+                assert_eq!(turn_id, "T1");
+                assert!(plan.contains("base"));
+                assert!(plan.contains("lid"));
+            }
+            other => panic!("expected PlanProposed, got {other:?}"),
+        }
+        assert!(state.plan_proposed, "plan_proposed flag must be set");
+        // ExitPlanMode must not be tracked as a pending tool (no tool_result
+        // is expected once the driver kills the child).
+        assert!(state.pending_tools.is_empty());
+    }
+
+    #[test]
+    fn parse_tool_result_with_error_flips_ok() {
+        let mut state = StreamState::default();
+        let _ = parse_stream_line(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_x","name":"Bash","input":{}}]}}"#,
+            "T1",
+            &mut state,
+        );
+        let end = parse_stream_line(
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_x","is_error":true}]}}"#,
+            "T1",
+            &mut state,
+        );
+        match &end[0] {
+            ChatEvent::ToolUseEnd { ok, .. } => assert!(!*ok),
+            other => panic!("expected ToolUseEnd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assistant_text_block_emitted_when_no_deltas_streamed() {
+        // No partial-message deltas arrived; the consolidated assistant
+        // message carries the only copy of the response text.
+        let mut state = StreamState::default();
+        let asst = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Here is your hook."}]}}"#;
+        let evs = parse_stream_line(asst, "T1", &mut state);
+        assert_eq!(evs.len(), 1);
+        match &evs[0] {
+            ChatEvent::TextDelta { text, .. } => assert_eq!(text, "Here is your hook."),
+            other => panic!("expected TextDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assistant_text_block_suppressed_after_deltas_streamed() {
+        // Deltas streamed the text already; the consolidated assistant
+        // message must NOT re-emit it (would duplicate the paragraph).
+        let mut state = StreamState::default();
+        let delta = r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Here is your hook."}}}"#;
+        let streamed = parse_stream_line(delta, "T1", &mut state);
+        assert_eq!(streamed.len(), 1);
+
+        let asst = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Here is your hook."}]}}"#;
+        let consolidated = parse_stream_line(asst, "T1", &mut state);
+        assert!(
+            consolidated.is_empty(),
+            "consolidated text must be suppressed when deltas already streamed, got {consolidated:?}"
+        );
+    }
+
+    #[test]
+    fn assistant_text_flag_resets_between_messages() {
+        // A turn with a streamed-text message, then a later text-only
+        // message whose deltas did NOT stream, must still emit the second.
+        let mut state = StreamState::default();
+        parse_stream_line(
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"first"}}}"#,
+            "T1",
+            &mut state,
+        );
+        // Consolidated for message 1 (suppressed) resets the per-message flag.
+        let m1 = parse_stream_line(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"first"}]}}"#,
+            "T1",
+            &mut state,
+        );
+        assert!(m1.is_empty());
+        // Message 2 has no deltas — its consolidated text must emit.
+        let m2 = parse_stream_line(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"second"}]}}"#,
+            "T1",
+            &mut state,
+        );
+        assert_eq!(m2.len(), 1);
+        match &m2[0] {
+            ChatEvent::TextDelta { text, .. } => assert_eq!(text, "second"),
+            other => panic!("expected TextDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn result_fallback_emits_only_when_no_text_emitted() {
+        // Turn produced no text at all → the `result` string is surfaced.
+        let mut state = StreamState::default();
+        let line = r#"{"type":"result","subtype":"success","result":"All done."}"#;
+        let evs = parse_stream_line(line, "T1", &mut state);
+        assert_eq!(evs.len(), 1);
+        match &evs[0] {
+            ChatEvent::TextDelta { text, .. } => assert_eq!(text, "All done."),
+            other => panic!("expected TextDelta, got {other:?}"),
+        }
+
+        // When text already streamed, the result fallback stays silent.
+        let mut state2 = StreamState::default();
+        parse_stream_line(
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"streamed"}}}"#,
+            "T1",
+            &mut state2,
+        );
+        let evs2 = parse_stream_line(line, "T1", &mut state2);
+        assert!(evs2.is_empty(), "result fallback must not double text, got {evs2:?}");
+    }
+
+    #[test]
+    fn parse_garbage_line_returns_empty() {
+        assert!(parse_one("not json at all").is_empty());
+        assert!(parse_one("").is_empty());
+        assert!(parse_one("   ").is_empty());
+    }
+
+    #[test]
+    fn parse_unknown_type_returns_empty() {
+        // result/system/rate_limit_event etc. all collapse to nothing
+        // at the parser level; turn_end is emitted by the driver, not
+        // the parser.
+        assert!(parse_one(r#"{"type":"result","stop_reason":"end_turn"}"#).is_empty());
+        assert!(parse_one(r#"{"type":"system","subtype":"init","model":"opus"}"#).is_empty());
+    }
+
+    // -- spawn_turn smoke (requires claude on PATH) --------------------------
+
+    /// Smoke: a fake "claude" can be invoked. We don't run real claude
+    /// here (variable, slow, costs subscription quota); instead we
+    /// assert that when the binary isn't on PATH, spawn_turn emits
+    /// TurnStart + Error + TurnEnd and returns DriverError::NotInstalled.
+    #[tokio::test]
+    async fn spawn_turn_emits_not_installed_when_claude_missing() {
+        // Sandbox HOME + PATH so neither ~/.local/bin nor the inherited
+        // PATH can supply a real `claude`. augmented_path() still searches
+        // fixed system dirs (/usr/bin, /opt/homebrew/bin); if a real claude
+        // lives there we can't simulate "missing", so skip in that case.
+        let tmp = tempfile::tempdir().unwrap();
+        let home_tmp = tempfile::tempdir().unwrap();
+        let old_path = std::env::var_os("PATH").unwrap_or_default();
+        let old_home = std::env::var_os("HOME");
+        std::env::set_var("PATH", tmp.path());
+        std::env::set_var("HOME", home_tmp.path());
+
+        if resolve_claude(tmp.path()).is_some() {
+            std::env::set_var("PATH", &old_path);
+            if let Some(h) = &old_home {
+                std::env::set_var("HOME", h);
+            }
+            eprintln!("skipping: claude resolvable from a system dir");
+            return;
+        }
+
+        let workspace = tempfile::tempdir().unwrap();
+        let events = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<ChatEvent>::new()));
+        let events_clone = events.clone();
+        let cancel = CancellationToken::new();
+        let res = spawn_turn(
+            workspace.path(),
+            uuid::Uuid::nil(),
+            "hello",
+            "T-smoke",
+            TurnPhase::Plan,
+            move |e| events_clone.lock().push(e),
+            cancel,
+        )
+        .await;
+
+        // Restore env first so the test runner / later tests are unaffected.
+        std::env::set_var("PATH", old_path);
+        if let Some(h) = &old_home {
+            std::env::set_var("HOME", h);
+        }
+
+        assert!(matches!(res, Err(DriverError::NotInstalled)));
+        let evs = events.lock();
+        assert!(matches!(evs.first(), Some(ChatEvent::TurnStart { .. })));
+        assert!(evs
+            .iter()
+            .any(|e| matches!(e, ChatEvent::Error { message, .. } if message.contains("claude"))));
+        assert!(matches!(evs.last(), Some(ChatEvent::TurnEnd { .. })));
+    }
+
+    /// Optional live smoke: if `claude` is on PATH, `claude --version`
+    /// exits 0. Skip otherwise so CI on environments without Claude
+    /// Code stays green.
+    #[test]
+    fn live_claude_version_smoke() {
+        let Ok(_) = which::which("claude") else {
+            eprintln!("skipping: claude not on PATH");
+            return;
+        };
+        let out = std::process::Command::new("claude")
+            .arg("--version")
+            .output()
+            .expect("claude --version should run when on PATH");
+        assert!(out.status.success(), "claude --version should exit 0");
+    }
+}

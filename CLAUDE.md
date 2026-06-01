@@ -60,8 +60,17 @@ cargo --manifest-path desktop/src-tauri/Cargo.toml test <test_name>
 Dev / build:
 
 ```bash
-# Run the full app (Tauri spawns the viewer dev server automatically)
-cargo --manifest-path desktop/src-tauri/Cargo.toml run
+# Run the full app in dev mode (starts Vite + the Tauri shell, wired together).
+# Use this script, not raw `cargo run`: the Tauri CLI is not a project dep, so
+# nothing auto-starts Vite, and the viewer's default port (4178) does not match
+# the shell's devUrl (5173). dev.sh starts Vite on the devUrl port, waits for it,
+# then runs the app, and stops Vite on exit.
+scripts/dev.sh
+PANDA_DEVTOOLS=1 scripts/dev.sh            # dock the webview inspector
+
+# Just the Rust shell (assumes Vite is already serving on the devUrl port).
+# Flag order matters — this cargo rejects `cargo --manifest-path ... run`.
+cargo run --manifest-path desktop/src-tauri/Cargo.toml
 
 # Viewer in isolation (browser, no Tauri)
 npm --prefix viewer run dev
@@ -99,4 +108,5 @@ scripts/build/build-all-sidecars.sh --force   # rebuild both
 - **Bundle-freshness footgun:** `tauri::generate_context!()` bakes `viewer/dist/` into the Rust binary at compile time. Rebuilding only `viewer/dist/` without re-running `cargo tauri build` ships an `.app` whose embedded JS is the old version — every IPC call silently falls through to the browser HTTP stub. `scripts/build/verify-bundle-fresh.sh` (wired in as `afterBundleCommand`) catches this; always go through `scripts/build/build-app.sh`.
 - **Launch-PATH footgun:** a `.app` started from Finder/Dock/`open` inherits launchd's minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), **not** the user's shell PATH — so `claude` (typically `~/.local/bin`) and the `node` it needs are invisible, and a turn hangs with no response. The driver therefore resolves the binary via `augmented_path()` / `resolve_claude()` (which prepend the usual user/Homebrew bin dirs) and passes that PATH to the child. Never assume the inherited PATH; symptoms when this regresses are a stuck spinner with no assistant turn and no `~/.claude/projects/<encoded-workspace>/<uuid>.jsonl` ever created. Running the bundled binary directly from a terminal masks the bug (it inherits your shell PATH).
 - **Session-dir encoding footgun:** `encode_cwd()` must replace **every** non-alphanumeric char with `-` (matching Claude Code's `cwd.replace(/[^a-zA-Z0-9]/g, '-')`), not just `/`. The packaged app's workspaces live under `~/Library/Application Support/app.Panda.Panda/projects/<uuid>` — spaces and dots included — so a `/`-only encoding mismatches the real session dir, `claude_session_exists()` returns false, the driver passes `--session-id` for an existing session, and claude dies with "Session ID already in use" (turn produces nothing → chat stuck on "PLANNING"). Dev/repo paths have no spaces/dots so this only bites the bundled app.
+- **Dev-server footgun:** there is no `cargo tauri dev` here — the Tauri CLI is not a project dependency, and the Rust shell does not spawn Vite. Plain `cargo run` only launches the binary, which loads `build.devUrl` (`http://localhost:5173`) in debug; if nothing serves that URL the window comes up blank. Worse, the viewer's own default is port **4178** (`DEFAULT_VIEWER_PORT`, `strictPort`), so `npm --prefix viewer run dev` alone serves the wrong port for the shell. `scripts/dev.sh` is the fix: it reads the port from `devUrl`, starts Vite there via `VIEWER_PORT`, waits for it, then runs the app. Use it instead of starting the two halves by hand.
 - **Devtools** do not auto-open; set `PANDA_DEVTOOLS=1` (env var, must run the binary directly — `open` won't propagate it) to dock the inspector.

@@ -179,7 +179,7 @@ import {
   writeCadRefQueryParams,
 } from "@/workbench/sidebar";
 import { isPrintableModelEntry } from "@/workbench/isPrintableModelEntry";
-import { getTransport } from "@/lib/transport";
+import { getTransport, isTauriRuntime } from "@/lib/transport";
 import { buildCadRefToken } from "cadjs/lib/cadRefs";
 import { loadRenderSelectorBundle } from "cadjs/lib/renderAssetClient";
 import {
@@ -5417,16 +5417,32 @@ export default function CadWorkspace({
     });
   }, [isDesktop, selectedFileSheetKind, setThemeMenuOpen, setTabToolsOpen]);
 
-  const handleDownloadFileAsset = useCallback((entry, asset = "output", assetInfo = null) => {
+  const handleDownloadFileAsset = useCallback(async (entry, asset = "output", assetInfo = null) => {
     const fileRef = entry ? fileKey(entry) : "";
     const assetKind = String(asset || "output").trim() || "output";
     if (!fileRef || typeof window === "undefined") {
       return;
     }
-    const downloadUrl = downloadUrlForFileAsset(fileRef, assetKind);
     setCopyStatus("");
     setScreenshotStatus("");
     const filename = String(assetInfo?.filename || "").trim();
+
+    // Desktop: the file already lives on the user's disk, so a "download" is a
+    // native Save As + local copy — no HTTP round-trip. (The browser/hosted
+    // backends below have no local file, so they stream the bytes over HTTP.)
+    if (isTauriRuntime()) {
+      try {
+        const savedPath = await getTransport().file_save(fileRef, assetKind);
+        if (savedPath) {
+          setCopyStatus(`Saved ${filename || fileRef}`);
+        }
+      } catch (saveError) {
+        setCopyStatus(saveError instanceof Error ? saveError.message : "Save failed");
+      }
+      return;
+    }
+
+    const downloadUrl = downloadUrlForFileAsset(fileRef, assetKind);
     try {
       const result = triggerUrlDownload(downloadUrl, { filename });
       setCopyStatus(result.message);

@@ -82,11 +82,20 @@ pub fn run() {
             // left alone for dev live-editing. See `crate::skills`.
             skills::install_bundled_skills(&tauri::Manager::app_handle(app).clone());
             // Auto-update: on startup, check the GitHub Releases endpoint for a
-            // newer signed bundle and install it in the background. No-op in dev
-            // (the updater has no installed bundle to replace) and silently
+            // newer signed bundle and install it in the background. Silently
             // ignored on any error — a failed update check must never block
             // launch. Set PANDA_NO_UPDATE=1 to skip the check entirely.
-            if std::env::var("PANDA_NO_UPDATE").map_or(true, |v| v == "0" || v.is_empty()) {
+            //
+            // DISABLED IN DEBUG BUILDS. A `cargo run` dev build is unsigned and
+            // unmanaged, but the updater still finds a newer published release
+            // (e.g. dev build 0.1.2 vs released 0.1.3), downloads it, and calls
+            // `app.restart()` — which just exits the dev process: the window
+            // "disappears" a few seconds after launch. Gating on
+            // `cfg!(not(debug_assertions))` keeps auto-update to release bundles
+            // only, where it belongs.
+            let auto_update_enabled = cfg!(not(debug_assertions))
+                && std::env::var("PANDA_NO_UPDATE").map_or(true, |v| v == "0" || v.is_empty());
+            if auto_update_enabled {
                 let handle = tauri::Manager::app_handle(app).clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) = check_and_install_update(handle).await {

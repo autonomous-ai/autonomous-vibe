@@ -360,6 +360,15 @@ export default defineConfig(({ command }) => ({
     port: viewerPort,
     strictPort: true,
     allowedHosts: viewerAllowedHosts,
+    watch: {
+      // Never watch Rust build output. The viewer dev server watches the
+      // workspace root for CAD-artifact changes (see serverLifetimePlugin's
+      // `watcher.add`); bundling skills/ as a Tauri resource makes the build
+      // copy them — including cad-viewer's vendored web viewer (index.html +
+      // cadjs) — into desktop/src-tauri/target/, and watching that triggers
+      // spurious full-page reloads in the Tauri webview.
+      ignored: ["**/target/**"],
+    },
   },
   preview: {
     host: "127.0.0.1",

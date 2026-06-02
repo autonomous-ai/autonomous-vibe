@@ -10,11 +10,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ARGS=()
-for arg in "$@"; do
-  case "$arg" in
+while [[ $# -gt 0 ]]; do
+  case "$1" in
     --force) ARGS+=("--force") ;;
-    *) echo "unknown arg: $arg" >&2; exit 2 ;;
+    --target) ARGS+=("--target" "${2:?--target needs a triple}"); shift ;;
+    --target=*) ARGS+=("${1}") ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
+  shift
 done
 
 echo "=== build-all-sidecars: python ==="

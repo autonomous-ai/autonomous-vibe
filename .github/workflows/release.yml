@@ -36,10 +36,17 @@ jobs:
           - platform: macos-13 # Intel
             target: x86_64-apple-darwin
             bundles: app
-          # Windows/Linux are intentionally omitted for now: their sidecar build
-          # scripts (build-python/slicer-sidecar.sh) are macOS-only and fail on
-          # those runners (e.g. `shasum` missing in Windows git-bash). Re-add the
-          # ubuntu-22.04 / windows-latest entries once those scripts are ported.
+          # Windows: x64 installers. `nsis` is the auto-updater target (Tauri's
+          # updater on Windows consumes the NSIS setup .exe + its .sig); `msi`
+          # is the WiX MSI for enterprise/manual installs. The sidecar scripts
+          # are now Git-Bash-portable (sha256/mirror_dir/unzip fallbacks), so
+          # this runs on windows-latest.
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis,msi
+          # Linux is still omitted: the slicer/python sidecar download branches
+          # there are sketched but untested. Re-add an ubuntu-22.04 entry once
+          # those are exercised.
 
     runs-on: ${{ matrix.platform }}
     # Hard cap so a hung step (the Intel job has stalled for ~2h) fails fast

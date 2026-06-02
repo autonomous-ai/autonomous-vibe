@@ -15,10 +15,19 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 TAURI_TARGET="release"
+TARGET_TRIPLE=""
+prev=""
 for arg in "$@"; do
   if [ "$arg" = "--debug" ]; then
     TAURI_TARGET="debug"
   fi
+  # Capture the cross-target triple so the freshness guard can find the bundle,
+  # which cargo nests under target/<triple>/<profile>/ when --target is passed.
+  case "$arg" in
+    --target=*) TARGET_TRIPLE="${arg#--target=}" ;;
+  esac
+  if [ "$prev" = "--target" ]; then TARGET_TRIPLE="$arg"; fi
+  prev="$arg"
 done
 
 # Vendor shared Python packages into the skill runtimes BEFORE bundling, so the
@@ -36,4 +45,7 @@ if [ ! -s "${VENDORED_GENERATION}" ]; then
 fi
 
 ( cd "${REPO_ROOT}/desktop/src-tauri" && cargo tauri build "$@" )
-"${REPO_ROOT}/scripts/build/verify-bundle-fresh.sh" "--target=${TAURI_TARGET}"
+
+VERIFY_ARGS=("--target=${TAURI_TARGET}")
+[ -n "${TARGET_TRIPLE}" ] && VERIFY_ARGS+=("--triple=${TARGET_TRIPLE}")
+"${REPO_ROOT}/scripts/build/verify-bundle-fresh.sh" "${VERIFY_ARGS[@]}"

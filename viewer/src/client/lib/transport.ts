@@ -211,7 +211,34 @@ export interface AppSettings {
   // with a single app_settings_read() call. Mirrored in
   // desktop/src-tauri/src/ipc/types.rs as a follow-up.
   hasOnboarded: boolean;
+  // Update behavior. false (default) = prompt before downloading; true =
+  // silently download in the background and notify when a restart will apply.
+  autoUpdate: boolean;
 }
+
+// Auto-update ----------------------------------------------------------------
+
+export interface UpdateInfo {
+  version: string;
+  currentVersion: string;
+  notes?: string;
+  date?: string;
+}
+
+/**
+ * Discriminated union streamed via the `update_event` Tauri event across the
+ * update lifecycle. Mirrors the serde enum in
+ * `desktop/src-tauri/src/ipc/types.rs::UpdateEvent` (tag = "status",
+ * snake_case variants, camelCase fields). The `available` variant flattens
+ * `UpdateInfo` (serde internally-tagged newtype variant).
+ */
+export type UpdateEvent =
+  | { status: "checking" }
+  | { status: "up_to_date" }
+  | ({ status: "available" } & UpdateInfo)
+  | { status: "downloading"; downloadedBytes: number; totalBytes?: number }
+  | { status: "ready"; version: string }
+  | { status: "error"; message: string };
 
 // Track I: auto-install Claude Code -----------------------------------------
 
@@ -441,6 +468,7 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
         slicerBinaryPath: "",
         usePandaCloud: false,
         hasOnboarded: true,
+        autoUpdate: false,
       } as unknown as T;
     case "app_settings_write":
       return undefined as unknown as T;
@@ -532,6 +560,13 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
       return { workspaceRoot: `/dev/panda-stub/${String(args.id ?? "")}` } as unknown as T;
     case "project_delete":
       return undefined as unknown as T;
+    case "update_check":
+      // Browser dev: no updater. Report "no update available" so the
+      // notifier stays dormant rather than throwing.
+      return null as unknown as T;
+    case "update_install":
+    case "update_relaunch":
+      return undefined as unknown as T;
     default:
       throw new Error(`${STUB_TAG} unknown command: ${cmd}`);
   }
@@ -605,6 +640,11 @@ const transportBase = {
     invoke<{ workspaceRoot: string }>("project_open", { id }),
   project_delete: (id: string) => invoke<void>("project_delete", { id }),
 
+  // update — see desktop/src-tauri/src/commands/update.rs
+  update_check: () => invoke<UpdateInfo | null>("update_check"),
+  update_install: () => invoke<void>("update_install"),
+  update_relaunch: () => invoke<void>("update_relaunch"),
+
   // events
   //
   // Generic event bus used by the chat store (`attachChatEventStream` →
@@ -644,6 +684,8 @@ const transportBase = {
     listenEvent<PrintProgressEvent>("print_progress", handler),
   onClaudeInstallProgress: (handler: (event: ClaudeInstallProgress) => void) =>
     listenEvent<ClaudeInstallProgress>("claude_install_progress", handler),
+  onUpdateEvent: (handler: (event: UpdateEvent) => void) =>
+    listenEvent<UpdateEvent>("update_event", handler),
 };
 
 export type Transport = typeof transportBase;

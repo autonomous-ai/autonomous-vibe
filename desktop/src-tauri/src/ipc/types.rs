@@ -467,6 +467,13 @@ pub struct AppSettings {
     /// app_settings_read() call. Added by Track E.
     #[serde(default)]
     pub has_onboarded: bool,
+    /// Update behavior. `false` (default) = **prompt**: on startup the app
+    /// only checks and the UI asks before downloading. `true` = **auto**:
+    /// the app silently downloads a newer bundle in the background and the
+    /// UI notifies the user that a restart will apply it. Either way the
+    /// install is never applied without the user choosing to relaunch.
+    #[serde(default)]
+    pub auto_update: bool,
 }
 
 impl Default for AppSettings {
@@ -477,6 +484,7 @@ impl Default for AppSettings {
             use_panda_cloud: false,
             panda_token: None,
             has_onboarded: false,
+            auto_update: false,
         }
     }
 }
@@ -525,4 +533,50 @@ pub enum ClaudeInstallProgress {
     Error {
         message: String,
     },
+}
+
+// ---------------------------------------------------------------------------
+// Auto-update (tauri-plugin-updater)
+// ---------------------------------------------------------------------------
+
+/// Summary of an available update, returned by `update_check` and carried in
+/// the `UpdateEvent::Available` payload. `current_version` is the running
+/// build; `version` is the newer one on the release endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    pub version: String,
+    pub current_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+}
+
+/// Streamed via the `update_event` Tauri channel across the whole update
+/// lifecycle. Drives every update surface in the UI: the "update available"
+/// prompt + passive badge (`Available`), the download progress bar
+/// (`Downloading`), and the "restart to apply" banner (`Ready`). Mirrors the
+/// TS discriminated union in `viewer/src/client/lib/transport.ts`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "status", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum UpdateEvent {
+    /// A check is in flight (UI may show a subtle "checking…" hint).
+    Checking,
+    /// The running build is the latest; nothing to do.
+    UpToDate,
+    /// A newer signed bundle exists but has not been downloaded yet.
+    Available(UpdateInfo),
+    /// Bytes are streaming down. `total_bytes` is absent when the server
+    /// doesn't send a Content-Length.
+    Downloading {
+        downloaded_bytes: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        total_bytes: Option<u64>,
+    },
+    /// The update is downloaded and staged; relaunch to apply it.
+    Ready { version: String },
+    /// The check or download failed; auto-update is best-effort so this is
+    /// surfaced softly and never blocks the app.
+    Error { message: String },
 }

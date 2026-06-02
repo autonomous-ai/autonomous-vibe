@@ -37,7 +37,9 @@
       "resources/python/bin/python3",
       "resources/slicer/orcaslicer"
     ],
-    "resources": []
+    "resources": {
+      "../../skills/": "skills/"
+    }
   },
   "plugins": {
     "updater": {

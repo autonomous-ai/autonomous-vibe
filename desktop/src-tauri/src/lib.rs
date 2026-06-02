@@ -7,6 +7,7 @@ pub mod ipc;
 pub mod commands;
 pub mod state;
 pub mod paths;
+pub mod skills;
 pub mod asset_protocol;
 
 use commands::*;
@@ -75,6 +76,11 @@ pub fn run() {
                     window.open_devtools();
                 }
             }
+            // Install the app's bundled Claude Code skills into
+            // ~/.claude/skills so the `claude` subprocess (and cadcode's
+            // generator) can find them. Best-effort; symlinked skill dirs are
+            // left alone for dev live-editing. See `crate::skills`.
+            skills::install_bundled_skills(&tauri::Manager::app_handle(app).clone());
             // Auto-update: on startup, check the GitHub Releases endpoint for a
             // newer signed bundle and install it in the background. No-op in dev
             // (the updater has no installed bundle to replace) and silently

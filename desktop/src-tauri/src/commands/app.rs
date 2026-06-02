@@ -127,6 +127,13 @@ fn detect_slicer() -> SlicerStatus {
 
 #[tauri::command]
 pub async fn app_settings_read() -> IpcResult<AppSettings> {
+    load_settings().await
+}
+
+/// Read persisted settings (or defaults) without going through the IPC
+/// command wrapper. Shared by `app_settings_read` and the startup
+/// auto-update check, which needs `auto_update` before any window exists.
+pub async fn load_settings() -> IpcResult<AppSettings> {
     let path = paths::settings_path();
     if !path.exists() {
         return Ok(AppSettings::default());

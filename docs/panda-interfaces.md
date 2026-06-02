@@ -399,6 +399,8 @@ interface AppSettings {
   usePandaCloud: boolean;       // v2 hook; default false
   pandaToken?: string;          // v2 hook
   hasOnboarded: boolean;        // gates the first-run wizard (added during Track E merge)
+  autoUpdate: boolean;          // false (default) = prompt before downloading an update;
+                                //   true = silently download in the background, notify to restart
 }
 function app_settings_read(): Promise<AppSettings>;
 function app_settings_write(s: AppSettings): Promise<void>;
@@ -422,6 +424,21 @@ interface InstalledClaude {
   binaryPath: string;
 }
 function app_install_claude_code(): Promise<InstalledClaude>;
+
+// Auto-update (tauri-plugin-updater). Event-driven: all three commands emit
+// "update_event" (below). update_check is check-only; the UI calls it on
+// mount (Tauri events aren't buffered) and to offer "check now". update_install
+// downloads + stages the bundle but does NOT relaunch — update_relaunch applies
+// it. The startup flow honors AppSettings.autoUpdate (silent download when on).
+interface UpdateInfo {
+  version: string;
+  currentVersion: string;
+  notes?: string;
+  date?: string;
+}
+function update_check(): Promise<UpdateInfo | null>;  // null = up to date
+function update_install(): Promise<void>;              // emits downloading… → ready
+function update_relaunch(): Promise<void>;             // never returns (restarts)
 ```
 
 ### Events (Tauri `emit`)
@@ -457,6 +474,19 @@ type ClaudeInstallProgress =
   | { stage: "verifying" }
   | { stage: "done"; version: string; binaryPath: string }
   | { stage: "error"; message: string };
+
+// "update_event" — streams across the whole auto-update lifecycle. Drives
+// every update surface in the UI: the "update available" prompt + passive
+// badge ("available"), the download progress bar ("downloading"), and the
+// "restart to apply" banner ("ready"). The "available" variant flattens
+// UpdateInfo (serde internally-tagged newtype variant).
+type UpdateEvent =
+  | { status: "checking" }
+  | { status: "up_to_date" }
+  | ({ status: "available" } & UpdateInfo)
+  | { status: "downloading"; downloadedBytes: number; totalBytes?: number }
+  | { status: "ready"; version: string }
+  | { status: "error"; message: string };
 ```
 
 ### Error shape

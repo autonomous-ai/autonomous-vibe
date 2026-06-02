@@ -16,22 +16,28 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 TARGET="release"
+TRIPLE=""
 QUIET=0
 
 usage() {
   cat <<'EOF'
-Usage: scripts/build/verify-bundle-fresh.sh [--target=release|debug] [--quiet]
+Usage: scripts/build/verify-bundle-fresh.sh [--target=release|debug] [--triple=<triple>] [--quiet]
 
-Verifies that target/<target>/bundle/macos/Panda.app/Contents/MacOS/panda-desktop
+Verifies that the compiled panda-desktop binary under target/[<triple>/]<target>/
+(the .app's Mach-O on macOS, panda-desktop[.exe] elsewhere)
 is at least as new as viewer/dist/index.html. Exits 1 with a clear message
 otherwise — usually means someone rebuilt the viewer dist without re-running
 `cargo tauri build`, so the bundle ships pre-fix JS.
+
+Pass --triple when the bundle was produced by `cargo tauri build --target <triple>`
+(a cross-build), since cargo then nests output under target/<triple>/.
 EOF
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --target=release|--target=debug) TARGET="${1#--target=}" ;;
+    --triple=*) TRIPLE="${1#--triple=}" ;;
     --quiet) QUIET=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "verify-bundle-fresh: unknown arg: $1" >&2; usage >&2; exit 2 ;;
@@ -39,11 +45,28 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-BUNDLE_BIN="${REPO_ROOT}/desktop/src-tauri/target/${TARGET}/bundle/macos/Panda.app/Contents/MacOS/panda-desktop"
+# A --target <triple> build nests output under target/<triple>/<profile>/.
+if [ -n "${TRIPLE}" ]; then
+  PROFILE_DIR="${REPO_ROOT}/desktop/src-tauri/target/${TRIPLE}/${TARGET}"
+else
+  PROFILE_DIR="${REPO_ROOT}/desktop/src-tauri/target/${TARGET}"
+fi
+
+# Locate the compiled binary whose mtime we compare against the dist. On macOS
+# the canonical artifact is inside the .app; on Windows/Linux there is no .app,
+# so fall back to the plain compiled binary (panda-desktop[.exe]) — the same
+# Mach-O/PE that generate_context!() baked the dist into at compile time.
+BUNDLE_BIN=""
+for cand in \
+  "${PROFILE_DIR}/bundle/macos/Panda.app/Contents/MacOS/panda-desktop" \
+  "${PROFILE_DIR}/panda-desktop.exe" \
+  "${PROFILE_DIR}/panda-desktop"; do
+  if [ -f "${cand}" ]; then BUNDLE_BIN="${cand}"; break; fi
+done
 DIST_INDEX="${REPO_ROOT}/viewer/dist/index.html"
 
-if [ ! -f "${BUNDLE_BIN}" ]; then
-  echo "verify-bundle-fresh: no bundle at ${BUNDLE_BIN}" >&2
+if [ -z "${BUNDLE_BIN}" ]; then
+  echo "verify-bundle-fresh: no compiled binary under ${PROFILE_DIR}" >&2
   echo "  Run \`cargo --manifest-path desktop/src-tauri/Cargo.toml tauri build\` first." >&2
   exit 1
 fi

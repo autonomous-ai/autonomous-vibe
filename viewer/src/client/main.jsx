@@ -5,6 +5,7 @@ import ChatSidebar, { SIDEBAR_WIDTH as CHAT_SIDEBAR_WIDTH } from "./components/c
 import { bindCadRefSelectionToChatInput } from "./components/chat/cadRefEvents";
 import ProjectMenu from "./components/project/ProjectMenu.jsx";
 import OnboardingWizard from "./components/onboarding/OnboardingWizard.jsx";
+import UpdateNotifier from "./components/update/UpdateNotifier.jsx";
 import faviconUrl from "./assets/favicon.ico";
 import "./styles/globals.css";
 import { getCadManifestSnapshot, refreshCadCatalog, setCadCatalogBackend, subscribeCadManifest } from "cadjs/lib/cadManifestStore";
@@ -171,6 +172,7 @@ function AppRoot() {
         />
       </div>
       <ChatSidebar />
+      <UpdateNotifier />
     </div>
   );
 }

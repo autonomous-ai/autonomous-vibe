@@ -21,8 +21,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install cadpy + pytest
-        run: pip install -e ./packages/cadpy pytest
+      # Mirror the sidecar dep set (scripts/build/build-python-sidecar.sh):
+      # cadpy's pyproject deps + cadquery + pillow, which the tests import
+      # directly. pytest is the only CI-only extra.
+      - name: Install cadpy + test deps
+        run: pip install -e ./packages/cadpy cadquery pillow pytest
       - name: pytest
         run: cd packages/cadpy && python -m pytest
 

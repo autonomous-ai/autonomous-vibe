@@ -37,6 +37,9 @@ jobs:
           # ubuntu-22.04 / windows-latest entries once those scripts are ported.
 
     runs-on: ${{ matrix.platform }}
+    # Hard cap so a hung step (the Intel job has stalled for ~2h) fails fast
+    # instead of burning the 6h default. Step-level timeouts below localize it.
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -67,6 +70,7 @@ jobs:
       # may need per-platform fixes before these jobs go green.
       - name: Build bundled sidecars
         shell: bash
+        timeout-minutes: 30
         run: scripts/build/build-all-sidecars.sh
 
       - name: Build, sign, and publish release
@@ -81,4 +85,10 @@ jobs:
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
-          args: --target ${{ matrix.target }}
+          # Skip the DMG bundle: its build runs an AppleScript that drives
+          # Finder to lay out the disk-image window, which hangs on headless
+          # runners (the suspected Intel-job stall). `--bundles app` still
+          # builds the installable .app, and `createUpdaterArtifacts` (set in
+          # tauri.conf.json) still emits the signed .app.tar.gz + .sig the
+          # auto-updater needs. Re-add `dmg` once the hang is confirmed elsewhere.
+          args: --target ${{ matrix.target }} --bundles app

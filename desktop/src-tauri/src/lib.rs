@@ -48,6 +48,21 @@ fn fix_path_from_shell() {
 fn fix_path_from_shell() {}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Check the configured updater endpoint and, if a newer signed bundle is
+/// available, download + install it and relaunch. Returns `Ok(())` when there
+/// is nothing to do. Errors propagate to the caller, which logs and ignores
+/// them — auto-update is best-effort and must never break the app.
+async fn check_and_install_update(app: tauri::AppHandle) -> tauri_plugin_updater::Result<()> {
+    use tauri_plugin_updater::UpdaterExt;
+    if let Some(update) = app.updater()?.check().await? {
+        update
+            .download_and_install(|_downloaded, _total| {}, || {})
+            .await?;
+        app.restart();
+    }
+    Ok(())
+}
+
 pub fn run() {
     fix_path_from_shell();
     tauri::Builder::default()
@@ -60,11 +75,25 @@ pub fn run() {
                     window.open_devtools();
                 }
             }
+            // Auto-update: on startup, check the GitHub Releases endpoint for a
+            // newer signed bundle and install it in the background. No-op in dev
+            // (the updater has no installed bundle to replace) and silently
+            // ignored on any error — a failed update check must never block
+            // launch. Set PANDA_NO_UPDATE=1 to skip the check entirely.
+            if std::env::var("PANDA_NO_UPDATE").map_or(true, |v| v == "0" || v.is_empty()) {
+                let handle = tauri::Manager::app_handle(app).clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = check_and_install_update(handle).await {
+                        eprintln!("auto-update check failed: {e}");
+                    }
+                });
+            }
             Ok(())
         })
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .register_uri_scheme_protocol(asset_protocol::SCHEME, asset_protocol::handle)
         .manage(state::AppState::new())
         .invoke_handler(tauri::generate_handler![

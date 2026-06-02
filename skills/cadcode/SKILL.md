@@ -129,6 +129,107 @@ ask the user a clarifying question — past that, you're probably guessing
 about user intent rather than fixing a geometry bug. Closing the loop is
 what makes you feel like an engineer instead of an autocomplete.
 
+## Plan-phase design discipline
+
+When Panda runs you in **planning mode** (`--permission-mode plan`), you write
+no geometry — you produce the plan the user approves before the build. That plan
+is an **engineering spec**, not a sales pitch. Hold it to four rules:
+
+1. **Exact measurements.** Every dimension, quantity, and metric is a precise
+   number with a unit. Never "about", "roughly", or "approximately" — if you
+   don't know a value, derive it (below) or ask the user.
+2. **Component-level breakdown.** List each distinct part with its outer
+   dimensions, material, and purpose, and state exactly how parts connect —
+   joint/feature type, mating dimensions, clearance/tolerance, attachment
+   points, alignment. A single-part object still lists its one part.
+3. **Physical correctness.** Account for gravity, balance, load-bearing, center
+   of mass, structural stability, and FDM layer-line orientation. State your
+   assumptions and confirm the design behaves under real-world conditions. Show
+   only the checks that apply — for a part with no load case (decorative, a
+   loose-fit cover), say so in a clause rather than inventing a load.
+4. **Show the math.** For each derived or load-bearing number, show the formula
+   and the values used so a reader can check it: `name = formula = value unit`.
+
+**Scale to the request.** A trivial edit ("make the wall 2 mm thicker", "move
+the holes 5 mm apart") needs only the exact before→after values and any physical
+consequence — one to three lines. A new part or any multi-part / load-bearing
+design gets the full treatment.
+
+### Where the numbers come from — source them, don't guess
+
+| Need | Load |
+|---|---|
+| FDM tolerances, fastener clearance holes, bearing/motor/phone sizes, sanity sizes | `references/hobbyist-defaults.md` |
+| Wall thickness (nozzle multiples) + the `h³` stiffness rule | `references/patterns/wall-thickness-rules.md` |
+| Screw pull-out (engagement = 2·screw-Ø), boss OD sizing | `references/patterns/screw-boss.md` |
+| Rib vs wall stiffness (one rib ≈ 5–10× cheaper than doubling walls) | `references/patterns/rib-stiffener.md` |
+
+Standard derived values you should cite rather than invent: wall snaps to a
+nozzle multiple (0.4 mm nozzle → 0.8 / 1.2 / 1.6 / 2.0 / 2.8 / 3.2 mm; 2.0 mm
+enclosure, 2.8 mm + ribs load-bearing); M3 clearance Ø3.4 mm, self-tap Ø2.5 mm,
+boss engagement 6 mm, boss OD ≥ 8.8 mm; FDM slip fit ≈ 0.2 mm clearance per
+side; PETG ≈ 0.6× PLA stiffness and creeps under sustained load.
+
+### Physics checklist — what to show
+
+- **Tip-over / balance:** center of mass vs support footprint. Compute the
+  horizontal CoM offset and compare to the base edge:
+  `x_CoM < base_overhang` ⇒ stable; report the margin.
+- **Load path / bearing stress:** where weight enters, what carries it to the
+  ground or mount, and the fastener/wall that takes the reaction.
+- **Stiffness / deflection:** wall thickness and ribs for the stated load;
+  remember doubling thickness is 8× stiffer (`h³`), a rib is usually cheaper.
+- **FDM layer orientation:** a load pulling *across* the layer lines is far
+  weaker (e.g. boss pull-out drops ~50%). State the print orientation wherever
+  strength matters.
+- **Build volume:** confirm the part fits the printer (Bambu ≈ 256 mm cube;
+  cadpy's sanity bound is 200 × 200 mm).
+- **Assumptions to state:** material (and its density/stiffness), applied load,
+  orientation in use, support condition (free-standing, wall-mounted, clamped).
+  Label every assumed input (a phone's mass, a bag's weight) as an assumption
+  the user can correct — never present a guess as a measured fact, and never
+  fabricate a load just to fill the section. Skip checks that don't apply and
+  say why.
+
+End the Physics check with a one-line verdict: stable / load-safe / printable
+under the stated assumptions, or the condition that would make it fail.
+
+### Worked example — desktop phone stand (single PLA part)
+
+> **What I'll make** — A free-standing PLA cradle that holds a phone at a 70°
+> viewing angle.
+>
+> **Parts**
+> - *Stand body* — 100 × 75 mm base footprint, 6.0 mm floor; cradle wall rising
+>   at 70° from the base, 110 mm tall, 2.8 mm wall; front retaining lip 8 mm
+>   tall × 5 mm deep. Material PLA. One printed part, no fasteners; the phone
+>   rests in the cradle and is retained by the lip (phone slides in from the
+>   top, 1 mm side clearance each side for a loose fit).
+>
+> **Measurements & math**
+> - `cradle wall = load-bearing default = 2.8 mm` (7 perimeters @ 0.4 mm nozzle)
+> - `floor = 6.0 mm` — mass ballast low in the base to resist tip-over
+> - `lip height = 8 mm` > phone resting offset, so the phone cannot slide out
+> - `phone CoM height up cradle = 80 mm` (assumed, mid-height of a 160 mm phone)
+>
+> **Physics check** — Assumptions (user can correct): phone mass *assumed*
+> 0.20 kg, PLA, static desktop, printed flat on the base.
+> - Tip-over: phone leans 20° back from vertical, so its CoM sits
+>   `x_CoM = 80·sin(20°) = 80·0.342 = 27.4 mm` behind the cradle root.
+> - The base extends `60 mm` behind the cradle root, so
+>   `x_CoM (27.4 mm) < base_overhang (60 mm)` ⇒ **stable, 32.6 mm margin.**
+> - Load path: phone weight (`0.20 kg · 9.81 = 2.0 N`) bears on the cradle wall
+>   and floor, both continuous PLA to the base — no fastener in the load path.
+> - Print orientation: printed flat on the base, so the cradle's bending load
+>   runs along layer lines, not across them — full layer strength.
+> - Build volume: `100 × 75 × 110 mm` fits a Bambu 256 mm bed easily.
+> - **Verdict:** stable, load-safe, and printable for phones up to a 60 mm
+>   rearward CoM offset under these assumptions.
+
+For a **multi-part assembly**, give each part its own *Parts* entry and make the
+connection explicit (e.g. "base + lid, 0.2 mm slip fit on a 2 mm lip; four M3
+self-tap bosses, 6 mm engagement, on a 80 × 60 mm bolt pattern").
+
 ## Use this skill when
 
 The user asks for any of:
@@ -288,7 +389,8 @@ multi-part union), `Read` one of the example assets in this skill's
 In your reasoning, write down: parameters (name + value + unit), key
 features, build order. Catch dimension errors before they cost a render
 cycle. For multi-feature parts, decide the union order — most stable
-anchor first.
+anchor first. (In Panda's planning phase this becomes the user-facing
+spec — see [Plan-phase design discipline](#plan-phase-design-discipline).)
 
 ### 4. Edit the `.py`
 

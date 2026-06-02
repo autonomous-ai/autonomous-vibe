@@ -37,6 +37,13 @@ if [ ! -d "${REPO_ROOT}/viewer/node_modules" ]; then
   npm --prefix "${REPO_ROOT}/viewer" install
 fi
 
+# Vendor cadpy into the skill runtimes so the cadcode generator has a working
+# pipeline. The dev install (cargo run) falls back to the repo `skills/` tree;
+# if cadpy is empty the generator improvises export/render scripts (clutter +
+# non-contract artifacts). Cheap + idempotent, so run it every time.
+echo "[panda dev] vendoring skill runtimes (cadpy)"
+"${REPO_ROOT}/scripts/build/build-skill-runtimes.sh"
+
 # Start Vite in the background; stop it when this script exits.
 echo "[panda dev] starting Vite dev server"
 npm --prefix "${REPO_ROOT}/viewer" run dev &

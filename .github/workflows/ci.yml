@@ -61,5 +61,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
+
+      # The crate compiles `tauri::generate_context!()`, which embeds the
+      # frontend at `frontendDist` (../../viewer/dist) — build it so the macro
+      # resolves. `cargo test` doesn't run beforeBuildCommand, so do it here.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: viewer/package-lock.json
+      - name: Build viewer (for generate_context!)
+        run: npm --prefix viewer ci && npm --prefix viewer run build
+
+      # tauri-build verifies each `externalBin` exists for the host target
+      # triple. The real sidecars are ~1 GB and unnecessary for unit tests —
+      # the tests never exec them — so drop in empty stubs to satisfy the check.
+      - name: Stub sidecars for the host triple
+        run: |
+          triple=$(rustc -vV | awk '/host:/{print $2}')
+          install -m755 /dev/null "desktop/src-tauri/resources/python/bin/python3-$triple"
+          install -m755 /dev/null "desktop/src-tauri/resources/slicer/orcaslicer-$triple"
+
       - name: cargo test
         run: cargo test --manifest-path desktop/src-tauri/Cargo.toml

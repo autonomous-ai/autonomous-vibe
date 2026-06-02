@@ -27,10 +27,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # arm64 builds the .dmg too (its DMG step works on this runner).
           - platform: macos-latest # Apple Silicon
             target: aarch64-apple-darwin
+            bundles: app,dmg
+          # Intel builds app-only: the DMG step's Finder AppleScript hangs on
+          # the macos-13 runner. Intel users get the .app.tar.gz instead.
           - platform: macos-13 # Intel
             target: x86_64-apple-darwin
+            bundles: app
           # Windows/Linux are intentionally omitted for now: their sidecar build
           # scripts (build-python/slicer-sidecar.sh) are macOS-only and fail on
           # those runners (e.g. `shasum` missing in Windows git-bash). Re-add the
@@ -85,10 +90,8 @@ jobs:
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
-          # Skip the DMG bundle: its build runs an AppleScript that drives
-          # Finder to lay out the disk-image window, which hangs on headless
-          # runners (the suspected Intel-job stall). `--bundles app` still
-          # builds the installable .app, and `createUpdaterArtifacts` (set in
-          # tauri.conf.json) still emits the signed .app.tar.gz + .sig the
-          # auto-updater needs. Re-add `dmg` once the hang is confirmed elsewhere.
-          args: --target ${{ matrix.target }} --bundles app
+          # Per-arch bundle set (see matrix): arm64 builds app+dmg, Intel builds
+          # app-only to dodge the DMG/Finder hang. `createUpdaterArtifacts` (in
+          # tauri.conf.json) still emits the signed .app.tar.gz + .sig that the
+          # auto-updater needs, regardless of whether dmg is built.
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}

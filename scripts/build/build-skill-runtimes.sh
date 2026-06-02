@@ -9,8 +9,10 @@
 # Currently vendors:
 #   packages/cadpy/src/cadpy/  →  skills/cadcode/scripts/packages/cadpy/
 #
-# This is a stub; the real implementation is tracked separately
-# (Workstream 0 step 6, "port build scripts").
+# Run automatically by scripts/dev.sh (before `cargo run`) and
+# scripts/build/build-app.sh (before bundling), so the cadcode generator always
+# ships a populated cadpy. The vendored tree is gitignored; only README.md and
+# .gitignore are tracked.
 
 set -euo pipefail
 
@@ -24,11 +26,15 @@ if [ ! -d "${CADPY_SRC}" ]; then
 fi
 
 mkdir -p "${CADCODE_VENDOR}"
-# rsync excludes Python caches and keeps the README we ship as documentation.
+# rsync excludes Python caches and keeps the tracked files we ship (the README
+# documentation and the .gitignore that keeps the rest of the vendored tree out
+# of git). `P` protects them from `--delete`, which would otherwise remove any
+# dest file absent from the source tree.
 rsync -a --delete \
   --exclude='__pycache__' \
   --exclude='*.pyc' \
   --filter='P README.md' \
+  --filter='P .gitignore' \
   "${CADPY_SRC}/" "${CADCODE_VENDOR}/"
 
 echo "vendored cadpy → skills/cadcode/scripts/packages/cadpy"

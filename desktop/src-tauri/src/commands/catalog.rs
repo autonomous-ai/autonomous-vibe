@@ -125,6 +125,13 @@ pub fn scan_workspace(root: &Path) -> IpcResult<Vec<CatalogEntry>> {
         let Some(kind) = CatalogKind::from_extension(&extension) else {
             continue;
         };
+        // Hide auxiliary files from the catalog so the file list shows only the
+        // main deliverables (source `.py` + `.step`/`.stl`/`.glb`). `path_index`
+        // still holds every file, so `.step`→`.py` sibling detection and the
+        // sidecar artifact URLs below resolve from disk regardless.
+        if is_auxiliary_file(absolute, kind) {
+            continue;
+        }
         let Some(rel) = paths::to_workspace_relative(absolute, root) else {
             continue;
         };
@@ -142,6 +149,27 @@ pub fn scan_workspace(root: &Path) -> IpcResult<Vec<CatalogEntry>> {
 
     entries.sort_by(|a, b| a.file.cmp(&b.file));
     Ok(entries)
+}
+
+/// Files that are real on disk (and still serve as siblings/sidecars) but
+/// should not clutter the workspace file list as standalone entries:
+/// - `.json` — `.topology.json` / `.step.json` sidecars + other metadata
+///   (surfaced via a `.step` entry's `artifact`, never on their own).
+/// - `.png` — QA render images; never an app deliverable (the viewer uses `.glb`).
+/// - underscore-prefixed `.py` — internal helper scripts (e.g. `_export.py`,
+///   `_render.py`), not the user's editable source.
+///
+/// Kept: `.step`/`.stp`/`.stl`/`.glb`/`.gcode` and real (non-underscore) `.py`.
+fn is_auxiliary_file(absolute: &Path, kind: CatalogKind) -> bool {
+    match kind {
+        CatalogKind::Json | CatalogKind::Png => true,
+        CatalogKind::Py => absolute
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with('_'))
+            .unwrap_or(false),
+        _ => false,
+    }
 }
 
 fn classify_source_kind(
@@ -268,6 +296,42 @@ mod tests {
             .find(|e| e.file == "model.step")
             .expect("model.step entry present");
         let artifact = step.artifact.clone().expect("artifact attached");
+        assert!(artifact.glb_url.unwrap().ends_with("model.glb"));
+        assert!(artifact.topology_url.unwrap().ends_with("model.topology.json"));
+        assert!(artifact.metadata_url.unwrap().ends_with("model.step.json"));
+    }
+
+    #[test]
+    fn hides_helper_scripts_renders_and_sidecars() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // Main deliverables.
+        touch(&root.join("model.py"));
+        touch(&root.join("model.step"));
+        touch(&root.join("model.stl"));
+        touch(&root.join("model.glb"));
+        // Auxiliary clutter that must NOT appear as standalone entries.
+        touch(&root.join("_export.py"));
+        touch(&root.join("_render.py"));
+        touch(&root.join("model_iso.png"));
+        touch(&root.join("model_side.png"));
+        touch(&root.join("model.topology.json"));
+        touch(&root.join("model.step.json"));
+
+        let entries = scan_workspace(root).unwrap();
+        let mut files: Vec<&str> = entries.iter().map(|e| e.file.as_str()).collect();
+        files.sort();
+        assert_eq!(
+            files,
+            vec!["model.glb", "model.py", "model.step", "model.stl"],
+            "only the four main files survive; helpers/renders/sidecars are hidden",
+        );
+
+        // Sibling detection + sidecar URLs still resolve from disk even though the
+        // .py/.json files are no longer standalone entries.
+        let step = entries.iter().find(|e| e.file == "model.step").unwrap();
+        assert_eq!(step.source_kind, Some(SourceKind::Python));
+        let artifact = step.artifact.clone().expect("sidecars attached to .step");
         assert!(artifact.glb_url.unwrap().ends_with("model.glb"));
         assert!(artifact.topology_url.unwrap().ends_with("model.topology.json"));
         assert!(artifact.metadata_url.unwrap().ends_with("model.step.json"));

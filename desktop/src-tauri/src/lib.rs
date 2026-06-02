@@ -79,6 +79,7 @@ pub fn run() {
             catalog::generation_status_read,
             // files
             files::file_read_bytes,
+            files::file_save,
             files::file_reveal,
             // step
             step::step_source_status_read,

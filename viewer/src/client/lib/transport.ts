@@ -465,6 +465,8 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
       } as unknown as T;
     case "file_read_bytes":
       return new Uint8Array() as unknown as T;
+    case "file_save":
+      return null as unknown as T;
     case "file_reveal":
       return undefined as unknown as T;
     case "step_source_status_read":
@@ -556,6 +558,8 @@ const transportBase = {
   // files
   file_read_bytes: (file: string, asset: AssetKind) =>
     invoke<Uint8Array>("file_read_bytes", { file, asset }),
+  file_save: (file: string, asset: AssetKind) =>
+    invoke<string | null>("file_save", { file, asset }),
   file_reveal: (file: string, asset: AssetKind) =>
     invoke<void>("file_reveal", { file, asset }),
 

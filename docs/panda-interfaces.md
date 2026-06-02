@@ -234,9 +234,17 @@ interface GenerationStatus {
 }
 function generation_status_read(): Promise<GenerationStatus>;
 
-// file_read_bytes — replaces GET /__cad/download
+// file_read_bytes — read a project file's raw bytes (browser/hosted backends
+// stream these over HTTP; desktop downloads use file_save instead).
 type AssetKind = "output" | "source" | "artifact";
 function file_read_bytes(file: string, asset: AssetKind): Promise<Uint8Array>;
+
+// file_save — native "Save As" + local copy of a project file. Files already
+// live on disk, so a desktop download is just a local-to-local copy: the
+// command resolves the source under the open project (rejecting `..`), shows
+// the OS save dialog, and copies the bytes. Resolves to the chosen destination
+// path, or null if the user cancelled.
+function file_save(file: string, asset: AssetKind): Promise<string | null>;
 
 // file_reveal — replaces POST /__cad/reveal
 function file_reveal(file: string, asset: AssetKind): Promise<void>;

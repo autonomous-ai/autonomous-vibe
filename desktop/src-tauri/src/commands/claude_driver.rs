@@ -363,6 +363,82 @@ pub fn resolve_claude(cwd: &Path) -> Option<PathBuf> {
     which::which_in("claude", Some(&path), cwd).ok()
 }
 
+/// Clean a raw title string from the title-generation model into a short,
+/// display-ready project name: take the first non-empty line, strip
+/// surrounding quotes/backticks, collapse whitespace, drop a lone trailing
+/// period, and clamp to ~8 words / 60 chars. Returns `None` when nothing
+/// usable remains. Pure so it's unit-testable without the `claude` CLI.
+fn sanitize_title(raw: &str) -> Option<String> {
+    let line = raw.lines().map(str::trim).find(|l| !l.is_empty())?;
+    // Peel surrounding quotes/backticks and a lone trailing period until stable
+    // — handles both `"Phone Stand."` and `"Phone Stand".`. "v2.0"-style dots
+    // are kept (the period isn't sentence-final).
+    let mut s = line;
+    loop {
+        let stripped = s
+            .trim_matches(|c: char| c == '"' || c == '\'' || c == '`')
+            .trim();
+        let stripped = if stripped.ends_with('.') && !stripped.ends_with("..") {
+            stripped[..stripped.len() - 1].trim_end()
+        } else {
+            stripped
+        };
+        if stripped == s {
+            break;
+        }
+        s = stripped;
+    }
+    let title = s.split_whitespace().take(8).collect::<Vec<_>>().join(" ");
+    let title = title.trim();
+    let clamped: String = if title.chars().count() > 60 {
+        title.chars().take(60).collect::<String>().trim_end().to_string()
+    } else {
+        title.to_string()
+    };
+    if clamped.is_empty() {
+        None
+    } else {
+        Some(clamped)
+    }
+}
+
+/// Generate a short project title from the user's first message via a quick,
+/// isolated `claude -p` call. Headless `claude -p` never writes Claude Code's
+/// own `ai-title` lines, so without this a project would stay named
+/// "New project" forever (see `commands::project::needs_autoname`).
+///
+/// Fully isolated from the project's chat session — no `--session-id`,
+/// `--resume`, `--add-dir`, or tools — so it can run concurrently with the main
+/// turn and cannot touch the session JSONL. The model is left to the default
+/// (a future Panda-Cloud proxy can route this short call to a cheap model
+/// dynamically). Capped at 20s. Best-effort: returns `None` on any
+/// timeout/spawn/exit/parse failure, and the caller keeps the placeholder.
+async fn generate_project_title(claude_path: PathBuf, user_message: String) -> Option<String> {
+    let prompt = format!(
+        "Title this 3D-printing CAD project from the user's request below. \
+         Reply with ONLY a concise 3-6 word title in Title Case — no quotes, \
+         no trailing punctuation, no preamble.\n\nRequest: {user_message}"
+    );
+    let mut command = Command::new(&claude_path);
+    command
+        .args(["-p", "--output-format", "text", "--no-session-persistence"])
+        .arg(&prompt)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    // Same PATH augmentation as the main turn so a Finder/Dock-launched app can
+    // still find `claude` and the `node` it needs.
+    command.env("PATH", augmented_path());
+
+    let output =
+        match tokio::time::timeout(std::time::Duration::from_secs(20), command.output()).await {
+            Ok(Ok(out)) if out.status.success() => out,
+            _ => return None,
+        };
+    sanitize_title(&String::from_utf8_lossy(&output.stdout))
+}
+
 /// Snapshot every watched file under `workspace`. Recursive; lowercase
 /// extension matching per contract §3.
 pub fn snapshot_workspace(workspace: &Path) -> MtimeSnapshot {
@@ -723,6 +799,23 @@ where
         return Err(DriverError::Io(e));
     }
 
+    // Headless `claude -p` never writes Claude Code's own `ai-title`, so a
+    // project would otherwise stay named "New project" forever. On the first
+    // plan turn, kick off an isolated title-generation call concurrently — its
+    // latency hides behind the slower main turn — and land the result just
+    // before `TurnEnd`, where the frontend's refresh-on-`turn_end` picks it up.
+    // Gated on the placeholder so it runs at most once per project.
+    let title_task = if matches!(phase, TurnPhase::Plan)
+        && crate::commands::project::needs_autoname(workspace_dir).await
+    {
+        Some(tokio::spawn(generate_project_title(
+            claude_path.clone(),
+            user_message.to_string(),
+        )))
+    } else {
+        None
+    };
+
     let pre_snapshot = snapshot_workspace(workspace_dir);
 
     let cfg = ClaudeRunConfig {
@@ -894,6 +987,19 @@ where
         on_event(ev);
     }
 
+    // Land the auto-generated project name (if any) before TurnEnd so the
+    // frontend's refresh picks it up. Skip on cancel / when the turn produced
+    // nothing — the placeholder then survives and a later plan turn retries.
+    if let Some(task) = title_task {
+        if !cancelled && saw_output {
+            if let Ok(Some(title)) = task.await {
+                crate::commands::project::set_name_if_placeholder(workspace_dir, &title).await;
+            }
+        } else {
+            task.abort();
+        }
+    }
+
     if cancelled {
         on_event(ChatEvent::Error {
             turn_id: turn_id.to_string(),
@@ -1024,6 +1130,29 @@ mod tests {
         let sp = cmd.iter().position(|a| a == "--append-system-prompt").unwrap();
         assert_eq!(cmd[sp + 1], IMPLEMENT_SYSTEM_PROMPT);
         assert!(cmd[sp + 1].contains("APPROVED"));
+    }
+
+    #[test]
+    fn sanitize_title_cleans_model_output() {
+        // Surrounding quotes stripped, trailing period dropped.
+        assert_eq!(sanitize_title("\"Phone Stand\".").as_deref(), Some("Phone Stand"));
+        // Backticks + whitespace.
+        assert_eq!(sanitize_title("  `Wall Hook`  ").as_deref(), Some("Wall Hook"));
+        // First non-empty line wins (model preamble on later lines ignored).
+        assert_eq!(
+            sanitize_title("\n\nHoneycomb Tray\nHere is your title.").as_deref(),
+            Some("Honeycomb Tray"),
+        );
+        // Word clamp to 8.
+        assert_eq!(
+            sanitize_title("one two three four five six seven eight nine ten").as_deref(),
+            Some("one two three four five six seven eight"),
+        );
+        // "v2.0"-style dots survive; only a lone sentence-final period goes.
+        assert_eq!(sanitize_title("Bracket v2.0").as_deref(), Some("Bracket v2.0"));
+        // Nothing usable → None.
+        assert_eq!(sanitize_title(""), None);
+        assert_eq!(sanitize_title("   \n  "), None);
     }
 
     #[test]
@@ -1411,5 +1540,48 @@ mod tests {
             .output()
             .expect("claude --version should run when on PATH");
         assert!(out.status.success(), "claude --version should exit 0");
+    }
+
+    /// Optional live end-to-end of project auto-naming: real `claude` generates
+    /// a title and `set_name_if_placeholder` upgrades a placeholder
+    /// `project.json` — exactly what `spawn_turn` does on the first plan turn,
+    /// and the field the switcher renders. Ignored by default (costs claude
+    /// quota + network); run with
+    /// `cargo test --manifest-path desktop/src-tauri/Cargo.toml -- --ignored --nocapture live_autoname`.
+    #[tokio::test]
+    #[ignore]
+    async fn live_autoname_upgrades_placeholder_project() {
+        let cwd = std::env::current_dir().unwrap();
+        let Some(claude) = resolve_claude(&cwd) else {
+            eprintln!("skipping: claude not resolvable");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("027cd40f-c864-49d9-a1cc-6854342a5192");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("project.json"),
+            r#"{"id":"027cd40f-c864-49d9-a1cc-6854342a5192","name":"New project","created_at":1,"updated_at":2}"#,
+        )
+        .unwrap();
+
+        let title = generate_project_title(
+            claude,
+            "a phone stand for my desk that holds my iphone at an angle".to_string(),
+        )
+        .await
+        .expect("claude should return a title");
+        eprintln!("generated title: {title:?}");
+
+        assert!(
+            crate::commands::project::set_name_if_placeholder(&dir, &title).await,
+            "placeholder should be upgraded"
+        );
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("project.json")).unwrap()).unwrap();
+        let name = json["name"].as_str().unwrap();
+        eprintln!("project.json name is now: {name:?}");
+        assert_ne!(name, "New project");
+        assert!(!name.is_empty());
     }
 }

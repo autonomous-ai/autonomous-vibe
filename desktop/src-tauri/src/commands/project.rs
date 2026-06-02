@@ -134,6 +134,57 @@ fn parse_latest_ai_title(contents: &str) -> Option<String> {
     latest
 }
 
+/// Does this project still carry the auto-name placeholder?
+///
+/// True only when `project.json` exists and its `name` is empty or the
+/// [`PLACEHOLDER_PROJECT_NAME`]. A missing or unparseable `project.json`
+/// returns false so we never try to title a non-project directory. Read-only.
+pub async fn needs_autoname(project_dir: &Path) -> bool {
+    let Ok(bytes) = fs::read(project_dir.join("project.json")).await else {
+        return false;
+    };
+    match serde_json::from_slice::<StoredProjectMeta>(&bytes) {
+        Ok(meta) => meta.name.trim().is_empty() || meta.name == PLACEHOLDER_PROJECT_NAME,
+        Err(_) => false,
+    }
+}
+
+/// Adopt `title` as the project name, but only while the stored name is still
+/// the placeholder (or empty). Re-reads `project.json` under the same check as
+/// [`needs_autoname`] so a concurrent rename or a later plan turn can't clobber
+/// a real name, then persists `title` and bumps `updated_at` (mirroring the
+/// self-heal write in [`read_project_summary`]). Returns whether it wrote.
+/// Best-effort: an empty title or any IO/parse error yields `false`.
+pub async fn set_name_if_placeholder(project_dir: &Path, title: &str) -> bool {
+    let title = title.trim();
+    if title.is_empty() {
+        return false;
+    }
+    let meta_path = project_dir.join("project.json");
+    let Ok(bytes) = fs::read(&meta_path).await else {
+        return false;
+    };
+    let Ok(parsed) = serde_json::from_slice::<StoredProjectMeta>(&bytes) else {
+        return false;
+    };
+    if !(parsed.name.trim().is_empty() || parsed.name == PLACEHOLDER_PROJECT_NAME) {
+        return false;
+    }
+    let id = parsed
+        .id
+        .or_else(|| project_dir.file_name().map(|n| n.to_string_lossy().into_owned()));
+    let meta = StoredProjectMeta {
+        id,
+        name: title.to_string(),
+        created_at: parsed.created_at,
+        updated_at: Utc::now().timestamp_millis(),
+    };
+    match serde_json::to_vec_pretty(&meta) {
+        Ok(bytes) => fs::write(&meta_path, bytes).await.is_ok(),
+        Err(_) => false,
+    }
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct StoredProjectMeta {
     #[serde(default)]
@@ -266,6 +317,65 @@ mod tests {
     async fn project_create_requires_name() {
         let err = create_project("  ").await.unwrap_err();
         assert_eq!(err.code, "INVALID_ARGUMENT");
+    }
+
+    async fn write_meta(dir: &Path, name: &str) {
+        let meta = StoredProjectMeta {
+            id: Some(dir.file_name().unwrap().to_string_lossy().into_owned()),
+            name: name.to_string(),
+            created_at: 1,
+            updated_at: 2,
+        };
+        fs::write(dir.join("project.json"), serde_json::to_vec_pretty(&meta).unwrap())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn needs_autoname_only_for_placeholder_or_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let placeholder = tmp.path().join("a");
+        fs::create_dir_all(&placeholder).await.unwrap();
+        write_meta(&placeholder, PLACEHOLDER_PROJECT_NAME).await;
+        assert!(needs_autoname(&placeholder).await);
+
+        let empty = tmp.path().join("b");
+        fs::create_dir_all(&empty).await.unwrap();
+        write_meta(&empty, "   ").await;
+        assert!(needs_autoname(&empty).await);
+
+        let named = tmp.path().join("c");
+        fs::create_dir_all(&named).await.unwrap();
+        write_meta(&named, "Phone Stand").await;
+        assert!(!needs_autoname(&named).await);
+
+        // Missing project.json → not a project we should title.
+        let bare = tmp.path().join("d");
+        fs::create_dir_all(&bare).await.unwrap();
+        assert!(!needs_autoname(&bare).await);
+    }
+
+    #[tokio::test]
+    async fn set_name_if_placeholder_writes_then_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("proj");
+        fs::create_dir_all(&dir).await.unwrap();
+        write_meta(&dir, PLACEHOLDER_PROJECT_NAME).await;
+
+        // First write upgrades the placeholder and persists.
+        assert!(set_name_if_placeholder(&dir, "  Phone Stand  ").await);
+        let persisted: StoredProjectMeta =
+            serde_json::from_slice(&fs::read(dir.join("project.json")).await.unwrap()).unwrap();
+        assert_eq!(persisted.name, "Phone Stand");
+        assert_eq!(persisted.created_at, 1, "created_at preserved");
+
+        // A real name is never clobbered, and an empty title is rejected.
+        assert!(!set_name_if_placeholder(&dir, "Wall Hook").await);
+        assert!(!set_name_if_placeholder(&dir, "   ").await);
+        let after: StoredProjectMeta =
+            serde_json::from_slice(&fs::read(dir.join("project.json")).await.unwrap()).unwrap();
+        assert_eq!(after.name, "Phone Stand", "name held after no-op writes");
     }
 
     #[test]

@@ -1,0 +1,85 @@
+name: release
+
+# Tag-triggered signed release with auto-update artifacts.
+#
+# Pushing a tag like `v0.1.1` builds Panda on every target platform, signs each
+# bundle with the updater key, and publishes a GitHub Release containing the
+# installers plus `latest.json`. Installed apps poll
+# `releases/latest/download/latest.json` (see tauri.conf.json → plugins.updater)
+# and auto-update to the new signed bundle.
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   TAURI_SIGNING_PRIVATE_KEY           contents of the updater private key
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password ("" if generated without one)
+# GITHUB_TOKEN is provided automatically and needs `contents: write` (below).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest # Apple Silicon
+            target: aarch64-apple-darwin
+          - platform: macos-13 # Intel
+            target: x86_64-apple-darwin
+          # Windows/Linux are intentionally omitted for now: their sidecar build
+          # scripts (build-python/slicer-sidecar.sh) are macOS-only and fail on
+          # those runners (e.g. `shasum` missing in Windows git-bash). Re-add the
+          # ubuntu-22.04 / windows-latest entries once those scripts are ported.
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: viewer/package-lock.json
+
+      - name: Install viewer dependencies
+        run: npm --prefix viewer ci
+
+      # Sidecars (~1 GB): bundled CPython + OrcaSlicer that the .app ships.
+      # NOTE: the build scripts are currently exercised on macOS only; the
+      # Windows/Linux download branches are sketched but untested upstream and
+      # may need per-platform fixes before these jobs go green.
+      - name: Build bundled sidecars
+        shell: bash
+        run: scripts/build/build-all-sidecars.sh
+
+      - name: Build, sign, and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: "Panda ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          args: --target ${{ matrix.target }}

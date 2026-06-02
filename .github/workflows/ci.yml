@@ -1,0 +1,86 @@
+name: ci
+
+# Fast feedback on every push / PR: the three independent test gates from
+# AGENTS.md (cadpy, viewer, Tauri). No sidecars or bundling here — that lives in
+# release.yml. Jobs run in parallel and only the relevant toolchain is set up.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cadpy:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Mirror the sidecar dep set (scripts/build/build-python-sidecar.sh):
+      # cadpy's pyproject deps + cadquery + pillow, which the tests import
+      # directly. pytest is the only CI-only extra.
+      - name: Install cadpy + test deps
+        run: pip install -e ./packages/cadpy cadquery pillow pytest
+      - name: pytest
+        run: cd packages/cadpy && python -m pytest
+
+  viewer:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: viewer/package-lock.json
+      - run: npm --prefix viewer ci
+      - name: test
+        run: npm --prefix viewer test
+      - name: build
+        run: npm --prefix viewer run build
+
+  tauri:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      # The crate compiles `tauri::generate_context!()`, which embeds the
+      # frontend at `frontendDist` (../../viewer/dist) — build it so the macro
+      # resolves. `cargo test` doesn't run beforeBuildCommand, so do it here.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: viewer/package-lock.json
+      - name: Build viewer (for generate_context!)
+        run: npm --prefix viewer ci && npm --prefix viewer run build
+
+      # tauri-build verifies each `externalBin` exists for the host target
+      # triple. The real sidecars are ~1 GB and unnecessary for unit tests —
+      # the tests never exec them — so drop in empty stubs to satisfy the check.
+      - name: Stub sidecars for the host triple
+        run: |
+          triple=$(rustc -vV | awk '/host:/{print $2}')
+          install -m755 /dev/null "desktop/src-tauri/resources/python/bin/python3-$triple"
+          install -m755 /dev/null "desktop/src-tauri/resources/slicer/orcaslicer-$triple"
+
+      - name: cargo test
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml

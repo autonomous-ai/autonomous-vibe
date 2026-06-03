@@ -1,20 +1,22 @@
 name: release
 
-# Tag-triggered release with auto-update artifacts (no Apple code signing).
+# Tag-triggered signed release with auto-update artifacts.
 #
-# Pushing a tag like `v0.1.1` builds Panda on every target platform, signs the
-# updater manifest with the minisign updater key, and publishes a GitHub Release
-# containing the installers plus `latest.json`. Installed apps poll
+# Pushing a tag like `v0.1.1` builds Panda on every target platform, signs each
+# bundle with the Apple Developer ID identity (notarized + stapled) and the
+# updater key, and publishes a GitHub Release containing the installers plus
+# `latest.json`. Installed apps poll
 # `releases/latest/download/latest.json` (see tauri.conf.json → plugins.updater)
-# and auto-update to the new bundle.
-#
-# The bundles are NOT Apple-codesigned/notarized — macOS users clear Gatekeeper
-# manually on first launch (right-click → Open). The updater signature is
-# unrelated to Apple signing and is still required for auto-update to work.
+# and auto-update to the new signed bundle.
 #
 # Required repo secrets (Settings → Secrets and variables → Actions):
 #   TAURI_SIGNING_PRIVATE_KEY           contents of the updater private key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password ("" if generated without one)
+#   APPLE_CERTIFICATE                   base64 of the Developer ID .p12 (cert + key)
+#   APPLE_CERTIFICATE_PASSWORD          password used when exporting that .p12
+#   APPLE_SIGNING_IDENTITY             "Developer ID Application: … (TEAMID)"
+#   APPLE_ID / APPLE_PASSWORD          Apple ID + app-specific password (notarize)
+#   APPLE_TEAM_ID                      Apple Developer Team ID
 # GITHUB_TOKEN is provided automatically and needs `contents: write` (below).
 
 on:
@@ -92,6 +94,36 @@ jobs:
       - name: Install viewer dependencies
         run: npm --prefix viewer ci
 
+      # Reclaim disk on the macOS runners before the heavy build. GitHub's
+      # Apple-Silicon hosted runners ship only ~14 GB free (the roomy Intel
+      # macos-13 pool was retired). The notarization path tauri-action runs
+      # writes a full-size (~1 GB) temp .zip copy of the .app to upload to
+      # Apple, and `bundle_dmg.sh` then needs another ~1 GB for the read-write
+      # disk image it builds with `hdiutil create -srcfolder Panda.app`. On top
+      # of the ~1 GB sidecars baked into the bundle and the multi-GB Rust
+      # release target dir, that tips the runner into "No space left on device":
+      # `hdiutil create` aborts in ~8 s and tauri reports only the opaque
+      # "error running bundle_dmg.sh" (the script's own stderr is logged at
+      # debug level and swallowed unless --verbose, added below). Deleting the
+      # iOS/tvOS/watchOS Simulator runtimes and the non-active Xcode installs —
+      # none of which a mac desktop build needs — frees 20-40 GB. The active
+      # Xcode (codesign/notarytool/SetFile) is kept.
+      - name: Free up disk space (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -x
+          df -h /
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/* || true
+          sudo rm -rf "${HOME}/Library/Developer/CoreSimulator/Caches/"* || true
+          sudo xcrun simctl delete all 2>/dev/null || true
+          active="$(xcode-select -p | sed 's:/Contents/Developer::')"
+          for app in /Applications/Xcode_*.app; do
+            [ "$app" = "$active" ] && continue
+            sudo rm -rf "$app" || true
+          done
+          df -h /
+
       # Sidecars (~1 GB): bundled CPython + OrcaSlicer that the .app ships.
       # NOTE: the build scripts are currently exercised on macOS only; the
       # Windows/Linux download branches are sketched but untested upstream and
@@ -108,13 +140,19 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Updater signing (minisign): signs latest.json so installed apps
-          # trust the update. This is the updater's own key, NOT Apple code
-          # signing — auto-update still requires it.
+          # trust the update. Separate from Apple signing below.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # NOTE: Apple Developer ID code signing + notarization is intentionally
-          # disabled. The release ships unsigned; macOS users clear Gatekeeper
-          # manually (right-click → Open, or `xattr -dr com.apple.quarantine`).
+          # Apple Developer ID code signing + notarization. tauri imports the
+          # base64 .p12 into a temp keychain, signs the .app/.dmg with the
+          # identity, then notarizes + staples via the Apple ID app-specific
+          # password. Without these, downloads hit Gatekeeper's "app is damaged".
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: desktop
           tagName: ${{ github.ref_name }}
@@ -122,11 +160,13 @@ jobs:
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
-          # Per-arch bundle set (see matrix): arm64 builds app+dmg, Intel builds
-          # app-only to dodge the DMG/Finder hang. `createUpdaterArtifacts` (in
+          # Per-arch bundle set (see matrix). `createUpdaterArtifacts` (in
           # tauri.conf.json) still emits the signed .app.tar.gz + .sig that the
           # auto-updater needs, regardless of whether dmg is built.
-          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+          # `--verbose` raises tauri's log level to debug so the bundler echoes
+          # bundle_dmg.sh's own stdout/stderr (otherwise swallowed) — essential
+          # for diagnosing any future DMG packaging failure.
+          args: --verbose --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
   # Rename the human-facing installers on the draft release to plain-language
   # names (users can't tell "aarch64" from "x64"). Runs AFTER every build job so

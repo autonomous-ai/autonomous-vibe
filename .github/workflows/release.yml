@@ -36,14 +36,13 @@ jobs:
           - platform: macos-13 # Intel
             target: x86_64-apple-darwin
             bundles: app
-          # Windows: x64 installers. `nsis` is the auto-updater target (Tauri's
-          # updater on Windows consumes the NSIS setup .exe + its .sig); `msi`
-          # is the WiX MSI for enterprise/manual installs. The sidecar scripts
-          # are now Git-Bash-portable (sha256/mirror_dir/unzip fallbacks), so
-          # this runs on windows-latest.
+          # Windows: x64 installer. `nsis` is the auto-updater target (Tauri's
+          # updater on Windows consumes the NSIS setup .exe + its .sig). The
+          # sidecar scripts are now Git-Bash-portable (sha256/mirror_dir/unzip
+          # fallbacks), so this runs on windows-latest.
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
-            bundles: nsis,msi
+            bundles: nsis
           # Linux is still omitted: the slicer/python sidecar download branches
           # there are sketched but untested. Re-add an ubuntu-22.04 entry once
           # those are exercised.

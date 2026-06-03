@@ -13,10 +13,13 @@ import {
   detachChatEventStream,
   dispatch,
   getChatState,
+  hydrateSession,
   resetChatStore,
   setProject,
   startTurn,
 } from "../../../store/chat.js";
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 function makeMockEvents() {
   const handlers = new Map();
@@ -128,6 +131,96 @@ test("cancelTurn invokes the transport with the current turn id", async () => {
     assert.equal(getChatState().turnInProgress, true);
     await cancelTurn();
     assert.deepEqual(cancels, ["t-7"]);
+  } finally {
+    restore();
+    resetChatStore();
+  }
+});
+
+test("setProject rehydrates history from the persisted session", async () => {
+  resetChatStore();
+  const calls = [];
+  const restore = __setTransportForTesting({
+    async chat_session_state(projectId) {
+      calls.push(projectId);
+      return {
+        sessionId: "s-1",
+        turnInProgress: false,
+        history: [
+          { role: "user", content: "make a cup", at: 1000 },
+          { role: "assistant", content: "Here is the plan.", at: 2000 },
+        ],
+      };
+    },
+  });
+  try {
+    setProject("proj-h");
+    await tick(); // hydration is fire-and-forget
+    assert.deepEqual(calls, ["proj-h"]);
+    const state = getChatState();
+    assert.equal(state.currentProjectId, "proj-h");
+    assert.equal(state.history.length, 2);
+    assert.equal(state.history[0].role, "user");
+    assert.equal(state.history[0].userText, "make a cup");
+    assert.equal(state.history[1].role, "assistant");
+    assert.equal(state.history[1].blocks[0].text, "Here is the plan.");
+  } finally {
+    restore();
+    resetChatStore();
+  }
+});
+
+test("setProject skips hydration when the project is unchanged or cleared", async () => {
+  resetChatStore();
+  const calls = [];
+  const restore = __setTransportForTesting({
+    async chat_session_state(projectId) {
+      calls.push(projectId);
+      return { sessionId: "s", turnInProgress: false, history: [] };
+    },
+  });
+  try {
+    setProject("proj-1");
+    await tick();
+    setProject("proj-1"); // same project → reducer no-op, no refetch
+    setProject(""); // clearing → no fetch
+    await tick();
+    assert.deepEqual(calls, ["proj-1"]);
+  } finally {
+    restore();
+    resetChatStore();
+  }
+});
+
+test("hydrateSession does not clobber a turn that started meanwhile", async () => {
+  resetChatStore();
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const restore = __setTransportForTesting({
+    async chat_session_state() {
+      await gate;
+      return {
+        sessionId: "s",
+        turnInProgress: false,
+        history: [{ role: "user", content: "stale", at: 1 }],
+      };
+    },
+    async chat_start_turn() {
+      return { turnId: "t-1" };
+    },
+  });
+  try {
+    setProject("proj-x"); // kicks off hydrateSession, blocked on the gate
+    await startTurn("new message"); // sets turnInProgress + a live user turn
+    release();
+    await tick();
+    const state = getChatState();
+    // Hydration must have bailed: the live turn stands, the stale row is gone.
+    assert.equal(state.turnInProgress, true);
+    assert.equal(state.history.length, 1);
+    assert.equal(state.history[0].userText, "new message");
   } finally {
     restore();
     resetChatStore();

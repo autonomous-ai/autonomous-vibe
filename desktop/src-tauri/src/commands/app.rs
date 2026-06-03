@@ -6,6 +6,7 @@ use crate::ipc::types::{
 };
 use crate::ipc::{IpcError, IpcResult};
 use crate::paths;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(not(target_os = "windows"))]
 use std::process::Stdio;
@@ -52,34 +53,35 @@ pub async fn app_prereq_check() -> IpcResult<PrereqCheck> {
 }
 
 fn detect_claude_cli() -> ClaudeCliStatus {
-    // 1. PATH lookup (works once lib::fix_path_from_shell has run).
-    // 2. Fallback: probe known install locations directly. Claude Code's
-    //    macOS installer puts the binary at ~/.local/bin/claude by default;
-    //    Homebrew users get /opt/homebrew/bin/claude; npm globals may end
-    //    up in ~/.npm-global/bin/claude.
-    let resolved = which::which("claude").ok().or_else(|| {
-        let home = std::env::var("HOME").ok().map(std::path::PathBuf::from)?;
-        let candidates = [
-            home.join(".local/bin/claude"),
-            home.join(".claude/local/claude"),
-            home.join(".npm-global/bin/claude"),
-            std::path::PathBuf::from("/opt/homebrew/bin/claude"),
-            std::path::PathBuf::from("/usr/local/bin/claude"),
-        ];
-        candidates.into_iter().find(|p| p.exists())
-    });
-
+    // Resolve `claude` exactly the way the chat driver does, so the
+    // onboarding gate and the turn driver never disagree. `resolve_claude`
+    // searches an *augmented* PATH that includes the usual user bin dirs
+    // (npm global on Windows / ~/.local/bin / Homebrew) regardless of the
+    // PATH the GUI process happened to inherit at launch — the bare
+    // `which::which("claude")` we used before only saw the inherited PATH,
+    // and its Unix-only fallback could never find a Windows npm install
+    // (`%APPDATA%\npm\claude.cmd`). See claude_driver::augmented_path.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let resolved = crate::commands::claude_driver::resolve_claude(&cwd);
     let found = resolved.is_some();
-    let version = resolved.as_ref().and_then(|p| {
-        Command::new(p)
-            .arg("--version")
-            .output()
-            .ok()
-            .and_then(|out| String::from_utf8(out.stdout).ok())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-    });
+    let version = resolved.as_deref().and_then(claude_version);
     ClaudeCliStatus { found, version }
+}
+
+/// Run `<claude> --version` and return the trimmed output, or `None` if it
+/// can't be executed. Detection treats only `found` as authoritative, so a
+/// failed probe just leaves the version blank — it never blocks onboarding.
+/// `path` is the resolved binary (an npm `claude.cmd` on Windows); std runs
+/// batch wrappers directly, so no `cmd /C` wrapper is needed — see
+/// `claude_driver::resolve_claude`.
+fn claude_version(path: &Path) -> Option<String> {
+    Command::new(path)
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 fn detect_python() -> PythonStatus {

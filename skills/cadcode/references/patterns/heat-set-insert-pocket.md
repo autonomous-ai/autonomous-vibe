@@ -17,62 +17,33 @@ to catch displaced plastic. Critically, the pocket diameter is the insert's
 *body* diameter (between the knurls), NOT the maximum knurl OD — the
 knurls themselves must bite into solid plastic.
 
-## CadQuery template
+## Use the helper
+
+`cadlib` owns the geometry — don't re-derive it. The helper cuts the
+body-diameter pocket plus the rim relief (the wider, shallow counterbore that
+catches the plastic the iron pushes upward) in one call:
 
 ```python
-import cadquery as cq
+from cadlib.mounting import add_heat_set_pocket
 
-# Common heat-set insert dimensions (Ruthex / standard M-series; pocket
-# diameter is the *body* of the insert, NOT the max-knurl OD).
-HEATSET_TABLE = {
-    "M2":   {"pocket_d": 3.2, "insert_len": 4.0, "relief_d": 4.0, "relief_h": 0.6},
-    "M2.5": {"pocket_d": 3.7, "insert_len": 4.0, "relief_d": 4.5, "relief_h": 0.6},
-    "M3":   {"pocket_d": 4.0, "insert_len": 5.7, "relief_d": 5.0, "relief_h": 0.6},
-    "M4":   {"pocket_d": 5.6, "insert_len": 8.1, "relief_d": 6.5, "relief_h": 0.6},
-    "M5":   {"pocket_d": 6.4, "insert_len": 9.5, "relief_d": 7.5, "relief_h": 0.6},
-}
-
-def make_heatset_pocket(part, p):
-    """Cut a heat-set insert pocket into ``part``. Caller positions ``part``
-    so the open face (where the iron enters) is the +Z face.
-
-    Required params on ``p``:
-      insert_size    -- "M2" | "M2.5" | "M3" | "M4" | "M5"
-      bottom_clear   -- extra depth past the insert length (typ 1-2 mm)
-      positions      -- list of (x, y) tuples for pocket centres
-    """
-    s = HEATSET_TABLE[p.insert_size]
-    pocket_depth = s["insert_len"] + p.bottom_clear
-
-    # Main pocket + rim relief in one call: cboreHole cuts the body-diameter
-    # pilot deeper than the insert (so it seats flush) AND a shallow rim
-    # counterbore that catches plastic the iron pushes upward.
-    part = (
-        part.faces(">Z").workplane()
-            .pushPoints(p.positions)
-            .cboreHole(
-                diameter=s["pocket_d"],
-                cboreDiameter=s["relief_d"],
-                cboreDepth=s["relief_h"],
-                depth=pocket_depth,
-            )
-    )
-
-    return part
+part = add_heat_set_pocket(
+    part,
+    positions=[(0, 0)],       # pocket centres in the open_face plane
+    insert_size="M3",         # key into HEATSET_TABLE
+    bottom_clearance=1.5,     # extra depth past the insert length (typ 1-2 mm)
+    open_face=">Z",           # face the iron enters from
+)
 ```
 
-## Insert dimension table (Ruthex / common knurled brass inserts)
+Insert dimensions (`pocket_d` body Ø, `insert_len`, plus the `relief_d` ×
+`relief_h` rim relief) live in `cadlib/tables.py::HEATSET_TABLE` (`M2`,
+`M2.5`, `M3`, `M4`, `M5`). `Read` that file for the exact numbers; the helper
+raises `ValueError` for an unknown `insert_size`.
 
-| Thread | Pocket Ø | Insert Len | Body OD | Knurl OD (≠ pocket Ø) |
-|--------|----------|------------|---------|------------------------|
-| M2     | 3.2 mm   | 4.0 mm     | 3.2 mm  | 3.4 mm                 |
-| M2.5   | 3.7 mm   | 4.0 mm     | 3.7 mm  | 4.0 mm                 |
-| M3     | 4.0 mm   | 5.7 mm     | 4.0 mm  | 4.6 mm                 |
-| M4     | 5.6 mm   | 8.1 mm     | 5.6 mm  | 6.3 mm                 |
-| M5     | 6.4 mm   | 9.5 mm     | 6.4 mm  | 7.1 mm                 |
-
-The pocket Ø is the body Ø (between knurls), NOT the max-knurl Ø — the
-knurls themselves bite INTO the plastic.
+The rim relief that older notes called "mandatory" is **now cut by the
+helper** — you no longer have to add it yourself. It pulls `relief_d` /
+`relief_h` straight from the table, so displaced plastic has somewhere to go
+and screw heads sit flat.
 
 ## Boss sizing around the pocket
 
@@ -92,24 +63,24 @@ the corner so the crack path is longer.
 
 ## Pitfalls
 
-- Pocket Ø too tight (used max-knurl Ø by mistake): insert won't go in
-  straight, ends up tilted, threads cock relative to the screw axis.
+- Pocket Ø ≠ knurl Ø. The pocket is the insert *body* diameter (between the
+  knurls); the knurls must bite INTO solid plastic. Use the max-knurl Ø by
+  mistake and the insert won't go in straight, ends up tilted, threads cock
+  relative to the screw axis. (The table's `pocket_d` is already the body Ø.)
 - Pocket Ø too loose: insert spins under torque, no thread engagement,
   whole part is scrap.
 - Pocket too shallow: insert sits proud of the surface, the mating lid
   won't close flat and clamps on the brass instead of the plastic.
-- No rim relief: displaced plastic mounds up around the insert, screw
-  heads sit on a bump and can't pull the joint tight.
 - Wall too thin around the boss: boss splits visibly when the insert is
   pressed in — usually a vertical crack along a layer line.
 - Top face print quality matters: the insert seats on the top layer, and
   if it's rough or stringy the insert tilts. Use 5+ top layers and turn
   on ironing if your slicer supports it.
-- Iron temperature too high: melts a halo of plastic around the insert
-  and the insert sinks too deep or droops sideways. Target 220-240 C for
-  PLA, 260-280 C for PETG.
-- ABS / PC: heat-sets work even better (higher glass transition gives a
-  stronger reflowed bond), but use 300-320 C.
+- Iron temperature by material: target 220-240 C for PLA, 260-280 C for
+  PETG, 300-320 C for ABS / PC. Too high and you melt a halo around the
+  insert so it sinks too deep or droops sideways. ABS / PC actually hold
+  heat-sets better — the higher glass transition gives a stronger reflowed
+  bond.
 - Don't put a heat-set insert in TPU or other flexible filament — there
   is no rigid plastic for the knurls to bite into, the insert just sinks
   and wallows.
@@ -117,5 +88,5 @@ the corner so the crack path is longer.
   with the iron on top of the insert, let it sink, re-seat with a flat
   surface (back of a caliper) pressing straight down.
 - Don't put pockets on a face that prints against the build plate unless
-  you flip the part — the open end of the pocket needs to be on a top
-  face for the iron to reach it cleanly.
+  you flip the part — set `open_face` so the open end of the pocket is on a
+  top face for the iron to reach it cleanly.

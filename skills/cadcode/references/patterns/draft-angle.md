@@ -1,28 +1,28 @@
 # draft-angle
 
-**Trigger:** load when the user mentions silicone mould, resin casting,
-moulded part, or when designing a stacking / nesting / press-release
-part. Also load when the user complains a tall wall is sticking in
-a pocket on disassembly.
+**Trigger:** load when designing a stacking / nesting part, a tapered
+press-release feature, or when the user complains a tall wall sticks in a
+pocket on disassembly. Also the place to look for the "how do I taper a wall
+in CadQuery" answer.
+
+> Scope: this is an FDM-printing reference. Mould-making (silicone / resin
+> casting), where draft is mandatory, is out of scope for Panda v1 — the
+> mechanics below transfer if you ever need it, but the defaults here are
+> tuned for printed parts.
 
 ## Why this exists (the mechanics)
 
-A perfectly vertical wall in a mould grips the mould as it cools —
-release requires force or destroys the part. A 1-3° draft turns the
-wall into a wedge, releasing cleanly. For FDM-printed templates that
-become silicone moulds, draft is mandatory. For pure FDM, draft helps
-with: (a) making a tall wall self-supporting up to one extra mm of
-overhang, (b) hiding visible layer steps on glossy materials, (c) easier
-separation of stacked / nested parts. 1° = ~17.5 mm horizontal per 1000
-mm vertical (rule of thumb: tan(1°) ≈ 0.0175).
+A 1–3° draft turns a vertical wall into a shallow wedge. For FDM that helps
+three ways: (a) a tall wall becomes self-supporting up to ~1 extra mm of
+overhang, (b) it hides visible layer steps on glossy materials, (c) stacked
+or nested parts separate cleanly instead of wedging. 1° = ~17.5 mm horizontal
+per 1000 mm vertical (rule of thumb: tan(1°) ≈ 0.0175).
 
 ## When to apply draft
 
 | Use case | Draft angle | Direction |
 |---|---|---|
-| Silicone mould master | 1–3° | outward from parting line |
-| Resin cast master | 2–3° | outward |
-| Stacking trays | 2° | walls taper inward toward bottom |
+| Stacking / nesting trays | 2° | walls taper inward toward bottom |
 | Press-fit pocket release | 0.5–1° | tapered inward (deeper = narrower) |
 | Cosmetic curve (hide steps) | 0.5° | either |
 | Pure-function FDM | none needed | — |
@@ -93,8 +93,6 @@ loft of two rectangles creates the drafted side walls automatically.)
 - Drafted walls have non-square corners → can interfere with mating
   parts designed flat. If your part mates with a flat-walled part, only
   apply draft to NON-MATING walls.
-- For silicone moulds: draft MUST go outward from the parting line on
-  both halves, or you can't release the cast.
 - Loft of two unequal rectangles makes flat trapezoidal walls; that's
   correct, but the corners are sharp 3D edges. Add fillets after loft
   if cosmetic.

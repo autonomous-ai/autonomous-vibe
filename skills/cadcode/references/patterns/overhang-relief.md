@@ -80,14 +80,18 @@ def teardrop_hole(part, diameter, depth, axis="x"):
 
 
 def bore_with_chamfered_top(part, diameter, depth, chamfer=None):
-    """A vertical-axis bore where the top edge has a chamfer that
+    """A vertical-axis bore where the top edge has a 45° chamfer that
     'opens' the mouth, making the print self-supporting at the rim.
 
-    ``chamfer`` defaults to the bore radius so the chamfer fully covers
-    the horizontal portion of the rim.
+    ``chamfer`` is the chamfer leg length. It MUST be smaller than the wall
+    of material around the bore mouth — a chamfer that reaches into the part
+    wall (or equals the bore radius) makes the operation fail with
+    ``StdFail_NotDone``. Default is a conservative ``min(1.0, r/2)`` mm; raise
+    it (up to ~the wall thickness) for a bigger lead-in. For a fully
+    self-supporting *through* hole, prefer ``teardrop_hole`` instead.
     """
     r = diameter / 2
-    c = chamfer if chamfer is not None else r
+    c = chamfer if chamfer is not None else min(1.0, r / 2)
     return (
         part.faces(">Z").workplane()
         .hole(diameter, depth)

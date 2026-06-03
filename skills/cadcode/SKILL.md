@@ -572,7 +572,7 @@ language to the trigger column and `Read` the corresponding file.
 | wall thickness, nozzle width, "how thick should X be" | `references/patterns/wall-thickness-rules.md` |
 | print orientation, layer lines, "how should I print this" | `references/patterns/print-orientation.md` |
 | overhangs, supports, teardrop hole, bridging | `references/patterns/overhang-relief.md` |
-| draft angle, mould master, silicone mould, taper | `references/patterns/draft-angle.md` |
+| draft angle, taper a wall, stacking/nesting parts, tapered release | `references/patterns/draft-angle.md` |
 | magnet, magnetic closure, N42 / N52, neodymium | `references/patterns/magnet-pocket.md` |
 | bearing, 608 / 688 / 6800, skate bearing, pulley | `references/patterns/bearing-seat.md` |
 | cable channel, wire routing, strain relief, USB cable | `references/patterns/cable-channel.md` |

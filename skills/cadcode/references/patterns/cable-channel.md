@@ -12,124 +12,98 @@ surface holds the cable by friction (if sized right) or with a flexible
 snap-over cap. Strain relief is the spot where the cable jacket is
 gripped — without it, repeated flexing at the channel mouth fatigues
 the conductors and the wire breaks inside the jacket invisibly. Common
-cable diameters: ribbon ~3 mm, USB-A ~4.5 mm, USB-C ~3.2 mm, micro-USB
-~3 mm, JST-XH 2-pin ~2.5 mm, mains ~6 mm, ethernet (cat6) ~6.5 mm.
+cable diameters: ribbon ~3 mm, USB-A ~4.5 mm, USB-C ~4 mm, micro-USB
+~3.5 mm, JST-XH 2-pin ~2.5 mm, mains ~6 mm, ethernet (cat6) ~6.5 mm.
 
-## CadQuery template
+## Use the helper
+
+`cadlib` owns the geometry — don't re-derive it. The helper cuts a
+straight, open-top U-channel along the centerline:
+
+```python
+from cadlib.cutouts import add_cable_channel
+
+part = add_cable_channel(
+    part,
+    centerline=[(-20, 0), (20, 0)],   # STRAIGHT two-point centerline only
+    cable_diameter=4.5,               # jacket diameter (USB-A cable)
+    channel_depth=None,               # None → cable_diameter * 0.9
+    channel_clearance=0.4,            # slip fit; near 0 for press-retain
+    open_face=">Z",                   # open top — keep facing up at print time
+)
+```
+
+Channel width is computed as `cable_diameter + channel_clearance`; depth
+defaults to `cable_diameter * 0.9`. Common jacket diameters live in
+`cadlib/tables.py::CABLE_TABLE` (`JST-XH-2`, `ribbon-flat`, `USB-A-cable`,
+`USB-C-cable`, `micro-USB-cable`, `ethernet-cable`, `mains-2c`, etc.) —
+`Read` that file and pass the number through `cable_diameter`.
+
+> **Connector vs cable:** USB-A / USB-C / micro-USB / RJ45 connectors are
+> RECTANGULAR with a height ≪ width. A round channel sized for the cable
+> will NOT fit the connector. Size for whichever piece passes through the
+> channel; route the connector entry separately.
+
+> **Straight only:** the helper raises `NotImplementedError` for a
+> centerline with more than two points. For curved or multi-segment
+> routing see **Beyond the helper** below.
+
+## Closing the channel
+
+The helper cuts an open-top channel (no lid). Three ways to retain the cable:
+
+1. **Open channel + press-fit**: works for cables <= 4 mm; cable snaps
+   over the lip. Lip is 0.4 mm thick at the rim. Use `channel_clearance`
+   near 0 to retain by friction.
+2. **Snap-on printed lid**: thin separate lid that clips over the
+   channel via a cantilever snap each ~30 mm. See snap-fit-cantilever.md.
+3. **Hot glue / silicone**: pour over the cable. Not parametric but
+   common.
+
+## Beyond the helper
+
+**Curved / multi-segment routing is not in the helper yet** — it is
+straight-only. For an L-bend or a polyline route, write a
+`custom_cable_channel()` function (candidate to promote): sweep a rect
+profile along the polyline. Keep corner radius generous (see Pitfalls).
 
 ```python
 import cadquery as cq
 
-# Common cable / wire jacket diameters (mm).
-CABLE_TABLE = {
-    "JST-XH-2":         2.5,
-    "JST-XH-4":         3.5,
-    "ribbon-flat":      3.0,
-    "dupont":           1.0,
-    "USB-A-cable":      4.5,
-    "USB-A-connector":  4.5,    # height of plug shell (width 12 mm — rectangular, see note)
-    "USB-C-cable":      4.0,    # was 3.2 — most USB-C charging cables are 3.5–4.5 mm
-    "USB-C-connector":  3.0,    # plug shell height (width 9 mm — rectangular)
-    "micro-USB-cable":  3.5,    # was 3.0
-    "DC-barrel":        3.5,
-    "ethernet-cable":   6.0,    # cat6 jacket
-    "ethernet-boot":    9.0,    # the rubber RJ45 boot — what actually has to pass through
-    "mains-2c":         6.0,
-}
-
-def make_cable_channel(part, p):
-    """Cut a U-shaped cable channel into the surface of ``part``.
-    Caller positions so the open top of the channel is at +Z.
-
-    Required params (mm):
-      cable_id        — key into CABLE_TABLE or a numeric diameter
-      channel_path    — list of (x, y) points forming the centreline
-      channel_depth   — depth of the U (>= cable_d * 0.7 to retain)
-      channel_width   — width of the U (cable_d + 0.4 for slip, cable_d for press)
-      strain_relief   — True/False — add narrowed grippy section at each end
+def custom_cable_channel(part, *, centerline, cable_diameter, channel_clearance=0.4, channel_depth=None):
+    """Curved cable channel — sweep a rect profile along a polyline.
+    Not in cadlib; the cadlib helper handles only straight runs.
     """
-    d = CABLE_TABLE[p.cable_id] if isinstance(p.cable_id, str) else p.cable_id
-    w = p.channel_width
-    depth = p.channel_depth
-
-    # Straight run — single rect cut from the top face.
-    if len(p.channel_path) == 2:
-        (x0, y0), (x1, y1) = p.channel_path
-        length = ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5
-        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-        part = (
-            part.faces(">Z").workplane()
-                .center(cx, cy)
-                .rect(length, w)
-                .cutBlind(-depth)
-        )
-        return part
-
-    # Curved / multi-segment run — sweep a rect profile along the polyline.
-    path = cq.Workplane("XY").polyline(p.channel_path)
+    w = cable_diameter + channel_clearance
+    depth = channel_depth if channel_depth is not None else cable_diameter * 0.9
+    path = cq.Workplane("XY").polyline(centerline)
     profile = cq.Workplane("YZ").center(0, -depth / 2).rect(w, depth)
     cutter = profile.sweep(path)
     return part.cut(cutter)
 ```
 
-(Real CadQuery APIs. The robust approach: `.polyline([...]).sweep(profile)`
-or for straight runs `.rect(L, w).cutBlind(-depth)`.)
-
-> **Connector vs cable:** USB-A / USB-C / micro-USB / RJ45 connectors are RECTANGULAR with a height ≪ width. A round channel that fits the cable will NOT fit the connector. Size for whichever piece is supposed to pass through the channel; route the connector entry separately.
-
-## Channel sizing
-
-| Cable type | Channel width | Channel depth | Notes |
-|---|---|---|---|
-| USB-A cable | 4.9 mm (4.5 + 0.4 clearance) | 4.5 mm | full depth, snap-on lid |
-| USB-C cable | 4.4 mm | 4.0 mm | full depth, snap-on lid |
-| micro-USB cable | 3.9 mm | 3.5 mm | snug |
-| ribbon (4-wire) | 3.4 mm | 1.5 mm | shallow ok; ribbon is flat |
-| ethernet (cat6) cable | 6.5 mm | 6.0 mm | full depth, lid required |
-| ethernet RJ45 boot | 9.5 mm | 9.0 mm | size for the boot if the plug passes through |
-| mains 2-conductor | 6.4 mm | 6.0 mm | full depth, lid required + clamp |
-| JST-XH 2-pin | 2.9 mm | 2.5 mm | open channel ok |
-| dupont jumpers | 1.4 mm | 1.0 mm | tight; press fit retains |
-
-## Strain relief
-
-At the entry / exit, narrow the channel to ~80% of nominal width over a
-3 mm stretch. The cable jacket squeezes here, taking strain off the
-conductors. CadQuery: cut the main channel full-width, then add small
-pinch bumps on each side of the entry.
+**Strain relief is also not in cadlib.** At each entry/exit, narrow the
+channel to ~80% of nominal width over a ~3 mm stretch so the jacket
+squeezes and takes strain off the conductors. Add two short pinch bumps
+straddling the channel mouth:
 
 ```python
-def add_strain_relief(part, p):
-    """Narrow each end of the channel by adding two pinch bumps.
-    Bumps are short cylinders straddling the channel entry; the cable
-    jacket deforms slightly as it passes between them.
+def custom_strain_relief(part, *, centerline, channel_width, channel_depth):
+    """Narrow each channel end with two pinch bumps the jacket deforms past.
+    Not in cadlib — candidate to promote.
     """
-    d = CABLE_TABLE[p.cable_id] if isinstance(p.cable_id, str) else p.cable_id
-    pinch_r = 1.0                       # 2 mm diameter bumps
-    offset  = (p.channel_width / 2)     # bump centres sit at channel wall
-    h       = p.channel_depth
-
-    for (x, y) in (p.channel_path[0], p.channel_path[-1]):
+    pinch_r = 1.0                    # 2 mm diameter bumps
+    offset  = channel_width / 2      # bump centres at the channel wall
+    for (x, y) in (centerline[0], centerline[-1]):
         for side in (+1, -1):
             part = (
                 part.faces(">Z").workplane()
                     .center(x, y + side * offset)
                     .circle(pinch_r)
-                    .extrude(h)
+                    .extrude(channel_depth)
             )
     return part
 ```
-
-## Closing the channel
-
-Three options:
-
-1. **Open channel + press-fit**: works for cables <= 4 mm; cable snaps
-   over the lip. Lip is 0.4 mm thick at the rim.
-2. **Snap-on printed lid**: thin separate lid that clips over the
-   channel via a cantilever snap each ~30 mm. See snap-fit-cantilever.md.
-3. **Hot glue / silicone**: pour over the cable. Not parametric but
-   common.
 
 ## Pitfalls
 
@@ -137,18 +111,22 @@ Three options:
 - Channel too wide: cable rattles, no strain relief — worse than nothing.
 - No strain relief: cable flexes at the same point every time; conductor
   cracks invisibly inside the jacket after 100-1000 cycles. The user
-  thinks the cable is fine until it stops working.
+  thinks the cable is fine until it stops working. (Strain relief is not
+  in the helper — add it with `custom_strain_relief()` above.)
 - Sharp 90 deg corners in the channel: stress concentrator on the cable.
   Use a turning radius >= 3x cable diameter (e.g., a USB-C cable needs
-  >=10 mm corner radius).
+  >=10 mm corner radius). The straight helper sidesteps this; a curved
+  `custom_cable_channel()` must keep the radius generous.
 - Channel routed past a heat source (motor, regulator) without
   insulation: cable jacket melts. Keep >= 3 mm from hot components or
   route around.
 - Print orientation: channels printed with the open top facing UP have
   perfect surface finish on the channel floor (bed side); printed
-  upside-down they'll be rough and the cable wears. Keep channels open-up.
+  upside-down they'll be rough and the cable wears. Keep channels open-up
+  (`open_face=">Z"` and printed that way up).
 - Bridging the channel: if you intend to print a roof over the channel
   (closed conduit), span > 5 mm needs supports or the roof sags into
   the cable.
 - Don't cut a circular cable hole exactly the cable diameter — cable
-  jacket has compliance + thermal expansion. Add 0.4 mm clearance.
+  jacket has compliance + thermal expansion. Add 0.4 mm clearance
+  (the helper's `channel_clearance` default).

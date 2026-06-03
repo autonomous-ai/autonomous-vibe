@@ -9,12 +9,12 @@ threads, snap-fits, or anything load-bearing.
 
 FDM prints in horizontal layers (XY) stacked vertically (Z). Strength is
 ~3x higher across layers (X/Y) than between layers (Z) — Z is the bond
-between extruded layers and pulls apart first. Anything that bridges
-horizontally over ~5 mm needs support, and anything overhanging more than
-~45 deg from vertical sags. Top surfaces are visibly rougher than bottom
-(build-plate) surfaces. DESIGN the part in CadQuery so when sliced with
-+Z up, layer lines run PERPENDICULAR to the load AND most surfaces print
-self-supporting.
+between extruded layers and pulls apart first. Overhangs and bridges also
+constrain orientation (see `overhang-relief.md` for the 45° self-support
+rule and bridging-span limits). Top surfaces are visibly rougher than
+bottom (build-plate) surfaces. DESIGN the part in CadQuery so when sliced
+with +Z up, layer lines run PERPENDICULAR to the load AND most surfaces
+print self-supporting.
 
 ## The orientation rules
 
@@ -24,13 +24,13 @@ self-supporting.
 2. **Threaded holes / press-fits**: orient the hole's axis along Z. Z
    gives the roundest holes (XY have stair-stepping; Z is layer-direction
    round).
-3. **Overhangs > 45 deg**: rotate the part so the overhang faces UP, not
-   DOWN. Slicers can do 45 deg unsupported but not much more.
+3. **Overhangs / bridges**: rotate the part so overhangs face UP, not
+   DOWN, and so open spans stay short. The 45° rule and the bridging-span
+   limit live in `overhang-relief.md`; here it's a reason to reorient
+   before you reach for supports.
 4. **Cosmetic face down**: the build-plate side is glass-smooth. Put the
    user-visible face DOWN. (Trade-off: bottom face is sometimes also the
    one that needs holes, ribs, etc. — pick carefully.)
-5. **Bridging**: open spans > 5 mm need support OR clever bridging
-   geometry. Reorient OR add lattice OR add a sacrificial pillar.
 
 ## CadQuery template (orient before exporting)
 
@@ -97,8 +97,6 @@ def orient_for_printing(part, p):
 - Cosmetic vs functional trade-off: sometimes the cosmetic face is the
   one that needs supports. Add the supports or accept the rough texture —
   don't silently sacrifice strength to get a smooth top.
-- Bridging > 10 mm in PETG fails (PETG droops more than PLA). Reorient
-  or redesign the hole as an angled keyhole / teardrop.
 - Don't orient AFTER finishing the geometry — bake the orientation into
   the design from the start. Other patterns (cantilever reliefs, rib
   stiffeners, hinge axes) reference axes; rotating last invalidates

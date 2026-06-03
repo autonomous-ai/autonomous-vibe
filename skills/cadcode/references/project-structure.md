@@ -1,5 +1,8 @@
 # Project structure
 
+SKILL.md covers the canonical layout and the project rules; this file adds the
+decision table and editing discipline.
+
 Load this when the user asks for any non-trivial part — multi-part
 assembly, more than ~5 features, anything that wants to be tweaked over
 time.
@@ -16,159 +19,21 @@ time.
 When in doubt, prefer the project. The edit affordances pay off after
 the first iteration.
 
-## Canonical layout
+(The canonical project layout and the project-format rules — dimensions in
+``params.py``, one file per part, features as functions, assemblies position
+not deform, ``validation.py`` runs first — live in SKILL.md under "Treat the
+design as a project". Don't restate them; the items below are the parts that
+file doesn't carry.)
 
-```
-<project>/
-├── spec.md              English design intent — read FIRST
-├── params.py            dataclass with ALL numeric dimensions
-├── validation.py        assert-style printability checks
-├── main.py              entrypoint — sets `result` for the runner
-├── parts/
-│   ├── __init__.py
-│   ├── base.py          one file per physical part
-│   └── cover.py
-├── features/            optional — reusable feature functions
-│   └── __init__.py
-└── assemblies/
-    ├── __init__.py
-    └── product.py       positioning + union of parts
-```
+## Entry point
 
-A working template lives at
-``~/.claude/skills/cadcode/templates/project_skeleton/``. Copy it to the
-user's workspace as a starting point, rename the project dir, edit.
+``main.py`` MUST define ``gen_step()`` returning the shape (legacy: a
+module-level ``result`` still works). The runner calls ``gen_step()`` and
+exports STL + STEP + metadata from what it returns. Don't write files inside
+``main.py``; just return the shape (a ``cq.Workplane`` / ``cq.Shape`` /
+``cq.Assembly``, or an envelope ``dict``).
 
-## The seven rules
-
-### 1. All dimensions in ``params.py``, nowhere else
-
-```python
-# params.py — the single source of truth for numbers
-from dataclasses import dataclass
-
-@dataclass
-class Params:
-    width: float = 120.0
-    depth: float = 80.0
-    height: float = 35.0
-    wall: float = 3.0
-    fillet_radius: float = 1.5
-    screw_diameter: float = 3.2
-    screw_boss_diameter: float = 8.0
-    screw_margin: float = 10.0
-    lid_gap: float = 0.4
-```
-
-Then geometry reads from ``p`` only:
-
-```python
-# Bad — magic numbers, can't tweak from one place
-.box(120, 80, 35).shell(-3)
-
-# Good — every dimension is named, edit once in params.py
-.box(p.width, p.depth, p.height).shell(-p.wall)
-```
-
-The agent's job, when the user says "make the wall 2mm thicker", is to
-edit `params.py` ONLY. Geometry files don't change.
-
-### 2. One file per part
-
-```python
-# parts/base.py
-import cadquery as cq
-from params import Params
-
-def make_base(p: Params) -> cq.Workplane:
-    part = _outer_shell(p)
-    part = _hollow_inside(part, p)
-    part = _add_screw_bosses(part, p)
-    return part
-
-def _outer_shell(p): ...
-def _hollow_inside(part, p): ...
-def _add_screw_bosses(part, p): ...
-```
-
-Each ``make_<thing>`` returns a Workplane in the part's *local* frame —
-do not call ``.translate()`` for assembly position inside a part file.
-Positioning is the assembly's job.
-
-### 3. Features are functions, composed in a pipeline
-
-```python
-def make_part(p: Params) -> cq.Workplane:
-    part = _outer_shell(p)
-    for feature in (
-        _hollow_inside,
-        _add_screw_bosses,
-        _add_usb_cutout,
-        _add_vent_slots,
-        _add_label,
-        _apply_fillets,
-    ):
-        part = feature(part, p)
-    return part
-```
-
-Each feature: ``(part, p) -> part``. Pure, composable, easy to reorder.
-
-Name features by intent: ``add_left_usb_c_cutout``, ``apply_corner_fillets``,
-``mirror_to_right_side``. Not ``thing1``, ``fix_hole``, ``helper``.
-
-### 4. Assemblies position, never deform
-
-```python
-# assemblies/product.py
-import cadquery as cq
-from params import Params
-from parts.base import make_base
-from parts.cover import make_cover
-
-def make_assembly(p: Params) -> cq.Workplane:
-    base = make_base(p)
-    cover = make_cover(p).translate((0, 0, p.height + p.lid_gap))
-    return base.union(cover)
-```
-
-Translations, rotations, mirrors are fair game here. Editing a part's
-geometry from the assembly is NOT — go fix the part file.
-
-### 5. ``validation.py`` runs first
-
-```python
-# validation.py
-from params import Params
-
-def validate_params(p: Params) -> None:
-    assert p.wall >= 1.6, f"wall too thin for FDM: {p.wall}"
-    assert p.fillet_radius < p.wall, "fillet would erode wall"
-    assert p.screw_margin > p.screw_boss_diameter / 2, "screw boss off the edge"
-```
-
-Then in ``main.py``:
-
-```python
-from params import Params
-from validation import validate_params
-from assemblies.product import make_assembly
-
-p = Params()
-validate_params(p)
-result = make_assembly(p)
-```
-
-Failing validation is a feature. Better to fail with a useful message
-than render a model that's unprintable.
-
-### 6. The runner reads ``result``
-
-``main.py`` MUST end with ``result = <a Workplane or compound>``. The
-runner reads this name and exports STL + STEP + PNG. Don't return; don't
-write files inside ``main.py``; just assign.
-
-### 7. Stable, intent-aligned names
+## Stable, intent-aligned names
 
 Names are an editing API. The agent searches by intent:
 
@@ -183,6 +48,9 @@ thing1(part, p)
 modify(part, p)
 helper2(part, p)
 ```
+
+Name features by intent: ``add_left_usb_c_cutout``, ``apply_corner_fillets``,
+``mirror_to_right_side``. Not ``thing1``, ``fix_hole``, ``helper``.
 
 ## Editing rules for the agent
 
@@ -202,7 +70,7 @@ When the user asks for a change:
 6. **Different material / printer** → edit ``validation.py`` constants
    (``min_wall``, ``min_overhang_angle``, etc.).
 
-After any edit, run ``scripts/cad <project_dir>/`` and Read the PNG.
+After any edit, run ``scripts/cad <project_dir>/`` and inspect the STL.
 The loop applies the same way — project mode doesn't change it.
 
 ## What the agent should AVOID

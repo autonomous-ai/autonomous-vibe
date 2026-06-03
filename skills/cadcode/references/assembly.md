@@ -6,8 +6,8 @@ wheels, PCB + enclosure, body + button + dial. Anything the user prints
 as multiple pieces and assembles after.
 
 For a single-piece print (one solid that comes off the bed in one go), do
-NOT use Assembly — just `.union()` everything into a single `result`.
-Assembly is for parts that should ship as separate STLs.
+NOT use Assembly — just `.union()` everything into a single solid and return
+it from `gen_step()`. Assembly is for parts that should ship as separate solids.
 
 ## Why `cq.Assembly`, not `union` for these
 
@@ -65,39 +65,37 @@ def make_assembly(p):
     )
     return assy
 
-# --- Required runner contract + per-part exports ---
+# --- Entry point: return the Assembly straight from gen_step() ---
 
-p = Params()
-assy = make_assembly(p)
-
-# scripts/cad reads `result` and only knows how to render a Workplane.
-# Hand it the assembled view as a single compound so the preview PNG and
-# the canonical STL show the product as assembled.
-result = cq.Workplane().add(assy.toCompound())
-
-# scripts/cad does NOT auto-split Assemblies into per-part STLs. Export
-# each part to its own STL yourself, in the part-local frame (no Location),
-# so the user can drop them straight into a slicer.
-import os
-out_dir = os.path.dirname(__file__)
-cq.exporters.export(make_base(p), os.path.join(out_dir, "base.stl"))
-cq.exporters.export(make_lid(p),  os.path.join(out_dir, "lid.stl"))
-# Assembled STEP (preserves the placement metadata for FreeCAD / Fusion):
-assy.save(os.path.join(out_dir, "assembly.step"))
+def gen_step():
+    """cadpy ingests a cq.Assembly natively — no compound, no manual
+    export. It walks the named children into the STEP (each part keeps its
+    name + color + placement) and meshes the assembled scene to the STL."""
+    return make_assembly(Params())
 ```
 
-What you actually get on disk after `scripts/cad`:
+Do **not** flatten the Assembly with `result = cq.Workplane().add(assy.toCompound())`,
+and do **not** hand-export per-part STLs with `cq.exporters` — `import os` /
+file writes are blocked by the sandbox, and they are unnecessary: returning the
+`cq.Assembly` (or a `{"children": [...]}` envelope / a `list` of parts) is the
+supported contract (see `docs/panda-interfaces.md` §1).
 
-- `<project>.stl` — assembled view (good for sanity-check preview, NOT for
-  printing the lid + base together — they're fused at this stage).
-- `<project>.png` — assembled preview render.
-- `<project>.step` — the runner's STEP of the fused compound.
-- `base.stl`, `lid.stl` — your per-part exports, **these are what the
-  user prints**.
-- `assembly.step` — your separate assembly STEP with per-part metadata.
+What you get on disk after `scripts/cad`:
 
-Tell the user in your handoff which STLs to print, not the assembled
-preview STL.
+- `<project>.step` — **the archival deliverable.** Each part is preserved as
+  its own named, colored solid (XCAF labels), so it opens in FreeCAD / Fusion /
+  the slicer as separable bodies — not one fused lump.
+- `<project>.stl` — the assembled scene as a single mesh: the viewer's preview
+  and the printable mesh. cadpy writes **one** STL (the whole scene), not one
+  per part.
+- `<project>.step.json` — source hash, `is_solid`, `volume_mm3`, mesh tolerances.
+
+Because the STL is the *assembled* scene, parts stacked in assembled position
+(lid on top of base) are not laid out for printing. If the user needs each part
+on the bed, either (a) tell them to separate the bodies from the STEP / split
+the STL in their slicer, or (b) build a flat **print-layout** assembly that
+places the parts side-by-side on `Z=0` instead of in assembled position, and
+hand that off as the printable file.
 
 ## `cq.Location` placement
 

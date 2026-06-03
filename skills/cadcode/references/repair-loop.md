@@ -42,7 +42,8 @@ Other common causes:
 
 - Syntax error (typo, unbalanced paren).
 - Calling `.val()` on something that's not a `Workplane`.
-- Forgetting `result = ...` at module scope. **Required.**
+- Forgetting the entry point: every file must define `gen_step()` at module
+  scope (or, for a trivial script, assign a module-level `result`). **Required.**
 - Using `from cadquery import *` — fine, but you still need to use the
   fluent API (`cq.Workplane(...)` style).
 

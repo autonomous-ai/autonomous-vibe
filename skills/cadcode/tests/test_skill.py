@@ -265,12 +265,37 @@ PATTERN_NAMES = [
 ]
 
 
+# Patterns whose geometry is owned by a `cadlib` helper. Their docs must point
+# the model AT the helper (the package is the source of truth — SKILL.md), not
+# ship a copy-paste reimplementation.
+HELPER_BACKED_PATTERNS = {
+    "snap-fit-cantilever",
+    "press-fit-pocket",
+    "dovetail-slide",
+    "screw-boss",
+    "heat-set-insert-pocket",
+    "nut-trap",
+    "rib-stiffener",
+    "magnet-pocket",
+    "bearing-seat",
+    "cable-channel",
+}
+# Patterns with no helper: the doc IS the deliverable, so it carries a real
+# CadQuery template. `fillet-stress-relief` is the lone knowledge-only doc — it
+# defers all CadQuery filleting mechanics to `references/cadquery-modeling.md`.
+KNOWLEDGE_ONLY_PATTERNS = {"fillet-stress-relief"}
+
+
 @pytest.mark.parametrize("pattern", PATTERN_NAMES)
 def test_pattern_doc_exists_and_has_required_sections(pattern: str):
-    """Each pattern doc lives at the canonical path and has the four
-    sections the SKILL.md trigger table promises: Trigger, Why this exists,
-    CadQuery template, Pitfalls. Without these the loader can't rely on the
-    file being self-contained when read on demand.
+    """Each pattern doc lives at the canonical path and has the sections the
+    loader relies on when reading it on demand. Every doc has Trigger, Why this
+    exists, and Pitfalls. The code section depends on the doc's kind:
+
+    * helper-backed → a `## Use the helper` section importing `from cadlib`
+      (the package is the source of truth; no copy-paste reimplementation);
+    * knowledge-only (`fillet-stress-relief`) → neither, by design;
+    * otherwise → a `## CadQuery template` section that imports cadquery.
     """
     path = SKILL_DIR / "references" / "patterns" / f"{pattern}.md"
     assert path.exists(), f"missing pattern doc: {path}"
@@ -278,15 +303,24 @@ def test_pattern_doc_exists_and_has_required_sections(pattern: str):
     assert f"# {pattern}" in text, f"{pattern}.md missing H1 heading"
     assert "**Trigger:**" in text, f"{pattern}.md missing **Trigger:** line"
     assert "## Why this exists" in text, f"{pattern}.md missing Why section"
-    assert "## CadQuery template" in text or "## CadQuery templates" in text, (
-        f"{pattern}.md missing CadQuery template section"
-    )
     assert "## Pitfalls" in text, f"{pattern}.md missing Pitfalls section"
-    # The CadQuery template must use the library; this is the cheapest
-    # signal that the doc carries real code rather than a stub.
-    assert "import cadquery" in text, (
-        f"{pattern}.md template does not import cadquery"
-    )
+
+    if pattern in HELPER_BACKED_PATTERNS:
+        assert "## Use the helper" in text, (
+            f"{pattern}.md missing 'Use the helper' section"
+        )
+        assert "from cadlib" in text, (
+            f"{pattern}.md does not point at its cadlib helper"
+        )
+    elif pattern in KNOWLEDGE_ONLY_PATTERNS:
+        pass  # prose only — defers code to cadquery-modeling.md
+    else:
+        assert "## CadQuery template" in text or "## CadQuery templates" in text, (
+            f"{pattern}.md missing CadQuery template section"
+        )
+        assert "import cadquery" in text, (
+            f"{pattern}.md template does not import cadquery"
+        )
 
 
 def test_skill_md_lists_every_pattern():

@@ -11,95 +11,52 @@ thickness's worth of plastic. A boss extends the engagement length (typ 2-3x
 screw diameter) and concentrates material around the fastener. For self-tap
 into plastic the pilot hole equals the screw's minor diameter (smaller than the
 clearance hole); for a machine-screw pass-through use the standard clearance
-diameter. A counter-bored or countersunk top lets the head sit flush. Ribs
-(3-4 fins at 45 degrees around the boss) prevent the post from snapping off
-when side-loaded.
+diameter. A counter-bored or countersunk top lets the head sit flush. Tall
+bosses also want radial ribs (3-4 fins at 45 degrees) so the post doesn't snap
+off when side-loaded — see "Beyond the helper" below.
 
-## CadQuery template
+## Use the helper
+
+`cadlib` owns the geometry — don't re-derive it. The helper extrudes the
+posts at each position, then cuts the pilot/clearance hole with optional
+counter-bore or countersink head treatment in one call:
 
 ```python
-import cadquery as cq
+from cadlib.mounting import add_screw_post
 
-# Standard screw dimensions (M2 through M5).
-SCREW_TABLE = {
-    "M2":  {"clearance": 2.4, "self_tap": 1.7, "cap_head_dia": 3.8, "cap_head_h": 2.0},
-    "M2.5":{"clearance": 2.9, "self_tap": 2.2, "cap_head_dia": 4.5, "cap_head_h": 2.5},
-    "M3":  {"clearance": 3.4, "self_tap": 2.5, "cap_head_dia": 5.5, "cap_head_h": 3.0},
-    "M4":  {"clearance": 4.5, "self_tap": 3.3, "cap_head_dia": 7.0, "cap_head_h": 4.0},
-    "M5":  {"clearance": 5.5, "self_tap": 4.2, "cap_head_dia": 8.5, "cap_head_h": 5.0},
-}
-
-def make_screw_boss(part, p):
-    """Add one or more screw bosses standing up from the current top face.
-    Caller positions ``part`` so the boss base sits on +Z.
-
-    Required params:
-      screw_size        - "M2" | "M2.5" | "M3" | "M4" | "M5"
-      boss_height       - how tall the post rises from the surface
-      boss_od           - outer diameter (typ 2x screw clearance + 2 mm)
-      hole_type         - "clearance" (for through-bolts) | "self_tap" (taps into plastic)
-      countersink       - None | "cbore" (counter-bore) | "csink" (countersunk)
-      cbore_depth       - when "cbore", how deep the head sits (typ 3-4 mm)
-      rib_count         - 0 for no ribs, 4 for cross-pattern stiffening
-      rib_height        - how tall the ribs are (typ 0.5x boss_height)
-      rib_thickness     - typ 1.5-2 mm
-      positions         - list of (x, y) tuples for boss centres
-    """
-    s = SCREW_TABLE[p.screw_size]
-    hole_d = s["clearance"] if p.hole_type == "clearance" else s["self_tap"]
-
-    # 1. Extrude the cylindrical bosses at each position.
-    bosses = (
-        part.faces(">Z").workplane()
-        .pushPoints(p.positions)
-        .circle(p.boss_od / 2.0)
-        .extrude(p.boss_height)
-    )
-
-    # 2. Optionally add ribs as four thin boxes radiating from the boss.
-    if p.rib_count:
-        top_z = part.faces(">Z").val().Center().z
-        for (x, y) in p.positions:
-            for i in range(p.rib_count):
-                angle = i * (360.0 / p.rib_count)
-                rib = (
-                    cq.Workplane("XY")
-                    .box(p.boss_od / 2.0, p.rib_thickness, p.rib_height,
-                         centered=(False, True, False))
-                    .translate((x, y, top_z))
-                    .rotate((x, y, 0), (x, y, 1), angle)
-                )
-                bosses = bosses.union(rib)
-
-    # 3. Cut the hole and apply head treatment driven from the parent face
-    #    (the original ``part`` top, now ``>Z[-2]`` since the bosses are
-    #    higher). Selecting the boss tops directly would make ``pushPoints``
-    #    re-apply world coordinates on every individual boss face.
-    top = bosses.faces(">Z[-2]").workplane().pushPoints(p.positions)
-    if p.countersink == "cbore":
-        bosses = top.cboreHole(hole_d, s["cap_head_dia"] + 0.4, p.cbore_depth)
-    elif p.countersink == "csink":
-        bosses = top.cskHole(hole_d, s["cap_head_dia"] + 0.4, 90.0)
-    else:
-        bosses = top.hole(hole_d)
-
-    return bosses
+part = add_screw_post(
+    part,
+    positions=[(0, 0)],     # boss centres in the open_face plane
+    screw_size="M3",        # key into SCREW_TABLE
+    boss_height=8.0,        # how tall the post rises from the surface
+    boss_od=None,           # None → auto from the OD-sizing rule below
+    hole_type="self_tap",   # "self_tap" (taps into plastic) | "clearance" (through-bolt)
+    countersink=None,       # None | "cbore" | "csink"
+    cbore_depth=3.0,        # head recess depth when countersink="cbore"
+    open_face=">Z",         # face the bosses stand up from
+)
 ```
 
-(Real CadQuery: ``.faces``, ``.workplane``, ``.pushPoints``, ``.circle``,
-``.extrude``, ``.cboreHole``, ``.cskHole``, ``.hole``, ``.union``,
-``.rotate`` for rib placement.)
+Screw dimensions (clearance / self_tap / cap_head_dia / cap_head_h) live in
+`cadlib/tables.py::SCREW_TABLE` (`M2`, `M2.5`, `M3`, `M4`, `M5`). `Read` that
+file for the exact numbers; the helper raises `ValueError` for an unknown
+`screw_size`. For `countersink="cbore"` the helper sizes the head recess from
+`cap_head_dia` plus a fit margin — don't restate a separate number, defer to
+the helper.
 
 ## Boss diameter sizing rule
 
-Outer diameter (OD) = `2 x screw_clearance + 2 x wall`, where `wall >= 1.5 mm`.
+If you pass `boss_od=None` the helper sizes it for you; pass an explicit value
+only to override. The rule is OD = `2 x screw_clearance + 2 x wall`, where
+`wall >= 1.5 mm`:
 
-For M3 clearance (3.4 mm hole): OD >= 8.8 mm. Use **8-10 mm** in practice.
-For M4 clearance (4.5 mm hole): OD >= 11.0 mm. Use **10-12 mm**.
+- M3 clearance (3.4 mm hole): OD >= 8.8 mm → use **8-10 mm** in practice.
+- M4 clearance (4.5 mm hole): OD >= 11.0 mm → use **10-12 mm**.
 
 ## Pull-out strength rule
 
-For self-tap into PLA/PETG, engagement length = `2 x screw_diameter`.
+For self-tap into PLA/PETG, engagement length = `2 x screw_diameter`. Make
+`boss_height` at least this or the screw strips on first fastening:
 
 - M2: 4 mm engaged
 - M2.5: 5 mm engaged
@@ -107,15 +64,43 @@ For self-tap into PLA/PETG, engagement length = `2 x screw_diameter`.
 - M4: 8 mm engaged
 - M5: 10 mm engaged
 
-If the boss is shorter than this, the screw strips on first fastening.
+## Beyond the helper
+
+Radial ribs are **not** in `add_screw_post` — a tall, unribbed boss
+(height > 1.5x OD) snaps off when side-loaded. This is a candidate to promote
+into the helper. Until then, add 4 thin fins radiating from each boss after the
+helper call:
+
+```python
+import cadquery as cq
+
+def custom_screw_post_ribs(part, *, positions, boss_od, rib_height,
+                           rib_thickness=1.8, rib_count=4, base_z=0.0):
+    """Add radiating stiffening ribs around each boss (not in cadlib)."""
+    for (x, y) in positions:
+        for i in range(rib_count):
+            angle = i * (360.0 / rib_count)
+            rib = (
+                cq.Workplane("XY")
+                .box(boss_od / 2.0, rib_thickness, rib_height,
+                     centered=(False, True, False))
+                .translate((x, y, base_z))
+                .rotate((x, y, 0), (x, y, 1), angle)
+            )
+            part = part.union(rib)
+    return part
+```
+
+Make `rib_height` ~0.5x `boss_height`. This is a candidate to promote into
+`add_screw_post` as a `ribs=` option.
 
 ## Pitfalls
 
 - Self-tap hole too big -> screw spins free; too small -> cracks the boss.
   Stick to the table.
 - No ribs on tall bosses (height > 1.5x OD) -> boss snaps off when
-  side-loaded.
-- Cap-head counter-bore: cbore_depth must be deeper than cap_head_h or the
+  side-loaded. The helper has none — add them (see "Beyond the helper").
+- Cap-head counter-bore: `cbore_depth` must be deeper than `cap_head_h` or the
   screw sits proud.
 - Print orientation: if the boss is parallel to layer lines, pull-out
   strength drops 50%. Orient so the screw axis is vertical (boss extrudes

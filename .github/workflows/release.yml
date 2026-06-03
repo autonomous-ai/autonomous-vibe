@@ -1,12 +1,16 @@
 name: release
 
-# Tag-triggered signed release with auto-update artifacts.
+# Tag-triggered release with auto-update artifacts (no Apple code signing).
 #
-# Pushing a tag like `v0.1.1` builds Panda on every target platform, signs each
-# bundle with the updater key, and publishes a GitHub Release containing the
-# installers plus `latest.json`. Installed apps poll
+# Pushing a tag like `v0.1.1` builds Panda on every target platform, signs the
+# updater manifest with the minisign updater key, and publishes a GitHub Release
+# containing the installers plus `latest.json`. Installed apps poll
 # `releases/latest/download/latest.json` (see tauri.conf.json → plugins.updater)
-# and auto-update to the new signed bundle.
+# and auto-update to the new bundle.
+#
+# The bundles are NOT Apple-codesigned/notarized — macOS users clear Gatekeeper
+# manually on first launch (right-click → Open). The updater signature is
+# unrelated to Apple signing and is still required for auto-update to work.
 #
 # Required repo secrets (Settings → Secrets and variables → Actions):
 #   TAURI_SIGNING_PRIVATE_KEY           contents of the updater private key
@@ -31,23 +35,42 @@ jobs:
           - platform: macos-latest # Apple Silicon
             target: aarch64-apple-darwin
             bundles: app,dmg
-          # Intel builds app-only: the DMG step's Finder AppleScript hangs on
-          # the macos-13 runner. Intel users get the .app.tar.gz instead.
-          - platform: macos-13 # Intel
+          # Intel build, cross-compiled on the arm64 runner: GitHub retired the
+          # macos-13 (Intel) hosted-runner pool, so that label now queues
+          # forever (never assigned a runner). macos-latest (Apple Silicon)
+          # cross-builds x86_64 fine — Rust targets it natively and the Python
+          # sidecar's x86_64 pip/smoke-import runs under the Rosetta 2 that
+          # GitHub's arm64 runners ship pre-installed. Build the .dmg too so
+          # Intel users get a real installer (not the raw updater tarball); DMG
+          # packaging is arch-independent file-copying, so it runs fine here.
+          - platform: macos-latest # Apple Silicon, cross-compiling Intel
             target: x86_64-apple-darwin
-            bundles: app
-          # Windows/Linux are intentionally omitted for now: their sidecar build
-          # scripts (build-python/slicer-sidecar.sh) are macOS-only and fail on
-          # those runners (e.g. `shasum` missing in Windows git-bash). Re-add the
-          # ubuntu-22.04 / windows-latest entries once those scripts are ported.
+            bundles: app,dmg
+          # Windows: x64 installer. `nsis` is the auto-updater target (Tauri's
+          # updater on Windows consumes the NSIS setup .exe + its .sig). The
+          # sidecar scripts are now Git-Bash-portable (sha256/mirror_dir/unzip
+          # fallbacks), so this runs on windows-latest.
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+          # Linux is still omitted: the slicer/python sidecar download branches
+          # there are sketched but untested. Re-add an ubuntu-22.04 entry once
+          # those are exercised.
 
     runs-on: ${{ matrix.platform }}
-    # Hard cap so a hung step (the Intel job has stalled for ~2h) fails fast
-    # instead of burning the 6h default. Step-level timeouts below localize it.
+    # Hard cap so a hung step fails fast instead of burning the 6h default.
+    # Step-level timeouts below localize it.
     timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
+
+      # Derive the bundle version from the pushed tag (v0.1.12 -> 0.1.12) and
+      # stamp it into tauri.conf.json + Cargo.toml + Cargo.lock, so the release
+      # version always matches the tag with no hand-edited "bump version" commit.
+      - name: Stamp version from tag
+        shell: bash
+        run: scripts/build/set-version.sh "${GITHUB_REF_NAME}"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -76,25 +99,22 @@ jobs:
       - name: Build bundled sidecars
         shell: bash
         timeout-minutes: 30
-        run: scripts/build/build-all-sidecars.sh
+        # Pass the matrix target so a cross-build (x86_64 on the arm64 runner)
+        # fetches the right-arch sidecars instead of defaulting to host arch.
+        run: scripts/build/build-all-sidecars.sh --target ${{ matrix.target }}
 
       - name: Build, sign, and publish release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Updater signing (minisign): signs latest.json so installed apps
-          # trust the update. Separate from Apple signing below.
+          # trust the update. This is the updater's own key, NOT Apple code
+          # signing — auto-update still requires it.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          # Apple Developer ID code signing + notarization. tauri imports the
-          # base64 .p12 into a temp keychain, signs the .app/.dmg with the
-          # identity, then notarizes + staples via the Apple ID app-specific
-          # password. Without these, downloads hit Gatekeeper's "app is damaged".
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # NOTE: Apple Developer ID code signing + notarization is intentionally
+          # disabled. The release ships unsigned; macOS users clear Gatekeeper
+          # manually (right-click → Open, or `xattr -dr com.apple.quarantine`).
         with:
           projectPath: desktop
           tagName: ${{ github.ref_name }}
@@ -107,3 +127,71 @@ jobs:
           # tauri.conf.json) still emits the signed .app.tar.gz + .sig that the
           # auto-updater needs, regardless of whether dmg is built.
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+  # Rename the human-facing installers on the draft release to plain-language
+  # names (users can't tell "aarch64" from "x64"). Runs AFTER every build job so
+  # it is the sole, final writer — no race against the parallel matrix jobs that
+  # each merge-upload latest.json.
+  #
+  #   Panda_<ver>_aarch64.dmg        -> Panda-<ver>-macOS-Apple-Silicon.dmg
+  #   Panda_<ver>_x64.dmg            -> Panda-<ver>-macOS-Intel.dmg
+  #   Panda_<ver>_x64-setup.exe      -> Panda-<ver>-Windows-Setup.exe   (+ .sig)
+  #
+  # The two macOS .app.tar.gz updater bundles are left untouched: nobody
+  # downloads them by hand (Intel now ships a .dmg) and renaming them would
+  # break the mac auto-updater. The Windows setup .exe IS the updater artifact,
+  # so after renaming it we rewrite the windows-* URLs inside latest.json and
+  # re-upload it.
+  finalize:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rename installers and patch latest.json
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+
+          # Rename the release asset whose name ends in $1 to the exact name $2.
+          # Matching by suffix keeps this version-independent and resilient to
+          # Tauri's arch-token quirks (x86_64 -> "x64", aarch64 -> "aarch64").
+          rename_suffix() {
+            local suffix="$1" new="$2" apiurl
+            apiurl=$(gh release view "$TAG" -R "$REPO" --json assets \
+              --jq ".assets[] | select(.name | endswith(\"$suffix\")) | .apiUrl" | head -n1)
+            if [ -z "$apiurl" ]; then
+              echo "skip: no asset ending in '$suffix'"
+              return 0
+            fi
+            gh api --method PATCH "${apiurl#https://api.github.com/}" -f name="$new" >/dev/null
+            echo "renamed *$suffix -> $new"
+          }
+
+          rename_suffix "_aarch64.dmg"        "Panda-${VERSION}-macOS-Apple-Silicon.dmg"
+          rename_suffix "_x64.dmg"            "Panda-${VERSION}-macOS-Intel.dmg"
+          rename_suffix "_x64-setup.exe"      "Panda-${VERSION}-Windows-Setup.exe"
+          rename_suffix "_x64-setup.exe.sig"  "Panda-${VERSION}-Windows-Setup.exe.sig"
+
+          # The Windows updater downloads by the URL baked into latest.json, so
+          # point it at the renamed setup .exe. (macOS updater URLs are
+          # unchanged — the .app.tar.gz bundles were not renamed.)
+          mkdir -p dl
+          gh release download "$TAG" -R "$REPO" -p latest.json -D dl --clobber
+          NEW_WIN_URL="https://github.com/${REPO}/releases/download/${TAG}/Panda-${VERSION}-Windows-Setup.exe"
+          python3 - dl/latest.json "$NEW_WIN_URL" <<'PY'
+          import json, sys
+          path, new_url = sys.argv[1], sys.argv[2]
+          with open(path) as f:
+              data = json.load(f)
+          for key in ("windows-x86_64", "windows-x86_64-nsis"):
+              if key in data.get("platforms", {}):
+                  data["platforms"][key]["url"] = new_url
+          with open(path, "w") as f:
+              json.dump(data, f, indent=2)
+          PY
+          gh release upload "$TAG" -R "$REPO" dl/latest.json --clobber
+          echo "patched latest.json windows-* url -> $NEW_WIN_URL"

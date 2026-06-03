@@ -10,3 +10,4 @@ pub mod claude_driver;
 pub mod slicer;
 pub mod printer;
 pub mod project;
+pub mod update;

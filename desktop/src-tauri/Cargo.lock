@@ -2750,7 +2750,7 @@ dependencies = [
 
 [[package]]
 name = "panda-desktop"
-version = "0.1.2"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "chrono",

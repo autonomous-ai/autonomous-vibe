@@ -17,17 +17,31 @@
 
 set -euo pipefail
 
+# sha256 <file> — portable digest. git-bash on Windows lacks `shasum`; macOS
+# lacks `sha256sum`. Prefer whichever exists.
+sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SLICER_VERSION_FILE="${SCRIPT_DIR}/SLICER_VERSION.txt"
 RESOURCES_DIR="${REPO_ROOT}/desktop/src-tauri/resources/slicer"
 
 FORCE=0
-for arg in "$@"; do
-  case "$arg" in
+TARGET_TRIPLE=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
     --force) FORCE=1 ;;
-    *) echo "unknown arg: $arg" >&2; exit 2 ;;
+    --target) TARGET_TRIPLE="${2:?--target needs a triple}"; shift ;;
+    --target=*) TARGET_TRIPLE="${1#--target=}" ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
+  shift
 done
 
 if [[ ! -f "${SLICER_VERSION_FILE}" ]]; then
@@ -38,19 +52,27 @@ SLICER_VERSION="$(tr -d '[:space:]' < "${SLICER_VERSION_FILE}")"  # e.g. v2.3.2
 # Strip leading 'v' for use inside the asset filename.
 SLICER_VER_NUM="${SLICER_VERSION#v}"
 
-# --- detect host triple -----------------------------------------------------
-HOST_OS="$(uname -s)"
-HOST_ARCH="$(uname -m)"
-case "${HOST_OS}-${HOST_ARCH}" in
-  Darwin-arm64)  TRIPLE="aarch64-apple-darwin" ;;
-  Darwin-x86_64) TRIPLE="x86_64-apple-darwin" ;;
-  Linux-x86_64)  TRIPLE="x86_64-unknown-linux-gnu" ;;
-  MINGW*|MSYS*|CYGWIN*) TRIPLE="x86_64-pc-windows-msvc" ;;
-  *)
-    echo "error: unsupported host ${HOST_OS}-${HOST_ARCH}" >&2
-    exit 1
-    ;;
-esac
+# --- resolve target triple --------------------------------------------------
+# Defaults to the host triple; --target selects another arch. On macOS this is
+# effectively cosmetic: OrcaSlicer ships one *universal* DMG, so the same .app
+# serves both aarch64 and x86_64 — we emit both darwin sidecar symlinks below
+# regardless of which triple was requested.
+if [[ -n "${TARGET_TRIPLE}" ]]; then
+  TRIPLE="${TARGET_TRIPLE}"
+else
+  HOST_OS="$(uname -s)"
+  HOST_ARCH="$(uname -m)"
+  case "${HOST_OS}-${HOST_ARCH}" in
+    Darwin-arm64)  TRIPLE="aarch64-apple-darwin" ;;
+    Darwin-x86_64) TRIPLE="x86_64-apple-darwin" ;;
+    Linux-x86_64)  TRIPLE="x86_64-unknown-linux-gnu" ;;
+    MINGW*|MSYS*|CYGWIN*) TRIPLE="x86_64-pc-windows-msvc" ;;
+    *)
+      echo "error: unsupported host ${HOST_OS}-${HOST_ARCH}" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 # --- pick asset by platform -------------------------------------------------
 # OrcaSlicer v2.3.2 ships one universal macOS DMG, a Linux AppImage, and a
@@ -79,13 +101,30 @@ case "${TRIPLE}" in
   *-apple-darwin) PAYLOAD="${RESOURCES_DIR}/OrcaSlicer.app/Contents/MacOS/OrcaSlicer" ;;
   *)              PAYLOAD="${SIDECAR_PATH}" ;;
 esac
-if [[ "${FORCE}" -eq 0 && -f "${MARKER}" && -s "${PAYLOAD}" ]]; then
-  if grep -q "^slicer_version=${SLICER_VERSION}$" "${MARKER}" 2>/dev/null \
-      && grep -q "^triple=${TRIPLE}$" "${MARKER}" 2>/dev/null; then
-    echo "slicer sidecar already installed (${SLICER_VERSION}); skipping."
-    echo "  use --force to rebuild."
-    exit 0
-  fi
+if [[ "${FORCE}" -eq 0 && -f "${MARKER}" && -s "${PAYLOAD}" ]] \
+    && grep -q "^slicer_version=${SLICER_VERSION}$" "${MARKER}" 2>/dev/null; then
+  case "${TRIPLE}" in
+    *-apple-darwin)
+      # Universal .app: one payload serves both darwin arches. Don't re-download
+      # just because the marker records the other triple — instead self-heal the
+      # requested sidecar symlink (it may be missing on a fresh checkout) and
+      # exit. Both arch symlinks point at the same Mach-O inside the bundle.
+      if [[ ! -e "${SIDECAR_PATH}" ]]; then
+        echo "==> linking ${SIDECAR_NAME} -> OrcaSlicer.app (universal)"
+        ln -s "OrcaSlicer.app/Contents/MacOS/OrcaSlicer" "${SIDECAR_PATH}"
+      fi
+      echo "slicer sidecar already installed (${SLICER_VERSION}, universal); skipping."
+      echo "  use --force to rebuild."
+      exit 0
+      ;;
+    *)
+      if grep -q "^triple=${TRIPLE}$" "${MARKER}" 2>/dev/null; then
+        echo "slicer sidecar already installed (${SLICER_VERSION}); skipping."
+        echo "  use --force to rebuild."
+        exit 0
+      fi
+      ;;
+  esac
 fi
 
 mkdir -p "${RESOURCES_DIR}"
@@ -104,7 +143,7 @@ on_exit() {
 DOWNLOAD="${TMP_DIR}/${ASSET}"
 echo "==> downloading ${ASSET}"
 curl -fL --retry 3 --connect-timeout 20 -o "${DOWNLOAD}" "${URL}"
-SHA="$(shasum -a 256 "${DOWNLOAD}" | awk '{print $1}')"
+SHA="$(sha256 "${DOWNLOAD}")"
 echo "    sha256=${SHA}"
 
 # --- extract per platform ---------------------------------------------------
@@ -142,9 +181,14 @@ case "${TRIPLE}" in
       cp -R "${APP_BUNDLE_SRC}" "${APP_BUNDLE_DST}"
     fi
     # The Tauri sidecar entry is a symlink into the bundle so the bundled
-    # frameworks (@rpath/...) resolve.
-    rm -f "${SIDECAR_PATH}"
-    ln -s "OrcaSlicer.app/Contents/MacOS/OrcaSlicer" "${SIDECAR_PATH}"
+    # frameworks (@rpath/...) resolve. The DMG is universal, so emit BOTH
+    # darwin arch symlinks from this one build — an Apple Silicon host can then
+    # bundle either an arm64 or an x86_64 (Intel) app without re-extracting.
+    for t in aarch64-apple-darwin x86_64-apple-darwin; do
+      link="${RESOURCES_DIR}/orcaslicer-${t}"
+      rm -f "${link}"
+      ln -s "OrcaSlicer.app/Contents/MacOS/OrcaSlicer" "${link}"
+    done
     ;;
 
   x86_64-unknown-linux-gnu)
@@ -158,15 +202,26 @@ case "${TRIPLE}" in
     echo "==> extracting portable zip"
     UNZIP_DIR="${TMP_DIR}/unzipped"
     mkdir -p "${UNZIP_DIR}"
+    # Git-Bash on a GitHub windows runner may ship none of these; try them in
+    # order of preference. `7z` and PowerShell are always present on the runner.
     if command -v unzip >/dev/null; then
       unzip -q "${DOWNLOAD}" -d "${UNZIP_DIR}"
+    elif command -v 7z >/dev/null; then
+      7z x -y -o"${UNZIP_DIR}" "${DOWNLOAD}" >/dev/null
+    elif command -v powershell >/dev/null; then
+      powershell -NoProfile -Command \
+        "Expand-Archive -Force -LiteralPath '${DOWNLOAD}' -DestinationPath '${UNZIP_DIR}'"
     else
-      echo "error: unzip required on Windows host" >&2; exit 1
+      echo "error: need one of unzip / 7z / powershell to extract the portable zip" >&2
+      exit 1
     fi
-    # Find the executable inside the portable zip.
-    EXE="$(find "${UNZIP_DIR}" -maxdepth 4 -iname 'OrcaSlicer.exe' | head -1)"
+    # Find the executable inside the portable zip. As of v2.3.x the Windows
+    # binary is named `orca-slicer.exe` (hyphenated, lowercase) and sits at the
+    # zip root alongside its DLLs; older releases shipped `OrcaSlicer.exe`. Match
+    # either.
+    EXE="$(find "${UNZIP_DIR}" -maxdepth 4 \( -iname 'orca-slicer.exe' -o -iname 'OrcaSlicer.exe' \) | head -1)"
     if [[ -z "${EXE}" ]]; then
-      echo "error: OrcaSlicer.exe not found inside portable zip" >&2
+      echo "error: orca-slicer.exe not found inside portable zip" >&2
       exit 1
     fi
     # Windows binary depends on adjacent DLLs — copy the whole directory and

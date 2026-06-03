@@ -164,6 +164,34 @@ def test_recipe_produces_stl(recipe: Path):
         )
 
 
+# -- Helper-specific geometry checks ------------------------------------------
+
+
+def test_heat_set_pocket_cuts_rim_relief():
+    """add_heat_set_pocket must counterbore the rim relief (relief_d × relief_h
+    from HEATSET_TABLE), not just a plain body pocket — the relief is where the
+    plastic displaced during reflow goes. Regression for the helper ignoring
+    the relief_* columns it reads from the table."""
+    import cadquery as cq
+    from cadlib.mounting import add_heat_set_pocket
+    from cadlib.tables import HEATSET_TABLE
+
+    h = HEATSET_TABLE["M3"]
+    depth = h["insert_len"] + 1.5
+    with_relief = add_heat_set_pocket(
+        cq.Workplane("XY").box(40, 40, 12), positions=[(0, 0)], insert_size="M3"
+    )
+    plain = (
+        cq.Workplane("XY").box(40, 40, 12)
+        .faces(">Z").workplane().pushPoints([(0, 0)]).hole(h["pocket_d"], depth=depth)
+    )
+    # The relief removes extra material at the rim, so the relieved part has
+    # strictly less volume than a plain-pocket part of the same dimensions.
+    assert with_relief.val().Volume() < plain.val().Volume(), (
+        "heat-set pocket did not cut the rim relief"
+    )
+
+
 # -- Sandbox still blocks third-party imports ---------------------------------
 
 

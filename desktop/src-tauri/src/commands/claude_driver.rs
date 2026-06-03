@@ -225,6 +225,20 @@ pub fn build_command(cfg: &ClaudeRunConfig) -> Vec<String> {
         "--append-system-prompt".into(),
         cfg.phase.system_prompt().into(),
     ];
+    // Grant read access to the installed skills tree (`~/.claude/skills`).
+    // The cadcode skill loads its own reference docs by absolute path
+    // (`~/.claude/skills/cadcode/references/...`), which live OUTSIDE the
+    // project workspace. In the Plan phase (`--permission-mode plan`) a read
+    // outside the granted roots triggers an interactive permission prompt;
+    // headless `-p` cannot answer it, so the read fails and the model plans
+    // without its design-rule references. A second `--add-dir` puts the skill
+    // tree inside the allowed roots. (Build phase is `bypassPermissions`, so
+    // this is a no-op there, but adding it unconditionally is simpler and
+    // harmless.)
+    if let Some(skills_dir) = home_dir().map(|h| h.join(".claude").join("skills")) {
+        cmd.push("--add-dir".into());
+        cmd.push(skills_dir.display().to_string());
+    }
     if let Some(session) = &cfg.claude_session_id {
         if claude_session_exists(&cfg.workspace, session) {
             cmd.push("--resume".into());
@@ -1156,6 +1170,35 @@ mod tests {
         assert!(cmd.contains(&"/tmp/proj".to_string()));
         assert!(cmd.contains(&"make me a hook".to_string()));
         assert!(cmd.contains(&"--no-session-persistence".to_string()));
+    }
+
+    #[test]
+    fn build_command_grants_read_access_to_skills_tree() {
+        // The cadcode skill reads its reference docs by absolute path under
+        // `~/.claude/skills`, outside the workspace. Without a second
+        // `--add-dir` those reads are denied in the headless Plan phase.
+        let cfg = ClaudeRunConfig {
+            prompt: "make me a hook".into(),
+            workspace: PathBuf::from("/tmp/proj"),
+            claude_session_id: None,
+            model: None,
+            use_panda_cloud: false,
+            panda_token: None,
+            phase: TurnPhase::Plan,
+        };
+        let cmd = build_command(&cfg);
+        let skills = home_dir()
+            .map(|h| h.join(".claude").join("skills").display().to_string())
+            .expect("home dir resolves in test env");
+        // Two distinct --add-dir roots: the workspace and the skills tree.
+        let add_dirs: Vec<&String> = cmd
+            .iter()
+            .enumerate()
+            .filter(|(i, a)| *a == "--add-dir" && *i + 1 < cmd.len())
+            .map(|(i, _)| &cmd[i + 1])
+            .collect();
+        assert!(add_dirs.contains(&&"/tmp/proj".to_string()));
+        assert!(add_dirs.contains(&&skills));
     }
 
     #[test]

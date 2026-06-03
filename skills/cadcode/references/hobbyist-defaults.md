@@ -3,7 +3,16 @@
 Load this when you need real-world dimensions for fasteners, common
 devices, bearings, or FDM print tolerances.
 
+> SKILL.md's "Default assumptions" carries the quick headline numbers (M3/M4/M5
+> clearance, 0.2/0.4 mm slop). **This file is the full canonical table** — the
+> complete fastener / bearing / motor / phone / mount data lives here. When the
+> two agree on a headline value, this file is the one to cite for anything
+> device- or hardware-specific.
+
 ## FDM print tolerances (0.4mm nozzle, typical hobbyist printer)
+
+(SKILL.md states the headline 0.2 mm press-fit / 0.4 mm hand-assembly slop;
+this is the full table.)
 
 | What | Slop to add to the hole | Notes |
 |---|---|---|
@@ -25,6 +34,9 @@ devices, bearings, or FDM print tolerances.
 | Living hinge | 0.4–0.6 mm | Single perimeter, PETG/PP only |
 
 ## Fastener clearance holes (close-fit)
+
+(SKILL.md carries the M3/M4/M5 quick defaults; this is the full table, incl.
+heavy clearance, cap-head cbores, and imperial sizes.)
 
 | Screw | Clearance hole | Heavy clearance | Notes |
 |---|---|---|---|
@@ -83,7 +95,7 @@ of one another. The depth is the dimension that matters most for cradles.
 | GoPro 3-finger | 14 mm fingers, 5 mm gap, M5 bolt center | Universal action-cam mount |
 | VESA 75 | 75 × 75 mm, M4 holes | Small monitors |
 | VESA 100 | 100 × 100 mm, M4 holes | Mid-size monitors |
-| ARCA Swiss | 38 mm dovetail, 1.5° taper | Tripod plates |
+| ARCA Swiss | 38 mm wide, 45° dovetail flanks | Tripod plates |
 | 1/4-20 tripod | 1/4" UNC thread | Cameras, lights |
 | GridFinity baseplate | 42 × 42 mm cells, 7 mm tall | Workbench organization |
 

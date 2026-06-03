@@ -15,13 +15,16 @@ PLATE_W = 30
 PLATE_H = 5
 
 # --- Model ---
-result = (
-    cq.Workplane("XY")
-    .box(PLATE_L, PLATE_W, PLATE_H)
-)
+def gen_step():
+    return (
+        cq.Workplane("XY")
+        .box(PLATE_L, PLATE_W, PLATE_H)
+    )
 ```
 
-`result` is the contract — the runner pulls this name from module scope.
+`gen_step()` is the contract — the runner calls this function at module scope.
+(A trivial single-file script may instead assign a module-level `result`; both
+are accepted, but `gen_step()` is preferred.)
 
 ## Primitives
 

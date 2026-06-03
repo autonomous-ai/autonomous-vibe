@@ -16,52 +16,29 @@ thinner wall is stronger but more fragile. POLARITY is set by which way
 you insert the magnet; the design must dictate which face attracts so
 two mating parts come together right-side up, never repel.
 
-## CadQuery template
+## Use the helper
+
+`cadlib` owns the geometry — don't re-derive it. The helper offsets the
+workplane DOWN into the body by `top_wall` so the magnet sits below the
+printed surface, then cuts the pocket at the right diameter for the fit:
 
 ```python
-import cadquery as cq
+from cadlib.cutouts import add_magnet_pocket
 
-# Common neodymium disc magnet stock sizes (mm).
-MAGNET_TABLE = {
-    "6x3":   {"d": 6.0,  "h": 3.0},
-    "6x2":   {"d": 6.0,  "h": 2.0},
-    "8x3":   {"d": 8.0,  "h": 3.0},
-    "10x3":  {"d": 10.0, "h": 3.0},
-    "10x2":  {"d": 10.0, "h": 2.0},
-    "12x5":  {"d": 12.0, "h": 5.0},
-    "15x3":  {"d": 15.0, "h": 3.0},
-    "20x5":  {"d": 20.0, "h": 5.0},
-}
-
-def make_magnet_pocket(part, p):
-    """Cut magnet pockets into ``part``. Caller positions the workpiece so
-    the open face of the pockets is at +Z.
-
-    Required params on ``p``:
-      magnet_size   - key into MAGNET_TABLE (e.g. "10x3")
-      fit_type      - "slip" (+0.2 mm clearance, glue) | "press" (-0.1 mm interference)
-      top_wall      - plastic between magnet face and outside of part (typ 0.4-0.8 mm)
-      positions     - list of (x, y) tuples for pocket centres
-    """
-    m = MAGNET_TABLE[p.magnet_size]
-    clearance = 0.2 if p.fit_type == "slip" else -0.1
-    pocket_d = m["d"] + clearance
-    pocket_h = m["h"] + 0.1  # 0.1 mm slop on depth so magnet seats fully
-
-    # Workplane is offset DOWN into the body by top_wall, so the magnet's
-    # outer face sits below the printed top surface. The top_wall layer
-    # bridges across the hole during printing and hides the magnet.
-    part = (
-        part.faces(">Z")
-            .workplane(offset=-p.top_wall)
-            .pushPoints(p.positions)
-            .hole(pocket_d, depth=pocket_h)
-    )
-    return part
+part = add_magnet_pocket(
+    part,
+    positions=[(0, 0)],     # pocket centres in the open_face plane
+    magnet_size="10x3",     # key into MAGNET_TABLE (D x T)
+    fit_type="slip",        # "slip" (clearance, glue) | "press" (interference, friction)
+    top_wall=0.4,           # plastic between magnet face and outside (typ 0.4–0.8)
+    open_face=">Z",         # open face — must point up at print time (see pitfalls)
+)
 ```
 
-(Real CadQuery APIs: `.faces`, `.workplane(offset=...)`, `.pushPoints`,
-`.hole`.)
+Magnet stock sizes live in `cadlib/tables.py::MAGNET_TABLE` (keys
+`6x3`, `8x3`, `10x3`, `10x2`, `12x5`, `15x3`, `20x5`). `Read` that file
+for the exact dimensions; the helper raises `ValueError` for an unknown
+`magnet_size` or `fit_type`.
 
 ## Hold-force vs top-wall
 
@@ -98,9 +75,10 @@ attract in the assembled position. Strategies, in order of robustness:
 
 ## Pitfalls
 
-- **Forgot top_wall offset**: pocket cuts all the way to the surface,
-  magnet sits flush and pops out when bumped or jumps to nearby
-  ferrous objects, ripping the pocket open.
+- **Forgot top_wall**: with `top_wall=0` the pocket cuts all the way to
+  the surface, the magnet sits flush and pops out when bumped or jumps to
+  nearby ferrous objects, ripping the pocket open. (The helper always
+  offsets by `top_wall`, but `0.4` is the minimum that bridges reliably.)
 - **top_wall too thin (<0.3 mm)**: single-layer bridge fails during
   print, pocket opens through to the outside.
 - **top_wall too thick (>1.5 mm)**: hold force drops below useful;

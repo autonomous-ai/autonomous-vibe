@@ -16,75 +16,40 @@ bearing seats happily at +0.10 mm, while an 8 mm shaft wants +0.20 mm.
 Insertion force scales steeply with interference: over-shoot and the pocket
 splits rather than seats.
 
-## CadQuery template
+## Use the helper
+
+`cadlib` owns the geometry — don't re-derive it. The helper cuts the hole
+undersized by the interference, adds the bottom clearance so the insert
+can't bottom out, and chamfers the rim so the insert starts square:
 
 ```python
-import cadquery as cq
+from cadlib.cutouts import add_press_fit_pocket
 
-def make_press_fit_pocket(part, p):
-    """Cut a press-fit cavity into ``part``. Caller positions ``part`` so
-    the face that receives the insert is at +Z, with the pocket center at
-    the workplane origin.
-
-    Required params (mm):
-      insert_diameter    - nominal diameter of the thing going in
-      insert_depth       - how deep the insert sits in the pocket
-      interference       - undersize amount (NEGATIVE clearance, typ 0.05-0.2)
-      lead_in_chamfer    - chamfer the rim to guide the insert (0.3-0.5)
-      bottom_clearance   - extra hole depth so insert doesn't bottom-out (0.2-0.5)
-    """
-    hole_d = p.insert_diameter - p.interference
-    hole_depth = p.insert_depth + p.bottom_clearance
-
-    part = (
-        part.faces(">Z")
-        .workplane()
-        .hole(hole_d, depth=hole_depth)
-    )
-
-    # Lead-in chamfer on the rim of the new hole. Select the circular edge
-    # on the top face whose radius matches the pocket.
-    part = (
-        part.faces(">Z")
-        .edges(cq.selectors.RadiusNthSelector(0))
-        .chamfer(p.lead_in_chamfer)
-    )
-    return part
-
-
-# Example: 608 bearing seat in a PLA bracket
-bracket = cq.Workplane("XY").box(40, 40, 10)
-bracket = make_press_fit_pocket(bracket, P(
-    insert_diameter  = 22.0,   # 608 OD
-    insert_depth     = 7.0,    # 608 width
-    interference     = 0.05,   # PLA, large insert — see calibration note
-    lead_in_chamfer  = 0.4,
-    bottom_clearance = 0.3,
-))
+part = add_press_fit_pocket(
+    part,
+    positions=[(0, 0)],       # pocket centres in the open_face plane
+    insert_diameter=22.0,     # 608 OD — nominal diameter of the insert
+    insert_depth=7.0,         # how deep the insert sits (608 width)
+    interference=0.05,        # undersize amount, typ 0.05–0.2 (PLA, large insert)
+    lead_in_chamfer=0.4,      # rim chamfer to guide the insert (0.3–0.6)
+    bottom_clearance=0.3,     # extra hole depth so it doesn't bottom out
+    open_face=">Z",           # face the insert presses in from
+)
 ```
 
-## Interference table
+The hole is cut at `insert_diameter - interference`, `insert_depth +
+bottom_clearance` deep. For a sense of which interference suits which
+insert/material, see the calibration note below and `bearing-seat.md` for
+the toleranced bearing seats in `cadlib/tables.py::BEARING_TABLE`.
 
-| Insert | Material | Interference | Notes |
-|---|---|---|---|
-| 3 mm steel pin / shaft | PLA / PETG | 0.15 mm | hole = 2.85 mm |
-| 5 mm steel shaft | PLA / PETG | 0.20 mm | hole = 4.80 mm |
-| 6 mm steel shaft | PLA / PETG | 0.20 mm | hole = 5.80 mm |
-| 8 mm steel shaft | PLA / PETG | 0.20 mm | hole = 7.80 mm |
-| 10 mm steel shaft | PLA / PETG | 0.15 mm | hole = 9.85 mm |
-| 13 mm 624 bearing OD | PLA / PETG | 0.10 mm | hole = 12.90 mm |
-| 19 mm 626 bearing OD | PLA | 0.10 mm | hole = 18.90 mm |
-| 22 mm 608 bearing OD | PLA | 0.05 mm | hole = 21.95 mm |
-| 22 mm 608 bearing OD | PETG (more flex) | 0.15 mm | hole = 21.85 mm |
-| 26 mm 6000 bearing OD | PLA | 0.10 mm | hole = 25.90 mm |
-| 6 mm x 3 mm magnet | PLA | 0.05 mm | hole = 5.95 mm dia x 3.05 mm deep |
-| 8 mm x 3 mm magnet | PLA | 0.05 mm | hole = 7.95 mm dia x 3.05 mm deep |
-| 10 mm x 3 mm magnet | PLA | 0.10 mm | hole = 9.90 mm dia x 3.05 mm deep |
-| 6 mm x 2 mm magnet | PETG | 0.05 mm | hole = 5.95 mm dia x 2.05 mm deep |
-| M3 heat-set insert | PLA / PETG | -0.1 (loose) | melts in - see heat-set-insert-pocket.md |
-| M4 heat-set insert | PLA / PETG | -0.1 (loose) | melts in - see heat-set-insert-pocket.md |
-
-> **Calibration note:** these assume an XY-calibrated printer (±0.05 mm). Stock i3-style printers often over-extrude 0.10–0.15 mm; print a 20 mm test cube and adjust slicer XY compensation if seats come out tight.
+> **Calibration note:** the values assume an XY-calibrated printer
+> (±0.05 mm). Stock i3-style printers often over-extrude 0.10–0.15 mm;
+> print a 20 mm test cube and adjust slicer XY compensation if seats come
+> out tight. Rough starting interference by insert: 3–8 mm steel shaft
+> ~0.20 mm; 10 mm shaft ~0.15 mm; 13–19 mm bearing OD ~0.10 mm; 22 mm+
+> bearing OD ~0.05 mm in PLA (~0.15 mm in springier PETG). Heat-set inserts
+> are the opposite — a LOOSE hole the brass melts into; see
+> `heat-set-insert-pocket.md`.
 
 ## Parameter ranges
 
@@ -96,10 +61,31 @@ bracket = make_press_fit_pocket(bracket, P(
 | wall thickness around pocket | >= 2 mm (>= 3 mm preferred) | thinner walls bulge and the fit loosens |
 | insert_depth | >= 0.5 * insert_diameter | shorter pockets let the insert cock and pop out |
 
+## Beyond the helper
+
+The helper cuts a circular pocket. Hex / square / D-shaft inserts need the
+matching polygon, not a circle — not in cadlib, write a
+`custom_press_fit_polygon()` function (candidate to promote):
+
+```python
+import cadquery as cq
+
+def custom_press_fit_polygon(part, *, across_flats, n_sides, depth, interference):
+    # Add interference to the ACROSS-FLATS dimension, not across-corners.
+    pocket_af = across_flats - interference
+    return (
+        part.faces(">Z").workplane()
+            .polygon(n_sides, pocket_af)
+            .cutBlind(-depth)
+    )
+```
+
 ## Pitfalls
 
 - Forgetting the lead-in chamfer - without it the part catches the rim
   and you cannot start insertion. 0.4 mm at 45 deg is the safe default.
+  (The helper always cuts it — this is the failure mode of a hand-rolled
+  flat pocket.)
 - No bottom clearance - the part bottoms before fully seating, leaving a
   visible gap at the rim and a wobbly fit.
 - Hex / square / D-shaft inserts: pocket needs the matching polygon

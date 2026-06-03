@@ -16,120 +16,92 @@ rule: deflection-to-length ratio `y / L <= 0.1`, root thickness `h >= 1.5 mm`
 for FDM, and the catch must protrude no more than the beam can clear within
 that ratio (typically 0.5–1.5 mm).
 
-## CadQuery template
+## Use the helper
+
+`cadlib` owns the geometry — don't re-derive it. The helper cuts the two
+relief slots that free the arm and adds the catch nub with a lead-in chamfer
+in one call:
 
 ```python
-import cadquery as cq
+from cadlib.mechanical import add_snap_fit_cantilever
 
-def make_snap_cantilever(part, p):
-    """Cut two relief slots to free a cantilever arm on the +Y face of
-    ``part``, then add a catch nub at the tip. Caller must orient the
-    workpiece so the engagement face is normal to +Y and the arm runs
-    along +Z (root at the bottom, tip at the top).
-
-    Required params (mm, on dict ``p``):
-      snap_length        L  arm length from root to catch tip
-      snap_thickness     h  arm thickness at the root (Y direction)
-      snap_width         b  arm width (X direction)
-      snap_catch_height     how proud the catch nub stands in +Y
-      snap_catch_depth      Z-length of the catch nub itself
-      snap_relief_width     slot width either side of the arm
-      snap_relief_depth     how deep the relief slot cuts into the wall
-      snap_lead_angle       degrees of lead-in chamfer (insertion side)
-      snap_root_fillet      fillet radius at the root (stress relief)
-    """
-    L  = p.snap_length
-    h  = p.snap_thickness
-    b  = p.snap_width
-    ch = p.snap_catch_height
-    cd = p.snap_catch_depth
-    rw = p.snap_relief_width
-    rd = p.snap_relief_depth
-    lead = p.snap_lead_angle
-    fr = getattr(p, "snap_root_fillet", 0.5)
-
-    # 1. Cut two vertical relief slots that bracket the arm.
-    #    Workplane sits on the +Y face; X is across the wall, Z is up.
-    slot_total_w = b + 2 * rw
-    relief = (
-        part.faces(">Y").workplane(centerOption="CenterOfBoundBox")
-        .pushPoints([(-(b/2 + rw/2), L/2), ((b/2 + rw/2), L/2)])
-        .rect(rw, L)
-        .cutBlind(-rd)
-    )
-
-    # 2. Build the catch nub as a small box on the tip, then chamfer
-    #    the insertion (top) edge for a soft lead-in and leave the
-    #    retention (bottom) edge square for a positive bite.
-    nub = (
-        cq.Workplane("XZ")
-        .box(b, cd, ch, centered=(True, False, False))
-        .translate((0, 0, L - cd))
-        # Move the nub out onto the +Y face of the wall.
-        .translate((0, _wall_y(part) + ch / 2, 0))
-    )
-    # Lead-in chamfer: shave the top +Y edge of the nub.
-    nub = nub.faces(">Z").edges(">Y").chamfer(ch * 0.9 / max(0.1,
-        (1.0 / max(0.1, _tan_deg(lead)))))
-
-    result = relief.union(nub)
-
-    # 3. Fillet the inside corner where the arm meets the parent wall
-    #    (both relief slot bottoms) to spread root stress.
-    try:
-        result = (
-            result.faces("<Y[-2]")  # the slot floor
-            .edges("|X")
-            .edges("<Z")
-            .fillet(fr)
-        )
-    except Exception:
-        pass  # filleting tight inside corners can fail; skip if so
-
-    return result
-
-
-def _wall_y(part):
-    """Return the +Y coordinate of the wall the snap is being cut into."""
-    return part.faces(">Y").val().Center().y
-
-
-def _tan_deg(deg):
-    import math
-    return math.tan(math.radians(deg))
+part = add_snap_fit_cantilever(
+    part,
+    position=(0, 0, 0),    # local anchor at the arm root
+    length=12.0,           # L: root-to-tip arm length
+    thickness=2.0,         # h: arm thickness (the bending dimension)
+    width=6.0,             # b: arm width
+    catch_height=0.8,      # how proud the catch nub stands
+    relief_width=1.2,      # slot width either side of the arm
+    lead_angle_deg=30.0,   # lead-in chamfer on the insertion side
+    axis="+Y",             # arm extends along +X/-X/+Y/-Y
+)
 ```
 
-## Parameter ranges
+The helper validates `catch_height < 0.1 * length` and raises `ValueError`
+otherwise (see Pitfalls for why). `axis` must be one of `+X/-X/+Y/-Y`.
 
-| Param | Reasonable range | Notes |
+## Param map
+
+The old doc named everything `snap_*`; the helper uses plain mechanical
+terms. Translate as:
+
+| Old doc term | Helper kwarg | Notes |
 |---|---|---|
-| snap_length | 8–15 mm | longer = lower insertion force, fatigues less |
-| snap_thickness | 1.5–2.5 mm | base thickness; taper tip thinner for softer click |
-| snap_width | 4–10 mm | wider = stiffer, scales force linearly |
-| snap_catch_height | 0.5–1.5 mm | engagement depth; > 1.5 mm needs longer arm |
-| snap_catch_depth | 1.0–2.0 mm | Z-length of the nub itself |
-| snap_relief_width | 0.8–1.5 mm | must exceed printer XY tolerance + clearance |
-| snap_relief_depth | wall_thickness | cut fully through or arm won't flex |
-| snap_lead_angle | 25–35° | lead-in for one-handed insertion |
-| snap_root_fillet | 0.3–1.0 mm | bigger is stronger but eats into clearance |
+| `snap_length` | `length` | L, root to catch tip |
+| `snap_thickness` | `thickness` | h, the bending dimension |
+| `snap_width` | `width` | b |
+| `snap_catch_height` | `catch_height` | engagement depth |
+| `snap_relief_width` | `relief_width` | slot width per side |
+| `snap_lead_angle` | `lead_angle_deg` | insertion chamfer angle |
+| `snap_catch_depth` | — | helper sizes the nub itself; not a kwarg |
+| `snap_relief_depth` | — | helper cuts the full arm depth |
+| `snap_root_fillet` | — | not exposed (see Beyond the helper) |
+| orientation via face selector | `axis` | direction string, not a `.faces()` pick |
+
+## Beyond the helper
+
+The helper omits a couple of stress-relief refinements the old template had.
+Both are **not in cadlib — write a `custom_root_fillet()` / `custom_taper()`,
+candidate to promote** if you find yourself needing them often:
+
+- **Root fillet** to spread stress at the fixed end (the #1 failure site).
+  After placing the arm, fillet the inside corners where the arm meets the
+  parent wall:
+
+  ```python
+  # not in cadlib — candidate to promote
+  try:
+      part = part.faces("<Y[-2]").edges("|X").edges("<Z").fillet(0.5)
+  except Exception:
+      pass  # filleting tight inside corners can fail; skip if so
+  ```
+
+- **Tip taper** (arm thinner at the tip than the root) for a softer click
+  and lower peak strain — thin the free end after the union.
 
 ## Pitfalls
 
+- `catch_height >= 0.1 * length` is rejected by the helper with a
+  `ValueError`. WHY: max safe tip deflection is `y_max ≈ 0.1 * L` (the
+  `y / L <= 0.1` rule). A catch taller than that can't be cleared without
+  forcing the arm past its safe strain — insertion overstresses the root and
+  the arm crazes or shears. With `L = 8 mm`, a `catch_height` of 1.5 mm
+  exceeds the 0.8 mm budget → insertion impossible without damage. Lengthen
+  the arm or shrink the catch.
 - Brittle materials (carbon-filled PLA, dry PETG, old ABS) fatigue in 5–20
-  cycles. Double `snap_length` or switch the arm to PETG/PP only.
-- Sharp inside corner at the root is the #1 failure site. Always add at
-  least a 0.5 mm fillet; raise to 1.0 mm if the part will see >50 cycles.
+  cycles. Double `length` or switch the arm to PETG/PP only. For high cycle
+  counts watch the root strain, not just first-insertion success.
+- Keep root thickness `h >= 1.5 mm` for FDM; thinner arms delaminate at the
+  root.
 - Relief slot too narrow (< 0.8 mm) fuses shut on an FDM printer and the
   arm becomes rigid — the snap then either won't insert or shears off.
 - Catch on a non-removable face means the lid is permanent. If geometry
   is symmetric, emboss "PRESS" or an arrow on the release side.
-- Print orientation: the bending axis (the `h` dimension) must lie in the
-  XY plane. If `h` is vertical, layer lines run across the bend and the
+- Print orientation: the bending axis (the `thickness` dimension) must lie in
+  the XY plane. If `h` is vertical, layer lines run across the bend and the
   arm snaps clean off on first flex.
 - For a sliding lid, a single snap lets the lid walk off the other end.
   Pair the snap with a hard stop, a second snap, or a captive rib.
-- Don't put the catch nub right at the very tip; leave ~1 mm of beam past
-  it or the lead-in chamfer eats the structural cross-section.
-- Forgetting clearance: the mating pocket needs `snap_catch_height + 0.2 mm`
+- Forgetting clearance: the mating pocket needs `catch_height + 0.2 mm`
   of depth or the catch bottoms out before the nub engages.
-- snap_catch_height MUST be less than the beam's max deflection y_max ≈ 0.1·L. With L=8 mm, a catch_height of 1.5 mm exceeds 0.8 mm clearance → insertion impossible without forcing.

@@ -88,7 +88,10 @@ def add_heat_set_pocket(
     ``positions``. The insert is pressed in from ``open_face``.
 
     ``pocket_d`` is the insert's BODY diameter (knurls bite into the
-    plastic). Pocket depth = insert length + ``bottom_clearance``.
+    plastic). Pocket depth = insert length + ``bottom_clearance``. A shallow
+    rim relief (``relief_d`` × ``relief_h`` from ``HEATSET_TABLE``) is
+    counterbored at the open face so the plastic the insert displaces as it
+    reflows has somewhere to go instead of mounding proud of the surface.
 
     >>> body = cq.Workplane("XY").box(40, 40, 12)
     >>> body = add_heat_set_pocket(body, positions=[(0, 0)], insert_size="M3")
@@ -99,10 +102,12 @@ def add_heat_set_pocket(
         )
     h = HEATSET_TABLE[insert_size]
     depth = h["insert_len"] + bottom_clearance
+    # cboreHole cuts the body pocket (diameter) plus the rim relief
+    # (cboreDiameter × cboreDepth) in one pass, from the open face inward.
     part = (
         part.faces(open_face).workplane()
         .pushPoints(positions)
-        .hole(h["pocket_d"], depth=depth)
+        .cboreHole(h["pocket_d"], h["relief_d"], h["relief_h"], depth=depth)
     )
     return part
 

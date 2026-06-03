@@ -94,6 +94,36 @@ jobs:
       - name: Install viewer dependencies
         run: npm --prefix viewer ci
 
+      # Reclaim disk on the macOS runners before the heavy build. GitHub's
+      # Apple-Silicon hosted runners ship only ~14 GB free (the roomy Intel
+      # macos-13 pool was retired). The notarization path tauri-action runs
+      # writes a full-size (~1 GB) temp .zip copy of the .app to upload to
+      # Apple, and `bundle_dmg.sh` then needs another ~1 GB for the read-write
+      # disk image it builds with `hdiutil create -srcfolder Panda.app`. On top
+      # of the ~1 GB sidecars baked into the bundle and the multi-GB Rust
+      # release target dir, that tips the runner into "No space left on device":
+      # `hdiutil create` aborts in ~8 s and tauri reports only the opaque
+      # "error running bundle_dmg.sh" (the script's own stderr is logged at
+      # debug level and swallowed unless --verbose, added below). Deleting the
+      # iOS/tvOS/watchOS Simulator runtimes and the non-active Xcode installs —
+      # none of which a mac desktop build needs — frees 20-40 GB. The active
+      # Xcode (codesign/notarytool/SetFile) is kept.
+      - name: Free up disk space (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -x
+          df -h /
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/* || true
+          sudo rm -rf "${HOME}/Library/Developer/CoreSimulator/Caches/"* || true
+          sudo xcrun simctl delete all 2>/dev/null || true
+          active="$(xcode-select -p | sed 's:/Contents/Developer::')"
+          for app in /Applications/Xcode_*.app; do
+            [ "$app" = "$active" ] && continue
+            sudo rm -rf "$app" || true
+          done
+          df -h /
+
       # Sidecars (~1 GB): bundled CPython + OrcaSlicer that the .app ships.
       # NOTE: the build scripts are currently exercised on macOS only; the
       # Windows/Linux download branches are sketched but untested upstream and
@@ -130,11 +160,13 @@ jobs:
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
-          # Per-arch bundle set (see matrix): arm64 builds app+dmg, Intel builds
-          # app-only to dodge the DMG/Finder hang. `createUpdaterArtifacts` (in
+          # Per-arch bundle set (see matrix). `createUpdaterArtifacts` (in
           # tauri.conf.json) still emits the signed .app.tar.gz + .sig that the
           # auto-updater needs, regardless of whether dmg is built.
-          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+          # `--verbose` raises tauri's log level to debug so the bundler echoes
+          # bundle_dmg.sh's own stdout/stderr (otherwise swallowed) — essential
+          # for diagnosing any future DMG packaging failure.
+          args: --verbose --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
   # Rename the human-facing installers on the draft release to plain-language
   # names (users can't tell "aarch64" from "x64"). Runs AFTER every build job so

@@ -615,7 +615,36 @@ export async function cancelTurn(transport = getTransport()) {
 }
 
 export function setProject(projectId) {
+  const previous = getChatState().currentProjectId;
   dispatch({ type: "set_project", projectId });
+  // Switching into a real project pulls its persisted transcript back in so
+  // chat history survives restarts and project switches. Same-project calls
+  // (the reducer no-ops them) and clearing to "" skip the fetch.
+  if (projectId && projectId !== previous) {
+    hydrateSession(projectId);
+  }
+}
+
+/**
+ * Rehydrate the chat history for `projectId` from the backend, which rebuilds
+ * it from Claude Code's persisted session transcript. Best-effort: a missing,
+ * empty, or unreadable session leaves the freshly-reset state untouched.
+ * Guards against a stale response landing after the user switched away again
+ * or started a turn in the meantime, so it never clobbers live state.
+ */
+export async function hydrateSession(projectId, transport = getTransport()) {
+  if (!projectId) return;
+  try {
+    const session = await transport.chat_session_state(projectId);
+    const state = getChatState();
+    if (state.currentProjectId !== projectId || state.turnInProgress) return;
+    if (!session || !Array.isArray(session.history) || session.history.length === 0) {
+      return;
+    }
+    dispatch({ type: "hydrate_session", session });
+  } catch {
+    // No transport / unreadable session → nothing to restore.
+  }
 }
 
 /**

@@ -6,14 +6,16 @@
 use crate::commands::claude_driver;
 use crate::commands::claude_driver::TurnPhase;
 use crate::ipc::types::{
-    ApprovePlanRequest, ChatEvent, ChatSessionState, PlanChangesRequest, StartTurnRequest,
-    StartTurnResponse,
+    ApprovePlanRequest, ChatEvent, ChatHistoryEntry, ChatRole, ChatSessionState,
+    PlanChangesRequest, StartTurnRequest, StartTurnResponse,
 };
 use crate::ipc::IpcResult;
 use crate::paths;
 use crate::state::AppState;
+use chrono::DateTime;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, State};
@@ -21,6 +23,12 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const CHAT_EVENT: &str = "chat_event";
+
+/// Prefix of the synthetic prompt [`chat_approve_plan`] injects to kick off the
+/// build phase. The user never typed it, so [`parse_session_history`] drops
+/// rehydrated user lines that start with it. Keep in sync with the `format!` in
+/// [`chat_approve_plan`].
+const APPROVE_PLAN_PREAMBLE: &str = "The plan below is approved. Implement it now, generating all parts";
 
 /// UUID v5 namespace for deriving per-project Claude session UUIDs from
 /// `projectId`. Using `Uuid::NAMESPACE_OID` matches what cadcode's
@@ -165,14 +173,105 @@ pub async fn chat_session_state(
     if let Some(existing) = state.chat_session_snapshot(&project_id) {
         return Ok(existing);
     }
-    // Empty session matches the contract: `history: []`, no turn in
-    // progress. The deterministic session id matches what the driver
-    // will use, so the React side can correlate.
+    let session_id = session_id_for_project(&project_id).to_string();
+    // No in-memory snapshot (e.g. fresh app launch or project switch): rebuild
+    // the transcript from the JSONL Claude Code persists for this session so
+    // chat history survives restarts. A missing or unreadable file just means
+    // no prior turns — the contract's empty `history: []`. Read-only.
+    let history = match claude_driver::session_jsonl_path(
+        &project_workspace(&project_id),
+        &session_id,
+    ) {
+        Some(path) => tokio::fs::read_to_string(path)
+            .await
+            .ok()
+            .map(|contents| parse_session_history(&contents))
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    // The deterministic session id matches what the driver will use, so the
+    // React side can correlate.
     Ok(ChatSessionState {
-        session_id: session_id_for_project(&project_id).to_string(),
+        session_id,
         turn_in_progress: false,
-        history: Vec::new(),
+        history,
     })
+}
+
+/// Parse a Claude Code session JSONL transcript into the chat history the
+/// sidebar rehydrates from. Emits one [`ChatHistoryEntry`] per user prompt and
+/// per assistant message that carries visible text; `thinking`/`tool_use`
+/// blocks, tool-result user turns, `isMeta` system injections, and the
+/// synthetic approve-plan prompt are all dropped. Pure so it's unit-testable
+/// without the real `~/.claude/projects` path.
+fn parse_session_history(contents: &str) -> Vec<ChatHistoryEntry> {
+    let mut history = Vec::new();
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        // Skip Claude Code's injected meta turns (system reminders, etc.).
+        if obj.get("isMeta").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let role = match obj.get("type").and_then(Value::as_str) {
+            Some("user") => ChatRole::User,
+            Some("assistant") => ChatRole::Assistant,
+            _ => continue,
+        };
+        let text = obj
+            .get("message")
+            .and_then(Value::as_object)
+            .map(|message| extract_visible_text(message.get("content")))
+            .unwrap_or_default();
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Drop the synthetic "implement the approved plan" prompt the build
+        // phase injects — it isn't something the user typed.
+        if role == ChatRole::User && trimmed.starts_with(APPROVE_PLAN_PREAMBLE) {
+            continue;
+        }
+        let at = obj
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(|ts| DateTime::parse_from_rfc3339(ts).ok())
+            .map(|dt| dt.timestamp_millis())
+            .unwrap_or(0);
+        history.push(ChatHistoryEntry {
+            role,
+            content: trimmed.to_string(),
+            at,
+        });
+    }
+    history
+}
+
+/// Collect human-visible text from a message `content` field. Claude Code
+/// stores user prompts as a bare string and assistant turns as a block array;
+/// keep `text` blocks (joining a multi-block turn with blank lines) and ignore
+/// `thinking`, `tool_use`, and `tool_result` blocks.
+fn extract_visible_text(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|block| {
+                let obj = block.as_object()?;
+                if obj.get("type").and_then(Value::as_str) != Some("text") {
+                    return None;
+                }
+                obj.get("text").and_then(Value::as_str)
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        _ => String::new(),
+    }
 }
 
 #[cfg(test)]
@@ -218,6 +317,59 @@ mod tests {
         // Cancelling a turn that was never registered must be a no-op,
         // not a panic.
         assert!(!cancel_turn("does-not-exist"));
+    }
+
+    #[test]
+    fn parse_session_history_extracts_user_and_assistant_text() {
+        let jsonl = concat!(
+            r#"{"type":"last-prompt","prompt":"hi"}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":"make a phone stand"},"timestamp":"2026-06-03T04:59:51.273Z"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"}]},"timestamp":"2026-06-03T04:59:56.000Z"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Sure, here is the plan."}]},"timestamp":"2026-06-03T04:59:57.000Z"}"#,
+            "\n",
+        );
+        let history = parse_session_history(jsonl);
+        assert_eq!(history.len(), 2, "got {history:?}");
+        assert_eq!(history[0].role, ChatRole::User);
+        assert_eq!(history[0].content, "make a phone stand");
+        assert!(history[0].at > 0, "ISO timestamp must parse to epoch millis");
+        assert_eq!(history[1].role, ChatRole::Assistant);
+        assert_eq!(history[1].content, "Sure, here is the plan.");
+    }
+
+    #[test]
+    fn parse_session_history_skips_meta_tool_and_synthetic_lines() {
+        let jsonl = concat!(
+            r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"<system-reminder>noise</system-reminder>"},"timestamp":"2026-06-03T05:00:00.000Z"}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]},"timestamp":"2026-06-03T05:00:01.000Z"}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":"The plan below is approved. Implement it now, generating all parts and STL/STEP artifacts as described.\n\nBuild a box."},"timestamp":"2026-06-03T05:00:02.000Z"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"cadcode","input":{}}]},"timestamp":"2026-06-03T05:00:03.000Z"}"#,
+            "\n",
+        );
+        let history = parse_session_history(jsonl);
+        assert!(
+            history.is_empty(),
+            "meta/tool/synthetic lines must be dropped, got {history:?}"
+        );
+    }
+
+    #[test]
+    fn parse_session_history_joins_multiple_text_blocks() {
+        let jsonl = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Part one."},{"type":"text","text":"Part two."}]},"timestamp":"2026-06-03T05:00:00.000Z"}"#;
+        let history = parse_session_history(jsonl);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].content, "Part one.\n\nPart two.");
+    }
+
+    #[test]
+    fn parse_session_history_ignores_garbage_lines() {
+        assert!(parse_session_history("not json\n\n{bad}\n").is_empty());
     }
 
     #[test]

@@ -47,7 +47,7 @@
       "active": true,
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRDMEVDNTlBNTJGQThCNDUKUldSRmkvcFNtc1VPVE15ZWYzUmdNSEcrYnQ5cXVqOVRSakU5Skh5VnFPaDYxZk9GTGJyRVlRcWIK",
       "endpoints": [
-        "https://cdn.autonomous.ai/panda/latest.json"
+        "https://github.com/autonomous-ai/panda/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"

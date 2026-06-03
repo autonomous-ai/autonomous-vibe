@@ -203,7 +203,7 @@ def _write_step_after_artifact(spec: EntrySpec, scene: LoadedStepScene, *, logge
         scene.doc,
         spec.step_path,
         label=spec.step_path.stem,
-        originating_system="tom-cad direct XCAF assembly" if spec.kind == "assembly" else "build123d",
+        originating_system="tom-cad direct XCAF assembly" if spec.kind == "assembly" else "cadquery",
         text_to_cad_entry_kind=spec.kind,
         source_path=source_path or None,
         source_fingerprint=source_fingerprint or None,

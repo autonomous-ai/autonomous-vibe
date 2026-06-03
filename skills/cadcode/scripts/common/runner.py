@@ -282,14 +282,18 @@ def in_subprocess_main(
     _restrict_imports(extra)
 
     # 7. Hand off to cadpy. cadpy reads main.py, calls gen_step()/picks up
-    #    `result`, exports STEP+GLB+topology+metadata (+ optional STL/3MF
-    #    per envelope), and returns a result dict.
+    #    `result`, exports STEP + STL + metadata, and returns a result dict.
     try:
         result = _cadpy_gen.generate_step(
             project_dir=project_dir_p,
             output_path=output_path,
             mesh_tolerance=float(mesh_tolerance),
-            mesh_angular_tolerance=float(angular_tolerance),
+            # --angular-tolerance is a degrees-facing CLI flag (see cad/cli.py),
+            # but cadpy/OCCT BRepMesh_IncrementalMesh expects radians. Convert
+            # here at the single handoff both the direct and render-subprocess
+            # paths funnel through. Without this, the default 3.0 was consumed
+            # as 3 radians (~172deg) => no angular refinement => faceted holes.
+            mesh_angular_tolerance=math.radians(float(angular_tolerance)),
         )
     except Exception as e:
         # cadpy raises GenerationError subclasses (see
@@ -339,15 +343,12 @@ def _build_success_payload(
 ) -> dict[str, Any]:
     """Normalize cadpy's generate_step return into contract §3 CadcodeResult.
 
-    cadpy's return shape (post-Track-A) is expected to look like::
+    cadpy's return shape is expected to look like::
 
         {
           "step_path":     Path,
-          "glb_path":      Path,
-          "topology_path": Path,
+          "stl_path":      Path,
           "metadata_path": Path,
-          "stl_path":      Path | None,
-          "3mf_path":      Path | None,
           "is_solid":      bool,
           "volume_mm3":    float,
           "bbox":          {"min": (..), "max": (..)},
@@ -362,8 +363,6 @@ def _build_success_payload(
     # Inferred paths — used when cadpy returns nothing useful (stub path).
     inferred = {
         "step_path": out_dir / f"{stem}.step",
-        "glb_path": out_dir / f"{stem}.glb",
-        "topology_path": out_dir / f"{stem}.topology.json",
         "metadata_path": out_dir / f"{stem}.step.json",
         "stl_path": out_dir / f"{stem}.stl",
     }
@@ -372,7 +371,7 @@ def _build_success_payload(
     if isinstance(cadpy_result, dict):
         src = cadpy_result
 
-    for key in ("step_path", "glb_path", "topology_path", "metadata_path", "stl_path"):
+    for key in ("step_path", "metadata_path", "stl_path"):
         v = src.get(key)
         if v is None:
             # Fall back to filesystem inference: only include paths that

@@ -11,6 +11,7 @@ Requires the skill's runtime deps to be installed in the active Python
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import sys
 import tempfile
@@ -88,9 +89,7 @@ EXAMPLES = sorted((ASSETS).glob("example_*.py")) if ASSETS.exists() else []
 @pytest.mark.parametrize("example", EXAMPLES, ids=lambda p: p.stem)
 def test_example_compiles(example: Path):
     """Every assets/example_*.py must compile to a valid solid AND produce
-    the full contract §3 artifact set (STEP + GLB + topology + metadata,
-    plus the optional STL since the legacy `result = …` form defaults to
-    `stl=True` in the stub)."""
+    the contract §3 artifact set (STEP + STL + metadata)."""
     with tempfile.TemporaryDirectory() as tmp:
         payload = _run_cad(str(example), "--out-dir", tmp)
         assert payload.get("ok"), f"{example.name} failed: {payload}"
@@ -98,15 +97,17 @@ def test_example_compiles(example: Path):
         assert payload.get("volume_mm3", 0) > 0
         out = Path(tmp)
         assert (out / f"{example.stem}.step").exists()
-        assert (out / f"{example.stem}.glb").exists()
-        assert (out / f"{example.stem}.topology.json").exists()
-        assert (out / f"{example.stem}.step.json").exists()
         assert (out / f"{example.stem}.stl").exists()
+        assert (out / f"{example.stem}.step.json").exists()
+        # GLB / topology are no longer produced.
+        assert not (out / f"{example.stem}.glb").exists()
+        assert not (out / f"{example.stem}.topology.json").exists()
         # Payload paths echo the on-disk artifacts.
         assert "step_path" in payload
-        assert "glb_path" in payload
-        assert "topology_path" in payload
+        assert "stl_path" in payload
         assert "metadata_path" in payload
+        assert "glb_path" not in payload
+        assert "topology_path" not in payload
 
 
 # -- Mesh tolerance flag is wired through -----------------------------------
@@ -124,7 +125,12 @@ def test_mesh_tolerance_flag_is_respected():
         )
     assert payload["ok"]
     assert payload["mesh_tolerance"] == pytest.approx(0.05)
-    assert payload["angular_tolerance"] == pytest.approx(3.0)
+    # --angular-tolerance is a degrees-facing flag, but cadpy/OCCT expect
+    # radians. The runner converts at the handoff (common/runner.py), so the
+    # value that actually reaches cadpy (and is echoed back here) is the
+    # radian equivalent. A missing conversion (the faceted-holes bug) would
+    # leave this at 3.0 — i.e. 3 radians ~= 172 deg ~= no angular refinement.
+    assert payload["angular_tolerance"] == pytest.approx(math.radians(3.0))
 
 
 # -- Sandbox refuses forbidden imports --------------------------------------
@@ -193,9 +199,10 @@ def test_project_template_compiles():
         # Stem comes from the project directory name
         out = Path(tmp)
         assert (out / "project_skeleton.step").exists()
-        assert (out / "project_skeleton.glb").exists()
-        assert (out / "project_skeleton.topology.json").exists()
+        assert (out / "project_skeleton.stl").exists()
         assert (out / "project_skeleton.step.json").exists()
+        assert not (out / "project_skeleton.glb").exists()
+        assert not (out / "project_skeleton.topology.json").exists()
 
 
 def test_project_mode_requires_main_py():

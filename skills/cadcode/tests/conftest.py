@@ -11,10 +11,9 @@ The stub:
 
   * Provides a bare ``cadpy.generation.generate_step`` callable that
     matches the frozen contract §1 signature.
-  * Writes empty (zero-byte) artifact files at the contract §3 paths
-    (``<stem>.step``, ``<stem>.glb``, ``<stem>.topology.json``,
-    ``<stem>.step.json``) plus a minimal valid STL produced by CadQuery
-    when the project's ``gen_step()`` returns a real shape — that keeps
+  * Writes the contract §3 artifact set (``<stem>.step``,
+    ``<stem>.step.json``) plus a real STL produced by CadQuery from the
+    project's ``gen_step()`` shape — that keeps
     ``test_recipe_produces_stl`` honest without simulating the full
     cadpy pipeline.
   * Exposes ``cadpy.generation.GenerationError`` so the runner's
@@ -138,11 +137,11 @@ def _build_stub_cadpy(stub_root: Path) -> None:
             mesh_tolerance: float = 0.05,
             mesh_angular_tolerance: float = 3.0,
         ) -> dict:
-            """Stub of cadpy.generation.generate_step per frozen contract §1.
+            """Stub of cadpy.generation.generate_step per contract §1.
 
-            Writes empty-but-named artifact files; only the STL is real
-            (built from the gen_step() shape) so existing
-            "STL exists and is >1000 bytes" assertions stay meaningful.
+            Writes the STEP + STL + metadata artifact set; only the STL is
+            real (built from the gen_step() shape) so existing "STL exists
+            and is >1000 bytes" assertions stay meaningful.
             """
             project_dir = Path(project_dir)
             output_path = Path(output_path)
@@ -172,19 +171,12 @@ def _build_stub_cadpy(stub_root: Path) -> None:
                 "max": (bb.xmax, bb.ymax, bb.zmax),
             }
 
-            # --- Write the artifact set ---
+            # --- Write the artifact set (STEP + STL + metadata) ---
             step_path = out_dir / f"{stem}.step"
-            glb_path = out_dir / f"{stem}.glb"
-            topology_path = out_dir / f"{stem}.topology.json"
             metadata_path = out_dir / f"{stem}.step.json"
 
-            # Stub STEP/GLB: empty-but-present (real geometry is Track A's job).
+            # Stub STEP: empty-but-present (real geometry is cadpy's job).
             step_path.write_bytes(b"")
-            glb_path.write_bytes(b"")
-            topology_path.write_text(json.dumps({
-                "faces": [], "edges": [], "vertices": [],
-                "_stub": True,
-            }))
             metadata_path.write_text(json.dumps({
                 "source_hash": "stub",
                 "generator": "cadpy-stub",
@@ -194,27 +186,23 @@ def _build_stub_cadpy(stub_root: Path) -> None:
                 "_stub": True,
             }))
 
-            # Real STL: keep "STL > 1000 bytes" assertion meaningful by
-            # exporting the CadQuery shape directly. cadpy proper will do
-            # this via its own mesher; for the stub we go straight through
-            # cadquery.
+            # Real STL: always written (printable + preview mesh). Keep
+            # "STL > 1000 bytes" assertions meaningful by exporting the
+            # CadQuery shape directly. cadpy proper meshes via OCCT; for the
+            # stub we go straight through cadquery.
             stl_path = out_dir / f"{stem}.stl"
-            stl_requested = envelope.get("stl", True)  # default True for stub
-            if stl_requested:
-                import cadquery as cq
-                cq.exporters.export(
-                    shape_obj, str(stl_path),
-                    exportType="STL",
-                    tolerance=mesh_tolerance,
-                    angularTolerance=mesh_angular_tolerance,
-                )
+            import cadquery as cq
+            cq.exporters.export(
+                shape_obj, str(stl_path),
+                exportType="STL",
+                tolerance=mesh_tolerance,
+                angularTolerance=mesh_angular_tolerance,
+            )
 
             return {
                 "step_path": step_path,
-                "glb_path": glb_path,
-                "topology_path": topology_path,
                 "metadata_path": metadata_path,
-                "stl_path": stl_path if stl_requested and stl_path.exists() else None,
+                "stl_path": stl_path,
                 "is_solid": is_solid,
                 "volume_mm3": volume_mm3,
                 "bbox": bbox,

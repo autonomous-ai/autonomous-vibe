@@ -27,12 +27,12 @@ export interface AppInfo {
   pid: number;
 }
 
-export type CatalogKind = "step" | "stl" | "glb" | "gcode" | "py" | "json" | "png";
+export type CatalogKind = "step" | "stl" | "gcode" | "py" | "json" | "png";
 export type SourceKindValue = "python" | "static";
 
 export interface CatalogArtifact {
-  glbUrl?: string;
-  topologyUrl?: string;
+  /** URL of the sibling `.stl` the viewer renders as a `.step` entry's preview. */
+  stlUrl?: string;
   metadataUrl?: string;
 }
 
@@ -54,7 +54,7 @@ export interface Catalog {
 export interface GenerationQueueItem {
   file: string;
   startedAt: number;
-  kind: "step" | "glb";
+  kind: "step";
 }
 
 export interface GenerationStatus {

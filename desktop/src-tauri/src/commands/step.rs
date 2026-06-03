@@ -64,7 +64,7 @@ fn source_status_in(project_root: &Path, file: &str) -> IpcResult<StepSourceStat
 /// `step_artifact_regenerate` — stub: enqueue a generation job so the
 /// React side sees `generation_status_read.queue` change, then drop it
 /// after a beat. Real Python-sidecar invocation arrives once the cadcode
-/// runner can produce STEP + GLB + topology from a `gen_step()` source.
+/// runner can produce STEP + STL from a `gen_step()` source.
 ///
 /// TODO(track-c-followup): wire to `python -m cadpy.step_artifact` via
 /// `tauri-plugin-shell` sidecar once the bundled CPython exists.

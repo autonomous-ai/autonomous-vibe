@@ -1,6 +1,6 @@
 ---
 name: cadcode
-description: Generate, edit, validate, and render parametric 3D models for hobbyist 3D printing using CadQuery (B-rep, OCCT). Use for natural-language CAD asks like "phone stand", "wall mount", "honeycomb tray", "GoPro adapter", "vase". Outputs an archival STEP plus an interactive GLB preview (pickable faces/edges) and an optional printable STL. Produces editable Python source — describe what you want, get a printable file in minutes, edit by chatting.
+description: Generate, edit, validate, and render parametric 3D models for hobbyist 3D printing using CadQuery (B-rep, OCCT). Use for natural-language CAD asks like "phone stand", "wall mount", "honeycomb tray", "GoPro adapter", "vase". Outputs an archival STEP plus a printable STL the viewer previews. Produces editable Python source — describe what you want, get a printable file in minutes, edit by chatting.
 ---
 
 # CADCode — hobbyist 3D CAD via CadQuery
@@ -9,14 +9,13 @@ description: Generate, edit, validate, and render parametric 3D models for hobby
 
 Turn natural-language descriptions of 3D parts into printable, inspectable
 3D models. The source of truth is **CadQuery Python** (B-rep on OpenCASCADE
-— same kernel as SolidWorks / FreeCAD / build123d). Every generated `.py`
-file is a small, editable parametric program. The user owns the file;
-tweak parameters, re-render, re-print.
+— same kernel as SolidWorks / FreeCAD). Every generated `.py` file is a
+small, editable parametric program. The user owns the file; tweak
+parameters, re-render, re-print.
 
 Optimised for **hobbyist 3D printing**, not commercial CAD. The deliverable
-is an archival STEP plus a watertight STL that the user's slicer can
-ingest, with an interactive GLB preview the viewer can pick faces and edges
-on.
+is an archival STEP plus a watertight STL that the user's slicer can ingest
+and that the viewer renders as the preview.
 
 ## Treat the design as a project
 
@@ -86,15 +85,15 @@ def gen_step():
     body = build_my_part(p)
     return {
         "shape": body,                       # required: cq.Workplane | cq.Shape
-        "stl": True,                         # write the .stl too (default off)
         "mesh_tolerance": 0.03,              # mm, default 0.05
         "mesh_angular_tolerance": 2.0,       # deg, default 3.0
     }
 ```
 
 The envelope keys (``shape`` | ``instances`` | ``children`` for content;
-``stl`` / ``3mf`` / ``mesh_tolerance`` / ``mesh_angular_tolerance`` for
-output) are all that the cadpy pipeline accepts — unknown keys raise.
+``mesh_tolerance`` / ``mesh_angular_tolerance`` for output) are all that the
+cadpy pipeline accepts — unknown keys raise. The ``.stl`` is always written;
+no envelope flag is needed.
 
 See `references/project-structure.md` for the long version.
 
@@ -114,13 +113,13 @@ What "fix" means in practice:
 
 - ``ok=false``: read the traceback, change the smallest responsible line, re-run.
 - ``is_solid=false`` or volume far off expected: load `references/repair-loop.md`, classify, fix, re-run.
-- Preview GLB looks wrong (proportions off, hole misplaced, parts misaligned): edit the `.py` and re-run. **Always inspect the GLB** in the viewer — geometry can be valid but wrong.
+- Preview STL looks wrong (proportions off, hole misplaced, parts misaligned): edit the `.py` and re-run. **Always inspect the STL** in the viewer — geometry can be valid but wrong.
 
 You have everything you need to close the loop on your own:
 
 - The user's prompt and any attached reference image (inspect).
 - The current workspace files including prior `.py` versions (inspect).
-- `scripts/cad` for compile + solid check + STEP/GLB/topology/metadata export (run).
+- `scripts/cad` for compile + solid check + STEP/STL/metadata export (run).
 - `scripts/check` for a quick validation when you only need a sanity check (run).
 - This SKILL.md + the references for domain knowledge (plan).
 
@@ -237,7 +236,7 @@ The user asks for any of:
 - A specific printable part: phone stand, wall hook, bracket, mount, jig,
   enclosure, knob, organizer, hex tray, gridfinity bin, vase, GoPro/action-
   camera adapter, replacement knob, light cover, cable clip.
-- A CadQuery `.py` file, parametric model, or STL/STEP/3MF output.
+- A CadQuery `.py` file, parametric model, or STL/STEP output.
 - Editing an existing CadQuery file: "make the wall 2mm thicker", "add
   fillets to the top edges", "move the screw holes 5mm apart".
 - A printable replacement part with a stated device + dimensions.
@@ -294,10 +293,9 @@ note the assumption in your reply:
 - **Workspace cwd**: relative target paths resolve from the user's working
   directory. Use absolute paths when you write a `.py` file so subsequent
   tool calls find it.
-- **Source = the `.py` file (or project) you wrote**. STEP, GLB, the
-  topology sidecar, the metadata sidecar, and any optional STL/3MF are
-  *derived*. When the user asks for a change, edit the `.py` and
-  re-generate. Do not edit the STL or STEP.
+- **Source = the `.py` file (or project) you wrote**. STEP, STL, and the
+  metadata sidecar are *derived*. When the user asks for a change, edit the
+  `.py` and re-generate. Do not edit the STL or STEP.
 - **Entry function**: every CadQuery file (or project ``main.py``) you
   produce **must** define ``gen_step()`` at module scope, returning either
   a ``cq.Workplane`` / ``cq.Shape`` / ``cq.Assembly``, or an envelope
@@ -326,8 +324,8 @@ python ~/.claude/skills/cadcode/scripts/check <input.py>
 Common flags on ``scripts/cad``:
 
 - ``--out-dir DIR``       where artifacts land (default: alongside input)
-- ``--mesh-tolerance MM`` linear meshing tolerance for STL/GLB (default 0.05)
-- ``--angular-tolerance DEG``  angular meshing tolerance for STL/GLB (default 3°)
+- ``--mesh-tolerance MM`` linear meshing tolerance for the STL (default 0.05)
+- ``--angular-tolerance DEG``  angular meshing tolerance for the STL (default 3°)
 - ``--wall-clock-s S``    subprocess timeout (default 30; bump for complex parts)
 
 Use ``--help`` for the full flag set. Always pass an **absolute path** for
@@ -340,23 +338,15 @@ and writes the canonical artifact set next to the source via the cadpy
 pipeline:
 
 - `<name>.step` — full B-rep archival, with XCAF labels + colors.
-- `<name>.glb` — interactive preview mesh with embedded face/edge IDs the
-  viewer uses for picking and ``@cad[<file>#fN]`` references.
-- `<name>.topology.json` — sidecar mapping face/edge/vertex ordinals to
-  their STEP entities. Read this if you want to know which OCCT face an
-  ID refers to.
+- `<name>.stl` — slicer-ready mesh, always written. It is also the mesh the
+  viewer renders as the preview.
 - `<name>.step.json` — source hash, generator metadata, validation summary
   (``is_solid``, ``volume_mm3``, mesh tolerances).
-- `<name>.stl` — slicer-ready mesh, written **only** if your ``gen_step()``
-  envelope sets ``stl=True`` (or you returned a bare shape in single-file
-  mode, where STL defaults to on for back-compat with the hobbyist flow).
-- `<name>.3mf` — alt mesh format, written only if ``3mf=True`` in the
-  envelope.
 
 Prints a single JSON line on stdout matching the Panda skill stdout
 contract (§3 in ``docs/panda-interfaces.md``):
-``{ok, step_path, glb_path, topology_path, metadata_path, stl_path?,
-is_solid, volume_mm3, bbox, error?}``.
+``{ok, step_path, stl_path, metadata_path, is_solid, volume_mm3, bbox,
+error?}``.
 
 **`scripts/check`** — quick validator. Runs the `.py` and reports
 `is_solid`, `volume_mm3`, manifold status, and any min-wall warnings
@@ -399,7 +389,7 @@ Write the file with:
 - Named parameters with units in comments (`PHONE_W = 77  # iPhone 15 PM`).
 - A single ``gen_step()`` function at module scope that returns the final
   ``cq.Workplane`` / ``cq.Shape`` / ``cq.Assembly`` (or an envelope
-  ``dict`` if you need to tune mesh tolerance or request an STL/3MF — see
+  ``dict`` if you need to tune mesh tolerance — see
   the [Artifact-control envelope](#artifact-control-envelope) section).
   Trivial single-file scripts may use the legacy ``result = <shape>``
   module-level form instead.
@@ -414,18 +404,17 @@ directory.
 python ~/.claude/skills/cadcode/scripts/cad <abs/path/to/file.py>
 ```
 
-This compiles, checks `is_solid`, exports STEP + GLB + topology +
-metadata (+ optional STL/3MF per envelope), and prints a JSON line.
+This compiles, checks `is_solid`, exports STEP + STL + metadata, and prints
+a JSON line.
 
 ### 6. Read the failure (or the render)
 
 Don't skip this step. Even when `ok=true is_solid=true`, geometry can be
 visually wrong:
 
-- The GLB at ``glb_path`` is the canonical preview — in Panda the viewer
-  pane renders it automatically, with feature edges and pickable faces.
-  When the viewer isn't available, use the ``cad-viewer`` skill (if
-  installed) to spin one up against the workspace.
+- The STL at ``stl_path`` is the preview — in Panda the viewer pane renders
+  it automatically. When the viewer isn't available, use the ``cad-viewer``
+  skill (if installed) to spin one up against the workspace.
 - Compare against the user's prompt and any reference image.
 - Check the bbox in the JSON: does it match the intent (right order of
   magnitude, fits on a 200×200mm bed)?
@@ -454,14 +443,14 @@ assumptions you made.
 
 ## Non-negotiables
 
-- The agent **never** edits the generated STEP / GLB / STL / topology
-  sidecar / metadata sidecar. Edit `.py`, re-generate.
+- The agent **never** edits the generated STEP / STL / metadata sidecar.
+  Edit `.py`, re-generate.
 - Every generated `.py` (or project ``main.py``) defines exactly one
   ``gen_step()`` at module scope, OR for trivial single-file scripts
   assigns the final shape to a module-level ``result``. cadpy accepts
   both.
 - Every CadQuery `.py` starts with `import cadquery as cq` and uses `cq.`
-  throughout. Do not mix in `build123d` — they are different libraries.
+  throughout. CadQuery is the only modeling library available.
 - Run `scripts/cad` (or at minimum `scripts/check`) before declaring done.
   Never claim a model is printable from reading code alone.
 - When the prompt is ambiguous on a *geometry-changing* axis, ask **one**
@@ -555,13 +544,12 @@ them when designing a similar product:
 | `electronics_enclosure.py` | hollow_box + add_lid_lip + four_corner_points + add_screw_post + custom side port + lid_plate |
 | `magnetic_lid_box.py`      | hollow_box + four_corner_points + add_magnet_pocket × 2 (base + lid) + lid_plate |
 
-Both currently produce a single assembled ``result`` for the preview GLB
+Both currently produce a single assembled ``result`` for the preview
 — a v0 single-file shape. New designs should wrap that final shape in a
 ``gen_step()`` function instead. For multi-part products where each piece
 prints separately, follow the ``cq.Assembly`` pattern in
 ``references/assembly.md`` — cadpy preserves part names, colors, and
-locations through the STEP+GLB pipeline so the viewer can highlight each
-part.
+locations in the STEP file.
 
 ## Pattern library
 
@@ -603,9 +591,8 @@ files at the start of the design phase, then weave them into one `.py`.
 Your final reply to the user MUST contain, in order:
 
 1. **One sentence** stating what you made (e.g., "Made a phone stand for an iPhone 15 Pro Max, 130mm tall, tilted 20°.").
-2. **Output path** — the STEP for archival inspection plus, when you set
-   ``stl=True`` (or used single-file mode), the STL absolute path the user
-   can drag into a slicer.
+2. **Output path** — the STEP for archival inspection plus the STL absolute
+   path the user can drag into a slicer.
 3. **Bounding box + volume** so the user knows it'll fit on a 200×200mm bed.
 4. **Tweakable parameters** — the variables at the top of the `.py` and what they do.
 5. **Assumptions** — one or two bullets for anything geometry-changing you defaulted (case allowance, screw size, tilt direction).

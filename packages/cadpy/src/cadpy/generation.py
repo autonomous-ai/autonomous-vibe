@@ -62,7 +62,6 @@ from cadpy.render import (
 )
 from cadpy.source_hash import PythonSourceHash, python_source_hash
 from cadpy.stl import export_part_stl_from_scene
-from cadpy.step_export import build_build123d_step_scene, export_build123d_step_scene
 from cadpy.step_metadata import read_text_to_cad_step_metadata
 from cadpy.threemf import export_part_3mf_from_scene
 from cadpy.step_scene import (
@@ -757,7 +756,7 @@ def _normalize_step_payload(
     3. has callable ``.val()`` and ``.val().wrapped`` is a TopoDS_Shape →
        ``{"shape": result}`` (CadQuery Workplane).
     4. ``.wrapped`` is a TopoDS_Shape → ``{"shape": result}`` (CadQuery
-       Shape, build123d Shape, future OCP wrappers).
+       Shape, future OCP wrappers).
     5. ``cq.Assembly`` (``.children`` + ``.toCompound()``) →
        ``{"shape": result}``; downstream dispatch walks the tree.
     6. Otherwise raise TypeError.
@@ -796,12 +795,12 @@ def _normalize_step_payload(
     # that is a TopoDS_Shape).
     if _looks_like_topods_workplane(result):
         return {"shape": result}
-    # 4. Any other wrapper around a TopoDS_Shape (build123d Shape, cq.Shape,
-    # future OCP wrappers).
+    # 4. Any other wrapper around a TopoDS_Shape (cq.Shape, future OCP
+    # wrappers).
     if _looks_like_topods_wrapper(result):
         return {"shape": result}
     raise TypeError(
-        f"{_display_path(script_path)} gen_step() must return a build123d Shape, "
+        f"{_display_path(script_path)} gen_step() must return a "
         "cq.Workplane, cq.Shape, cq.Assembly, assembly list, or legacy envelope dict "
         f"(got {type(result).__name__})"
     )
@@ -873,9 +872,9 @@ def _shape_payload_entry_kind(shape: object, *, fallback: str) -> str:
 def _shape_has_explicit_children(shape: object) -> bool:
     """True if `shape` is a wrapper with a non-empty ``.children`` iterable.
 
-    Duck-typed: matches build123d's ``Shape``/``Compound`` (which expose
-    ``.children`` as an anytree iterable) and `cq.Assembly` (whose
-    ``.children`` is a Python list). We exclude bare CadQuery `Workplane`/
+    Duck-typed: matches `cq.Assembly` (whose ``.children`` is a Python list)
+    and any wrapper exposing a ``.children`` iterable. We exclude bare
+    CadQuery `Workplane`/
     `Shape` because they don't expose this attribute.
     """
     try:
@@ -894,8 +893,8 @@ def _shape_is_multi_child_compound(shape: object) -> bool:
     """True if `shape` wraps an OCCT compound that contains more than one
     direct child.
 
-    Duck-typed on ``.wrapped`` so the rule applies to build123d shapes,
-    CadQuery shapes, and any future OCP wrapper.
+    Duck-typed on ``.wrapped`` so the rule applies to CadQuery shapes and
+    any future OCP wrapper.
     """
     try:
         from OCP.TopAbs import TopAbs_COMPOUND
@@ -972,54 +971,25 @@ def _write_shape_step_payload(
     use_cadquery_path = (
         _looks_like_cadquery_assembly(shape)
         or _looks_like_topods_workplane(shape)
-        or (
-            _looks_like_topods_wrapper(shape)
-            and not _is_build123d_shape(shape)
-        )
+        or _looks_like_topods_wrapper(shape)
     )
 
-    if not use_cadquery_path and not _is_build123d_shape(shape):
+    if not use_cadquery_path:
         raise TypeError(
             f"{_display_path(script_path)} gen_step() envelope field 'shape' must be a "
-            "build123d Shape, cq.Workplane, cq.Shape, or cq.Assembly; "
+            "cq.Workplane, cq.Shape, or cq.Assembly; "
             f"got {type(shape).__name__}"
         )
 
     source_identity = python_source_hash(script_path)
 
-    if use_cadquery_path:
-        from cadpy.step_export_cadquery import (
-            build_cadquery_step_scene,
-            export_cadquery_step_scene,
-        )
+    from cadpy.step_export_cadquery import (
+        build_cadquery_step_scene,
+        export_cadquery_step_scene,
+    )
 
-        if skip_step_write:
-            scene = build_cadquery_step_scene(
-                shape,
-                output_path,
-                source_kind="python",
-                source_hash=source_identity.source_hash,
-            )
-            _mark_scene_python_backed(scene, source_identity=source_identity, source_path=script_path)
-            _mark_scene_step_payload(scene, entry_kind=entry_kind, payload_kind="shape")
-            logger.debug(f"built CadQuery STEP scene without writing STEP: {_display_path(output_path)}")
-            return scene
-        scene = export_cadquery_step_scene(
-            shape,
-            output_path,
-            text_to_cad_entry_kind=entry_kind,
-            source_path=relative_to_repo(script_path),
-            source_fingerprint=source_identity.source_fingerprint,
-            source_hash=source_identity.source_hash,
-        )
-        _mark_scene_python_backed(scene, source_identity=source_identity, source_path=script_path)
-        _mark_scene_step_payload(scene, entry_kind=entry_kind, payload_kind="shape")
-        logger.debug(f"wrote STEP (CadQuery): {_display_path(output_path)}")
-        return scene
-
-    # build123d path (unchanged behavior).
     if skip_step_write:
-        scene = build_build123d_step_scene(
+        scene = build_cadquery_step_scene(
             shape,
             output_path,
             source_kind="python",
@@ -1027,9 +997,9 @@ def _write_shape_step_payload(
         )
         _mark_scene_python_backed(scene, source_identity=source_identity, source_path=script_path)
         _mark_scene_step_payload(scene, entry_kind=entry_kind, payload_kind="shape")
-        logger.debug(f"built STEP scene without writing STEP: {_display_path(output_path)}")
+        logger.debug(f"built CadQuery STEP scene without writing STEP: {_display_path(output_path)}")
         return scene
-    scene = export_build123d_step_scene(
+    scene = export_cadquery_step_scene(
         shape,
         output_path,
         text_to_cad_entry_kind=entry_kind,
@@ -1039,16 +1009,8 @@ def _write_shape_step_payload(
     )
     _mark_scene_python_backed(scene, source_identity=source_identity, source_path=script_path)
     _mark_scene_step_payload(scene, entry_kind=entry_kind, payload_kind="shape")
-    logger.debug(f"wrote STEP: {_display_path(output_path)}")
+    logger.debug(f"wrote STEP (CadQuery): {_display_path(output_path)}")
     return scene
-
-
-def _is_build123d_shape(shape: object) -> bool:
-    try:
-        from build123d import Shape as Build123dShape
-    except Exception:  # pragma: no cover — defensive
-        return False
-    return isinstance(shape, Build123dShape)
 
 
 def _mark_scene_python_backed(
@@ -2767,41 +2729,28 @@ def _write_shape_step_payload_with_source(
     use_cadquery_path = (
         _looks_like_cadquery_assembly(shape)
         or _looks_like_topods_workplane(shape)
-        or (
-            _looks_like_topods_wrapper(shape)
-            and not _is_build123d_shape(shape)
-        )
+        or _looks_like_topods_wrapper(shape)
     )
 
-    if not use_cadquery_path and not _is_build123d_shape(shape):
+    if not use_cadquery_path:
         raise TypeError(
             f"{_display_path(script_path)} gen_step() envelope field 'shape' must be a "
-            "build123d Shape, cq.Workplane, cq.Shape, or cq.Assembly; "
+            "cq.Workplane, cq.Shape, or cq.Assembly; "
             f"got {type(shape).__name__}"
         )
 
     source_identity = python_source_hash(script_path)
 
-    if use_cadquery_path:
-        from cadpy.step_export_cadquery import export_cadquery_step_scene
+    from cadpy.step_export_cadquery import export_cadquery_step_scene
 
-        scene = export_cadquery_step_scene(
-            shape,
-            output_path,
-            text_to_cad_entry_kind=entry_kind,
-            source_path=source_path_for_metadata,
-            source_fingerprint=source_identity.source_fingerprint,
-            source_hash=source_identity.source_hash,
-        )
-    else:
-        scene = export_build123d_step_scene(
-            shape,
-            output_path,
-            text_to_cad_entry_kind=entry_kind,
-            source_path=source_path_for_metadata,
-            source_fingerprint=source_identity.source_fingerprint,
-            source_hash=source_identity.source_hash,
-        )
+    scene = export_cadquery_step_scene(
+        shape,
+        output_path,
+        text_to_cad_entry_kind=entry_kind,
+        source_path=source_path_for_metadata,
+        source_fingerprint=source_identity.source_fingerprint,
+        source_hash=source_identity.source_hash,
+    )
 
     # Tag the scene as python-backed without going through
     # ``_mark_scene_python_backed`` (which also calls ``relative_to_repo``
@@ -2830,12 +2779,9 @@ def generate_step(
     defined in ``docs/panda-interfaces.md`` §1 — all sibling to
     ``output_path``:
 
-      * ``<stem>.step``           — B-rep with XCAF labels + metadata
-      * ``<stem>.glb``            — topology-embedded preview mesh
-      * ``<stem>.topology.json``  — JSON manifest (face/edge/vertex IDs)
-      * ``<stem>.step.json``      — source hash, generator, validation
-      * ``<stem>.stl``  — only if envelope ``stl`` truthy
-      * ``<stem>.3mf``  — only if envelope ``3mf`` truthy
+      * ``<stem>.step``       — B-rep with XCAF labels + metadata
+      * ``<stem>.stl``        — printable mesh + the viewer's preview mesh
+      * ``<stem>.step.json``  — source hash, generator, validation
 
     Returns the dict consumed by the runner's
     ``_build_success_payload`` — see contract §3.
@@ -2884,11 +2830,11 @@ def generate_step(
                 entry_kind=spec.kind,
             )
         elif "instances" in envelope or "children" in envelope:
-            # Assemblies are only used by build123d-pattern projects today
-            # (cq.Assembly returns are normalized to the "shape" branch
-            # earlier). If a future caller produces a list/instances
-            # envelope from outside REPO_ROOT we'll need to extend the
-            # assembly writer too — flag it loudly until then.
+            # Reference-assembly envelopes (list/instances/children of
+            # catalog parts); plain cq.Assembly returns are normalized to the
+            # "shape" branch earlier. If a future caller produces a
+            # list/instances envelope from outside REPO_ROOT we'll need to
+            # extend the assembly writer too — flag it loudly until then.
             scene = _write_assembly_step_payload(
                 envelope,
                 output_path=output_path_p,
@@ -2912,32 +2858,28 @@ def generate_step(
             f"failed to write STEP {output_path_p.name}: {type(exc).__name__}: {exc}"
         ) from exc
 
-    # Sibling artifact paths per contract §1.
+    # Sibling artifact paths per contract §1 (STEP + STL + metadata).
     parent = output_path_p.parent
     stem = output_path_p.stem
-    glb_path = parent / f"{stem}.glb"
-    topology_path = parent / f"{stem}.topology.json"
+    stl_path = parent / f"{stem}.stl"
     metadata_path = parent / f"{stem}.step.json"
 
+    # Mesh the scene so the STL writer has triangulated geometry, then merge
+    # the occurrences into a single export shape.
     try:
-        _write_topology_artifacts(
-            scene=scene,
-            spec=spec,
-            glb_target_path=glb_path,
-            topology_json_path=topology_path,
+        selector_options = _selector_options_for_part(spec, scene=scene)
+        mesh_step_scene(
+            scene,
+            linear_deflection=selector_options.linear_deflection,
+            angular_deflection=selector_options.angular_deflection,
+            relative=selector_options.relative,
         )
-    except GenerationError:
-        raise
+        export_shape = scene_export_shape(scene)
     except Exception as exc:
         raise ExportError(
-            f"failed to write GLB/topology for {output_path_p.name}: {type(exc).__name__}: {exc}"
+            f"failed to mesh {output_path_p.name}: {type(exc).__name__}: {exc}"
         ) from exc
 
-    export_shape = scene.export_shape
-    if export_shape is None:
-        # Mesh + scene_export_shape were called inside _write_topology_artifacts;
-        # this branch is defensive.
-        export_shape = scene_export_shape(scene)
     try:
         is_solid = _is_solid_shape(export_shape)
         volume_mm3 = _volume_mm3_from_shape(export_shape)
@@ -2965,37 +2907,19 @@ def generate_step(
             f"failed to write metadata sidecar: {type(exc).__name__}: {exc}"
         ) from exc
 
-    # Optional STL / 3MF — envelope-controlled per contract §1.
-    stl_target = _resolve_stl_path(envelope, stem=stem, parent=parent)
-    if stl_target is not None:
-        try:
-            export_part_stl_from_scene(output_path_p, scene, target_path=stl_target)
-        except Exception as exc:
-            raise ExportError(
-                f"failed to write STL {stl_target.name}: {type(exc).__name__}: {exc}"
-            ) from exc
-
-    three_mf_target = _resolve_3mf_path(envelope, stem=stem, parent=parent)
-    if three_mf_target is not None:
-        try:
-            export_part_3mf_from_scene(
-                output_path_p,
-                scene,
-                target_path=three_mf_target,
-                color=spec.color,
-            )
-        except Exception as exc:
-            raise ExportError(
-                f"failed to write 3MF {three_mf_target.name}: {type(exc).__name__}: {exc}"
-            ) from exc
+    # STL is always written — it is the printable deliverable and the viewer's
+    # preview mesh.
+    try:
+        export_part_stl_from_scene(output_path_p, scene, target_path=stl_path)
+    except Exception as exc:
+        raise ExportError(
+            f"failed to write STL {stl_path.name}: {type(exc).__name__}: {exc}"
+        ) from exc
 
     return {
         "step_path": str(output_path_p),
-        "glb_path": str(glb_path),
-        "topology_path": str(topology_path),
+        "stl_path": str(stl_path),
         "metadata_path": str(metadata_path),
-        "stl_path": str(stl_target) if stl_target is not None else None,
-        "3mf_path": str(three_mf_target) if three_mf_target is not None else None,
         "is_solid": bool(is_solid),
         "volume_mm3": float(volume_mm3),
         "bbox": bbox,

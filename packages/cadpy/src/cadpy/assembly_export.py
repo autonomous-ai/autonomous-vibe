@@ -1,5 +1,4 @@
 from __future__ import annotations
-import copy
 from contextlib import nullcontext
 import hashlib
 import json
@@ -171,28 +170,6 @@ def _is_git_lfs_pointer(path: Path) -> bool:
         return False
 
 
-def _location_from_transform(transform: tuple[float, ...]):
-    import build123d
-    from OCP.gp import gp_Trsf
-
-    trsf = gp_Trsf()
-    trsf.SetValues(
-        transform[0],
-        transform[1],
-        transform[2],
-        transform[3],
-        transform[4],
-        transform[5],
-        transform[6],
-        transform[7],
-        transform[8],
-        transform[9],
-        transform[10],
-        transform[11],
-    )
-    return build123d.Location(trsf)
-
-
 @lru_cache(maxsize=4096)
 def _toploc_from_transform(transform: tuple[float, ...]):
     from OCP.gp import gp_Trsf
@@ -232,18 +209,44 @@ def _component_name(instance_path: tuple[str, ...]) -> str:
     return "__".join(instance_path) or "root"
 
 
-def _load_step_shape(step_path: Path):
+@dataclass
+class _PartShape:
+    """Minimal stand-in for a loaded single-part STEP shape.
+
+    Exposes just the attributes the XCAF walker
+    (:meth:`_DirectXcafAssemblyWriter._shape_definition_for_tree`) reads:
+    ``wrapped`` (OCCT ``TopoDS_Shape``), ``color`` (rgba tuple | None),
+    ``label``, and an (always empty) ``children`` iterable.
+    """
+
+    wrapped: object
+    color: tuple[float, float, float, float] | None = None
+    label: str | None = None
+    children: tuple = ()
+
+
+def _load_step_shape(step_path: Path) -> _PartShape:
     if not step_path.exists():
         raise FileNotFoundError(f"Referenced STEP file is missing: {_relative_to_repo(step_path)}")
     if _is_git_lfs_pointer(step_path):
         raise RuntimeError(f"Referenced STEP file is a Git LFS pointer: {_relative_to_repo(step_path)}")
 
-    import build123d
+    from cadquery import importers
 
     try:
-        return build123d.import_step(step_path)
+        workplane = importers.importStep(str(step_path))
+        solids = workplane.vals()
+        if not solids:
+            raise RuntimeError("STEP import produced no shapes")
+        if len(solids) == 1:
+            wrapped = solids[0].wrapped
+        else:
+            from cadquery import Compound
+
+            wrapped = Compound.makeCompound(solids).wrapped
     except Exception as exc:
         raise RuntimeError(f"Failed to load referenced STEP file: {_relative_to_repo(step_path)}") from exc
+    return _PartShape(wrapped=wrapped, label=step_path.stem)
 
 
 def _step_has_assembly_artifact(step_path: Path) -> bool | None:
@@ -295,34 +298,6 @@ def _cached_step_scene(step_path: Path, *, cache: _AssemblyBuildCache) -> Loaded
     return cached
 
 
-def _load_step_assembly_shape(step_path: Path, *, label: str):
-    import build123d
-
-    from cadpy.step_scene import scene_occurrence_shape
-
-    scene = load_step_scene(step_path)
-
-    def node_label(node: object) -> str:
-        return str(getattr(node, "name", None) or getattr(node, "source_name", None) or occurrence_selector_id(node)).strip()
-
-    def build_node(node: object):
-        children = list(getattr(node, "children", []) or [])
-        if children:
-            child_shapes = [build_node(child) for child in children]
-            return build123d.Compound(
-                children=child_shapes,
-                label=node_label(node),
-            )
-        shape = build123d.Shape(obj=scene_occurrence_shape(scene, node))
-        shape.label = node_label(node)
-        return shape
-
-    roots = [build_node(root) for root in scene.roots]
-    if not roots:
-        return _load_step_shape(step_path)
-    return build123d.Compound(children=roots, label=label)
-
-
 def _walk_cadquery_assembly(
     assembly: object,
     output_path: Path,
@@ -334,14 +309,12 @@ def _walk_cadquery_assembly(
     skip_step_write: bool = False,
     source_kind: str = "step",
 ) -> LoadedStepScene:
-    """Walk a ``cq.Assembly`` into a :class:`LoadedStepScene` matching the
-    one the build123d walker produces.
+    """Walk a ``cq.Assembly`` into a :class:`LoadedStepScene`.
 
-    Mirrors the build123d walker at the OCCT-doc level. The cq.Assembly API
-    exposes ``.children``, ``.name``, ``.loc``, ``.color``, ``.obj`` on each
-    node; the new :mod:`cadpy.step_export_cadquery` module knows how to
-    translate those into an XCAF doc, which is then shared with the OCCT
-    pipeline.
+    Works at the OCCT-doc level. The cq.Assembly API exposes ``.children``,
+    ``.name``, ``.loc``, ``.color``, ``.obj`` on each node; the
+    :mod:`cadpy.step_export_cadquery` module translates those into an XCAF
+    doc, which is then shared with the OCCT pipeline.
 
     If ``skip_step_write`` is True the STEP file is *not* written; the scene
     is loaded from the in-memory XCAF doc directly.
@@ -498,41 +471,14 @@ def assembly_source_fingerprint(
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _clear_shape_colors(shape: object) -> None:
-    if hasattr(shape, "color"):
-        shape.color = None
-    for child in getattr(shape, "children", []) or []:
-        _clear_shape_colors(child)
+def _shape_for_part_entry(entry: CatalogEntry, *, use_source_colors: bool, cache: _AssemblyBuildCache) -> _PartShape:
+    """Load a single-part STEP into a :class:`_PartShape`, applying the source
+    color when requested.
 
-
-def _apply_source_color(shape: object, cad_ref: str, *, use_source_colors: bool, cache: _AssemblyBuildCache) -> None:
-    import build123d
-
-    source_color = _cached_source_color_for_cad_ref(cad_ref, cache=cache)
-    if not use_source_colors:
-        _clear_shape_colors(shape)
-    elif source_color is not None:
-        shape.color = build123d.Color(*source_color)
-
-
-def _copy_cached_shape_tree(shape: object):
-    import build123d
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
-
-    if getattr(shape, "children", None):
-        copied = copy.copy(shape)
-        copied.label = getattr(shape, "label", None)
-    else:
-        copier = BRepBuilderAPI_Copy(shape.wrapped, True, True)
-        copied_shape = copier.Shape()
-        copied = build123d.Shape(obj=copied_shape)
-        copied.label = getattr(shape, "label", None)
-    if hasattr(copied, "color"):
-        copied.color = getattr(shape, "color", None)
-    return copied
-
-
-def _shape_for_part_entry(entry: CatalogEntry, *, use_source_colors: bool, cache: _AssemblyBuildCache):
+    Parts that carry an embedded assembly artifact are handled by the caller
+    (:meth:`_DirectXcafAssemblyWriter._part_definition_for_entry`) via the
+    STEP-scene path, so this loader only ever sees flat single-part STEPs.
+    """
     step_path = entry.step_path.resolve() if entry.step_path is not None else None
     if step_path is None:
         raise RuntimeError(f"Part source {entry.source_ref} is missing STEP source path")
@@ -541,111 +487,10 @@ def _shape_for_part_entry(entry: CatalogEntry, *, use_source_colors: bool, cache
     cached = cache.step_shapes.get(key)
     if cached is not None:
         return cached
-    shape = (
-        _load_step_assembly_shape(step_path, label=Path(step_path).stem)
-        if _cached_step_has_assembly_artifact(step_path, cache=cache)
-        else _load_step_shape(step_path)
-    )
-    _apply_source_color(shape, entry.cad_ref, use_source_colors=use_source_colors, cache=cache)
+    shape = _load_step_shape(step_path)
+    shape.color = source_color
     cache.step_shapes[key] = shape
     return shape
-
-
-def _build_node_shape(
-    node: AssemblyNodeSpec,
-    *,
-    resolve_entry,
-    instance_path: tuple[str, ...],
-    parent_use_source_colors: bool,
-    stack: tuple[str, ...],
-    cache: _AssemblyBuildCache,
-):
-    import build123d
-
-    component_path = (*instance_path, node.instance_id) if instance_path else (node.instance_id,)
-    label = _component_name(component_path)
-    use_source_colors = parent_use_source_colors and node.use_source_colors
-    copy_before_move = False
-
-    if node.children:
-        child_shapes = [
-            _build_node_shape(
-                child,
-                resolve_entry=resolve_entry,
-                instance_path=component_path,
-                parent_use_source_colors=use_source_colors,
-                stack=stack,
-                cache=cache,
-            )
-            for child in node.children
-        ]
-        shape = build123d.Compound(children=child_shapes, label=label)
-    else:
-        if node.source_path is None or node.path is None:
-            raise RuntimeError(f"Assembly node {label} is missing a STEP source path")
-        child_entry = resolve_entry(node.source_path)
-        if child_entry is None:
-            raise RuntimeError(f"Assembly node {label} references missing CAD source {node.path}")
-        if child_entry.kind == "assembly":
-            if child_entry.assembly_spec is None:
-                raise RuntimeError(f"Assembly source {child_entry.source_ref} is missing assembly spec data")
-            stack_key = child_entry.source_ref
-            if stack_key in stack:
-                cycle = " -> ".join((*stack, stack_key))
-                raise RuntimeError(f"Assembly cycle detected: {cycle}")
-            shape = _compound_from_nodes(
-                assembly_spec_children(child_entry.assembly_spec),
-                label=label,
-                resolve_entry=resolve_entry,
-                instance_path=component_path,
-                parent_use_source_colors=use_source_colors,
-                stack=(*stack, stack_key),
-                cache=cache,
-            )
-        elif child_entry.kind == "part":
-            shape = _shape_for_part_entry(child_entry, use_source_colors=use_source_colors, cache=cache)
-            copy_before_move = True
-        else:
-            raise RuntimeError(f"Assembly node {label} resolved to unsupported CAD source kind: {child_entry.kind}")
-
-    if copy_before_move:
-        shape = _copy_cached_shape_tree(shape)
-    moved = shape.moved(_location_from_transform(node.transform))
-    moved.label = label
-    if not use_source_colors:
-        _clear_shape_colors(moved)
-    return moved
-
-
-def _compound_from_nodes(
-    nodes: Sequence[AssemblyNodeSpec],
-    *,
-    label: str,
-    resolve_entry,
-    instance_path: tuple[str, ...] = (),
-    parent_use_source_colors: bool,
-    stack: tuple[str, ...],
-    cache: _AssemblyBuildCache,
-):
-    import build123d
-
-    children = [
-        _build_node_shape(
-            node,
-            resolve_entry=resolve_entry,
-            instance_path=instance_path,
-            parent_use_source_colors=parent_use_source_colors,
-            stack=stack,
-            cache=cache,
-        )
-        for node in nodes
-    ]
-    if not children:
-        raise RuntimeError(f"Assembly {label} has no resolved STEP instances")
-    return build123d.Compound(
-        children=children,
-        label=label,
-    )
 
 
 class _DirectXcafAssemblyWriter:
@@ -1073,21 +918,6 @@ def build_direct_assembly_step_scene(
             source_kind=source_kind,
             source_hash=source_hash,
         )
-
-
-def build_assembly_compound(assembly_spec: AssemblySpec, *, label: str | None = None):
-    resolver = _AssemblyCatalogResolver()
-    root_source = resolver.source_for_path(assembly_spec.assembly_path)
-    root_source_ref = root_source.source_ref if root_source is not None else _relative_to_repo(assembly_spec.assembly_path)
-    cache = _AssemblyBuildCache(resolver=resolver)
-    return _compound_from_nodes(
-        assembly_spec_children(assembly_spec),
-        label=label or Path(assembly_spec.assembly_path).stem,
-        resolve_entry=resolver.entry_for_path,
-        parent_use_source_colors=True,
-        stack=(root_source_ref,),
-        cache=cache,
-    )
 
 
 def export_assembly_step_scene(

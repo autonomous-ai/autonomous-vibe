@@ -23,10 +23,10 @@ use tokio::process::{Child, Command};
 use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
-/// Extensions watched per contract §3: `.step .stp .stl .3mf .glb .gcode
+/// Extensions watched per contract §3: `.step .stp .stl .3mf .gcode
 /// .png .py .json` (lowercase, case-sensitive).
 pub const WATCHED_EXTENSIONS: &[&str] = &[
-    "step", "stp", "stl", "3mf", "glb", "gcode", "png", "py", "json",
+    "step", "stp", "stl", "3mf", "gcode", "png", "py", "json",
 ];
 
 /// Stdout read buffer raised to 32 MiB to match cadcode's reference
@@ -58,7 +58,7 @@ pub type MtimeSnapshot = HashMap<String, MtimeEntry>;
 ///   prompts for Bash, and the cadcode generator is a Bash command
 ///   (`python ~/.claude/skills/cadcode/scripts/cad <file>`). In headless
 ///   `-p` mode there is no human to answer that prompt, so generation was
-///   denied — the source `.py` got written but no STL/STEP/GLB was ever
+///   denied — the source `.py` got written but no STL/STEP was ever
 ///   produced. `bypassPermissions` lets the build phase run the generator.
 ///   This is safe here: the turn is non-interactive by design, the workspace
 ///   is scoped via `--add-dir <project>`, and the cadcode skill itself runs
@@ -118,7 +118,7 @@ pub const PLAN_SYSTEM_PROMPT: &str = concat!(
     "You are running inside Panda, the consumer 3D printing desktop app. ",
     "Every user message is a request for a 3D-printable model. You are in ",
     "PLANNING mode. Do NOT generate geometry, write .py, or produce ",
-    "STL/STEP/GLB yet. Design the part using the `cadcode` skill's design ",
+    "STL/STEP yet. Design the part using the `cadcode` skill's design ",
     "knowledge — see its **Plan-phase design discipline** section (tolerances, ",
     "wall thickness, hardware tables, part decomposition, print orientation, ",
     "assembly base+lid) — and write a precise, physically-correct plan the ",
@@ -175,7 +175,7 @@ pub const IMPLEMENT_SYSTEM_PROMPT: &str = concat!(
     "You are running inside Panda, the consumer 3D printing desktop app. ",
     "The user has APPROVED a design plan. Implement it now using the ",
     "`cadcode` skill: write the Python source, generate every part, and ",
-    "produce the STL/STEP/GLB artifacts for each part described in the ",
+    "produce the STL/STEP artifacts for each part described in the ",
     "plan. Follow the cadcode protocol. Do not re-plan or ask further ",
     "questions unless a blocking ambiguity remains.",
 );

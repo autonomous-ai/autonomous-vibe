@@ -1,11 +1,10 @@
 """Track A regression suite — CadQuery shapes through the cadpy pipeline.
 
-Mirrors the patterns in ``test_compound_assembly_generation.py``: tempdirs,
-real STEP/GLB generation, no mocks. These tests validate the new
+Tempdirs, real STEP generation, no mocks. These tests validate the
 :mod:`cadpy.step_export_cadquery` module and the duck-typed dispatch in
 :func:`cadpy.generation._normalize_step_payload`.
 
-See ``docs/panda-interfaces.md`` §1 for the frozen contract.
+See ``docs/panda-interfaces.md`` §1 for the contract.
 """
 
 from __future__ import annotations
@@ -21,7 +20,6 @@ if str(PACKAGE_SRC) not in sys.path:
     sys.path.insert(0, str(PACKAGE_SRC))
 
 from cadpy import generation
-from cadpy.step_export import export_build123d_step_scene
 from cadpy.step_export_cadquery import (
     build_cadquery_step_scene,
     export_cadquery_step_scene,
@@ -96,26 +94,17 @@ class CadqueryShapeNormalizationTests(unittest.TestCase):
         self.assertIn("shape", envelope)
         self.assertIs(envelope["shape"], solid)
 
-    def test_normalize_step_payload_still_accepts_build123d_shape(self) -> None:
-        import build123d as b3d
-
-        box = b3d.Box(10, 10, 10)
-        envelope = generation._normalize_step_payload(box, script_path=Path("/tmp/x.py"))
-        self.assertIn("shape", envelope)
-        self.assertIs(envelope["shape"], box)
-
     def test_normalize_step_payload_rejects_garbage(self) -> None:
         with self.assertRaises(TypeError):
             generation._normalize_step_payload("not a shape", script_path=Path("/tmp/x.py"))
 
     def test_is_cadquery_shape_predicate(self) -> None:
         import cadquery as cq
-        import build123d as b3d
 
         self.assertTrue(is_cadquery_shape(cq.Workplane().box(1, 1, 1)))
         self.assertTrue(is_cadquery_shape(cq.Assembly(name="a")))
-        self.assertFalse(is_cadquery_shape(b3d.Box(1, 1, 1)))
         self.assertFalse(is_cadquery_shape("not a shape"))
+        self.assertFalse(is_cadquery_shape(object()))
 
 
 class CadqueryStepExportTests(unittest.TestCase):
@@ -165,59 +154,34 @@ class CadqueryStepExportTests(unittest.TestCase):
 
 
 class CadqueryFaceIdStabilityTests(unittest.TestCase):
-    """Contract §1: build123d.Box(20,20,5) and cq.Workplane().box(20,20,5)
-    MUST produce identical face-ID ordinals for the top face. Refs survive.
+    """Contract §1: face-ID ordinals come from ``TopExp.MapShapes_s`` over the
+    OCCT topology tree and are deterministic for a given CadQuery shape.
     """
 
-    def test_top_face_ordinal_matches_build123d_equivalent(self) -> None:
+    def test_box_top_face_ordinal_is_stable(self) -> None:
         import cadquery as cq
-        import build123d as b3d
 
-        # Equivalent inputs in the two libraries.
-        b3d_box = b3d.Box(20, 20, 5)
         cq_box = cq.Workplane().box(20, 20, 5)
+        faces = _face_center_table(cq_box.val().wrapped)
 
-        b3d_faces = _face_center_table(b3d_box.wrapped)
-        cq_faces = _face_center_table(cq_box.val().wrapped)
+        # A solid box has six faces; the top face (largest +Z centroid) is the
+        # 6th ordinal in OCCT's traversal order.
+        self.assertEqual(6, len(faces))
+        self.assertEqual(6, _top_face_ordinal(faces))
+        self.assertAlmostEqual(2.5, faces[_top_face_ordinal(faces)][2], places=4)
 
-        # Same face count.
-        self.assertEqual(set(b3d_faces.keys()), set(cq_faces.keys()))
-
-        # The face ordinals are derived from the OCCT topology tree the same
-        # way regardless of which Python wrapper produced the TopoDS_Solid.
-        # The top face is the one whose centroid has the largest Z.
-        self.assertEqual(_top_face_ordinal(b3d_faces), _top_face_ordinal(cq_faces))
-
-        # Centroids match within a small numerical tolerance.
-        for ordinal in b3d_faces:
-            bx, by, bz = b3d_faces[ordinal]
-            cx, cy, cz = cq_faces[ordinal]
-            self.assertAlmostEqual(bx, cx, places=4)
-            self.assertAlmostEqual(by, cy, places=4)
-            self.assertAlmostEqual(bz, cz, places=4)
-
-    def test_box_with_hole_top_face_ordinal_matches_build123d(self) -> None:
-        """Box-with-hole — assert the *top face* (the one with the hole) has
-        the same ordinal in both libraries.
+    def test_box_with_hole_top_face_ordinal_is_stable(self) -> None:
+        """Box-with-hole — the top face (the one carrying the hole) has a
+        stable ordinal derived purely from the OCCT topology tree.
         """
         import cadquery as cq
-        import build123d as b3d
-
-        # build123d: Box minus a cylindrical hole drilled from +Z.
-        b3d_box = b3d.Box(20, 20, 5)
-        b3d_hole = b3d.Pos(0, 0, 0) * b3d.Cylinder(4, 5)  # radius 4 → dia 8
-        b3d_part = b3d_box - b3d_hole
 
         cq_part = cq.Workplane().box(20, 20, 5).faces(">Z").workplane().hole(8)
+        faces = _face_center_table(cq_part.val().wrapped)
 
-        b3d_faces = _face_center_table(b3d_part.wrapped)
-        cq_faces = _face_center_table(cq_part.val().wrapped)
-
-        # Same face count.
-        self.assertEqual(len(b3d_faces), len(cq_faces))
-
-        # Top face ordinal matches between libraries.
-        self.assertEqual(_top_face_ordinal(b3d_faces), _top_face_ordinal(cq_faces))
+        # Box-with-hole has 7 faces (4 sides + bottom + top + cylinder).
+        self.assertEqual(7, len(faces))
+        self.assertEqual(3, _top_face_ordinal(faces))
 
 
 class CadqueryAssemblyExportTests(unittest.TestCase):
@@ -278,7 +242,7 @@ class CadqueryAssemblyExportTests(unittest.TestCase):
             scene = export_cadquery_step_scene(asm, output_path)
 
             # Colors land on prototype labels (or component labels — either
-            # is acceptable per the build123d test for "colors survive").
+            # is acceptable for "colors survive").
             colors_seen: set[tuple[float, float, float, float]] = set()
             colors_seen.update(
                 tuple(round(component, 3) for component in color)

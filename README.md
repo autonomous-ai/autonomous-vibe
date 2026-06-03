@@ -14,8 +14,8 @@ v1 in active development.
 
 - `desktop/` — Tauri shell (Rust) + bundled CPython + bundled OrcaSlicer
 - `viewer/` — Vite + React app (the in-app 3D viewer and chat surface)
-- `packages/cadjs/` — viewer's CAD/render/topology JS code (UI-framework-agnostic)
-- `packages/cadpy/` — Python STEP/GLB/topology artifact pipeline (build123d + CadQuery)
+- `packages/cadjs/` — viewer's CAD mesh/render JS code (UI-framework-agnostic)
+- `packages/cadpy/` — Python STEP + STL artifact pipeline (CadQuery)
 - `skills/` — Claude Code skills bundled with the app
   - `cadcode` — CadQuery-based parametric CAD generation
   - `cad-viewer` — preview/inspection handoff into the in-app viewer

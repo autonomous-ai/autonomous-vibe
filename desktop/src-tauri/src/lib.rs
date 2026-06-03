@@ -8,6 +8,7 @@ pub mod commands;
 pub mod state;
 pub mod paths;
 pub mod skills;
+pub mod menu;
 pub mod asset_protocol;
 
 use commands::*;
@@ -66,6 +67,11 @@ pub fn run() {
             // generator) can find them. Best-effort; symlinked skill dirs are
             // left alone for dev live-editing. See `crate::skills`.
             skills::install_bundled_skills(&tauri::Manager::app_handle(app).clone());
+            // Replace Tauri's default macOS menu with one that adds a
+            // "Check for Updates…" item under the Panda app menu, so the
+            // update flow stays reachable after the in-app toast is dismissed.
+            // No-op on non-macOS. See `crate::menu`.
+            menu::install(tauri::Manager::app_handle(app))?;
             // Auto-update: on startup, run the auto-update flow. In the default
             // (prompt) mode this is a no-op and the UI drives a check-then-ask
             // flow via the `update_check` command; with the `auto_update`
@@ -79,6 +85,7 @@ pub fn run() {
             }
             Ok(())
         })
+        .on_menu_event(|app, event| menu::on_event(app, event.id.as_ref()))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())

@@ -1,7 +1,7 @@
 import { StrictMode, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import CadWorkspace from "./components/CadWorkspace";
-import ChatSidebar, { SIDEBAR_WIDTH as CHAT_SIDEBAR_WIDTH } from "./components/chat/ChatSidebar";
+import ChatSidebar, { readStoredChatSidebarWidth } from "./components/chat/ChatSidebar";
 import { bindCadRefSelectionToChatInput } from "./components/chat/cadRefEvents";
 import ProjectMenu from "./components/project/ProjectMenu.jsx";
 import OnboardingWizard from "./components/onboarding/OnboardingWizard.jsx";
@@ -98,6 +98,10 @@ function AppRoot() {
   const [needsOnboarding, completeOnboarding] = useOnboardingGate();
   const onboarded = needsOnboarding === false;
 
+  // Live width of the resizable chat panel. Lifted here because it drives both
+  // the panel itself and the workspace's right padding so neither overlaps.
+  const [chatSidebarWidth, setChatSidebarWidth] = useState(readStoredChatSidebarWidth);
+
   const projects = useProjectsStore((state) => state.projects);
   const currentProjectId = useProjectsStore((state) => state.currentProjectId);
   const projectsStatus = useProjectsStore((state) => state.status);
@@ -159,7 +163,7 @@ function AppRoot() {
     <div className="flex h-screen w-screen overflow-hidden">
       <div
         className="flex-1 overflow-hidden"
-        style={{ paddingRight: CHAT_SIDEBAR_WIDTH }}
+        style={{ paddingRight: chatSidebarWidth }}
       >
         <CadWorkspace
           manifestRevision={revision}
@@ -171,7 +175,7 @@ function AppRoot() {
           projectMenu={<ProjectMenu />}
         />
       </div>
-      <ChatSidebar />
+      <ChatSidebar width={chatSidebarWidth} onWidthChange={setChatSidebarWidth} />
       <UpdateNotifier />
     </div>
   );

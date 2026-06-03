@@ -113,7 +113,7 @@ export default function ChatInput({ className }) {
           </button>
         </div>
       ) : null}
-      <div className="flex items-start gap-1.5">
+      <div className="flex items-stretch gap-1.5">
         <Textarea
           value={value}
           onChange={(event) => setValue(event.target.value)}
@@ -137,6 +137,7 @@ export default function ChatInput({ className }) {
             onClick={handleCancel}
             title="Cancel turn"
             data-slot="chat-cancel-button"
+            className="h-auto self-stretch"
           >
             <X aria-hidden />
           </Button>
@@ -149,6 +150,7 @@ export default function ChatInput({ className }) {
             disabled={sendDisabled}
             title="Send"
             data-slot="chat-send-button"
+            className="h-auto self-stretch"
           >
             <Send aria-hidden />
           </Button>

@@ -1,22 +1,20 @@
 name: release
 
-# Tag-triggered signed release with auto-update artifacts.
+# Tag-triggered release with auto-update artifacts (no Apple code signing).
 #
-# Pushing a tag like `v0.1.1` builds Panda on every target platform, signs each
-# bundle with the Apple Developer ID identity (notarized + stapled) and the
-# updater key, and publishes a GitHub Release containing the installers plus
-# `latest.json`. Installed apps poll
+# Pushing a tag like `v0.1.1` builds Panda on every target platform, signs the
+# updater manifest with the minisign updater key, and publishes a GitHub Release
+# containing the installers plus `latest.json`. Installed apps poll
 # `releases/latest/download/latest.json` (see tauri.conf.json → plugins.updater)
-# and auto-update to the new signed bundle.
+# and auto-update to the new bundle.
+#
+# The bundles are NOT Apple-codesigned/notarized — macOS users clear Gatekeeper
+# manually on first launch (right-click → Open). The updater signature is
+# unrelated to Apple signing and is still required for auto-update to work.
 #
 # Required repo secrets (Settings → Secrets and variables → Actions):
 #   TAURI_SIGNING_PRIVATE_KEY           contents of the updater private key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password ("" if generated without one)
-#   APPLE_CERTIFICATE                   base64 of the Developer ID .p12 (cert + key)
-#   APPLE_CERTIFICATE_PASSWORD          password used when exporting that .p12
-#   APPLE_SIGNING_IDENTITY             "Developer ID Application: … (TEAMID)"
-#   APPLE_ID / APPLE_PASSWORD          Apple ID + app-specific password (notarize)
-#   APPLE_TEAM_ID                      Apple Developer Team ID
 # GITHUB_TOKEN is provided automatically and needs `contents: write` (below).
 
 on:
@@ -110,19 +108,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Updater signing (minisign): signs latest.json so installed apps
-          # trust the update. Separate from Apple signing below.
+          # trust the update. This is the updater's own key, NOT Apple code
+          # signing — auto-update still requires it.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Apple Developer ID code signing + notarization. tauri imports the
-          # base64 .p12 into a temp keychain, signs the .app/.dmg with the
-          # identity, then notarizes + staples via the Apple ID app-specific
-          # password. Without these, downloads hit Gatekeeper's "app is damaged".
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # NOTE: Apple Developer ID code signing + notarization is intentionally
+          # disabled. The release ships unsigned; macOS users clear Gatekeeper
+          # manually (right-click → Open, or `xattr -dr com.apple.quarantine`).
         with:
           projectPath: desktop
           tagName: ${{ github.ref_name }}

@@ -40,6 +40,9 @@
     ],
     "resources": {
       "../../skills/": "skills/"
+    },
+    "macOS": {
+      "signingIdentity": "-"
     }
   },
   "plugins": {

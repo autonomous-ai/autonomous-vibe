@@ -32,12 +32,29 @@ fn updater_err(e: impl std::fmt::Display) -> IpcError {
     IpcError::new("UPDATE_FAILED", e.to_string())
 }
 
+/// Version at which auto-update is hard-disabled. `0.1.0` is the local/reset
+/// build marker: there is no release channel for it, so checking would only
+/// surface confusing "update available" prompts (or errors against an
+/// endpoint that doesn't know this version). Gate every update entry point on
+/// it so both the startup flow and the manual UI affordance stay quiet.
+const AUTO_UPDATE_DISABLED_VERSION: &str = "0.1.0";
+
+/// Whether auto-update is disabled for this build. True when the running app
+/// version is [`AUTO_UPDATE_DISABLED_VERSION`].
+fn auto_update_disabled(app: &AppHandle) -> bool {
+    app.package_info().version.to_string() == AUTO_UPDATE_DISABLED_VERSION
+}
+
 /// Check the configured endpoint for a newer signed bundle. Emits
 /// `Checking` immediately, then `Available(info)` or `UpToDate`. Returns the
 /// update summary when one is available so a caller can use the value
 /// directly in addition to the event stream.
 #[tauri::command]
 pub async fn update_check(app: AppHandle) -> IpcResult<Option<UpdateInfo>> {
+    if auto_update_disabled(&app) {
+        emit(&app, &UpdateEvent::UpToDate);
+        return Ok(None);
+    }
     emit(&app, &UpdateEvent::Checking);
     let updater = app.updater().map_err(updater_err)?;
     match updater.check().await {
@@ -64,6 +81,10 @@ pub async fn update_check(app: AppHandle) -> IpcResult<Option<UpdateInfo>> {
 /// relaunched — call [`update_relaunch`] to apply it.
 #[tauri::command]
 pub async fn update_install(app: AppHandle) -> IpcResult<()> {
+    if auto_update_disabled(&app) {
+        emit(&app, &UpdateEvent::UpToDate);
+        return Ok(());
+    }
     let updater = app.updater().map_err(updater_err)?;
     let update = match updater.check().await {
         Ok(Some(update)) => update,
@@ -133,6 +154,12 @@ fn describe(update: &tauri_plugin_updater::Update) -> UpdateInfo {
 /// is a no-op — the UI drives a prompt-first flow via `update_check`.
 /// Best-effort throughout: any error is emitted softly and swallowed.
 pub async fn run_startup_auto_update(app: AppHandle) {
+    // `0.1.0` is the reset/local build marker — auto-update is hard-disabled
+    // there regardless of the `auto_update` setting (see
+    // [`auto_update_disabled`]).
+    if auto_update_disabled(&app) {
+        return;
+    }
     let auto = match crate::commands::app::load_settings().await {
         Ok(s) => s.auto_update,
         Err(_) => false,

@@ -20,7 +20,7 @@
 # arches with --target.
 #
 # Uploads, under gs://${GCS_BUCKET}/${GCS_PREFIX}/:
-#   releases/<ver>/<platform>/<installer>              user-facing installer (.dmg / .msi)
+#   releases/<ver>/<platform>/<installer>              user-facing installer (.dmg; win uses the setup .exe)
 #   releases/<ver>/<platform>/<updater payload>        .app.tar.gz (mac) / -setup.exe (win)
 #   releases/<ver>/<platform>/<payload>.sig            its minisign signature
 #   latest.json                                        stable updater manifest (merged)
@@ -165,7 +165,7 @@ if [[ "$DO_BUILD" == 1 ]]; then
   export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
 
   # Apple Gatekeeper signing is macOS-only; on Windows the updater key above is
-  # all that's needed (the NSIS/MSI artifacts are signed with it). `security`
+  # all that's needed (the NSIS artifact is signed with it). `security`
   # doesn't exist off-darwin, so skip the whole block.
   if [[ "${HOST_OS}" != "Darwin" ]]; then
     echo "    apple signing: skipped (non-darwin host)"
@@ -231,7 +231,7 @@ for TRIPLE in "${TARGETS[@]}"; do
 
   # The updater payload + signature differ per OS:
   #   darwin  → macos/<app>.app.tar.gz  (+ .sig)   ; user installer: dmg/*.dmg
-  #   windows → nsis/<app>_*-setup.exe  (+ .sig)   ; user installer: msi/*.msi
+  #   windows → nsis/<app>_*-setup.exe  (+ .sig)
   # On Windows the NSIS setup .exe is BOTH the updater payload and a user-facing
   # installer, so it's not duplicated under INSTALLERS.
   INSTALLERS=()
@@ -247,8 +247,6 @@ for TRIPLE in "${TARGETS[@]}"; do
       PAYLOAD="$(ls "${BUNDLE_DIR}/nsis/"*-setup.exe 2>/dev/null | head -n1 || true)"
       SIG="$(ls "${BUNDLE_DIR}/nsis/"*-setup.exe.sig 2>/dev/null | head -n1 || true)"
       PAYLOAD_DESC="NSIS setup .exe"
-      MSI="$(ls "${BUNDLE_DIR}/msi/"*.msi 2>/dev/null | head -n1 || true)"
-      [[ -f "$MSI" ]] && INSTALLERS+=("msi|$MSI")
       ;;
     *) echo "no artifact mapping for ${TRIPLE}" >&2; exit 1 ;;
   esac

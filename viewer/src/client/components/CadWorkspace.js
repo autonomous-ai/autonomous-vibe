@@ -258,7 +258,11 @@ import {
   parseStepModuleParamsPasteText
 } from "@/workbench/stepModuleParameterControls";
 import { emitCadRefSelection } from "@/components/chat/cadRefEvents";
-import { setSelectedMeshFile } from "@/store/chat";
+import { setSelectedMeshFile, setProject as setChatProject } from "@/store/chat";
+import { useProjectsStore } from "@/store/projects.ts";
+import { sortProjects } from "@/components/library/projectListHelpers.js";
+import { useProjectsFileTree } from "./workbench/hooks/useProjectsFileTree";
+import DeleteConfirmDialog from "@/components/library/DeleteConfirmDialog.jsx";
 
 const DEFAULT_DOCUMENT_TITLE = "CAD Viewer";
 const LOCAL_ASSET_BACKEND = "local-fs";
@@ -405,6 +409,10 @@ export default function CadWorkspace({
       .filter(Boolean)
   ), [generationStatus]);
   const catalogRootDir = catalogRootDirFromEnv();
+  const currentProjectId = useProjectsStore((state) => state.currentProjectId);
+  const openProject = useProjectsStore((state) => state.open);
+  const deleteProject = useProjectsStore((state) => state.delete);
+  const [projectPendingDelete, setProjectPendingDelete] = useState(null);
   const [query, setQuery] = useState("");
   const initialFileViewerDirectoryStateRef = useRef(null);
   if (!initialFileViewerDirectoryStateRef.current) {
@@ -5313,6 +5321,74 @@ export default function CadWorkspace({
     }
   }, [activateEntryTab, entryMap, isDesktop, writeCadParam]);
 
+  // Clicking a file in the sidebar may target a NON-active project. Switch the
+  // active project (chat session + 3D viewer follow it), then select the file
+  // once that project's catalog has loaded. File keys are project-relative, so
+  // we wait for the entry to materialize in the new catalog before selecting.
+  const pendingCrossProjectSelectionRef = useRef(null);
+  const handleSidebarSelectEntry = useCallback((key, projectId) => {
+    if (!projectId || projectId === currentProjectId) {
+      handleSelectEntry(key);
+      return;
+    }
+    pendingCrossProjectSelectionRef.current = { projectId, key };
+    openProject(projectId)
+      .then(() => setChatProject(projectId))
+      .catch((err) => {
+        console.warn("Failed to open project from sidebar", err);
+        pendingCrossProjectSelectionRef.current = null;
+      });
+  }, [currentProjectId, handleSelectEntry, openProject]);
+
+  useEffect(() => {
+    const pending = pendingCrossProjectSelectionRef.current;
+    if (!pending || pending.projectId !== currentProjectId) {
+      return;
+    }
+    if (!entryMap.has(pending.key)) {
+      return; // catalog for the newly-opened project hasn't loaded yet
+    }
+    pendingCrossProjectSelectionRef.current = null;
+    handleSelectEntry(pending.key);
+  }, [currentProjectId, entryMap, handleSelectEntry]);
+
+  // Per-project delete from the sidebar. Opens a confirm dialog; on confirm,
+  // deletes the project. When the deleted project was active, fall back to the
+  // most recent remaining project (mirrors ProjectMenu) so the workspace never
+  // points at a project that no longer exists.
+  const handleRequestDeleteProject = useCallback((project) => {
+    if (!project?.id) {
+      return;
+    }
+    setProjectPendingDelete({ id: project.id, name: project.name || "" });
+  }, []);
+
+  const handleConfirmDeleteProject = useCallback(async () => {
+    const target = projectPendingDelete;
+    if (!target?.id) {
+      return;
+    }
+    const wasActive = target.id === currentProjectId;
+    await deleteProject(target.id);
+    setProjectPendingDelete(null);
+    if (!wasActive) {
+      return;
+    }
+    // The store clears currentProjectId when the active project is deleted;
+    // land on the most recent remaining project, or none.
+    const remaining = sortProjects(useProjectsStore.getState().projects);
+    if (remaining[0]) {
+      try {
+        await openProject(remaining[0].id);
+        setChatProject(remaining[0].id);
+      } catch (err) {
+        console.warn("Failed to open project after delete", err);
+      }
+    } else {
+      setChatProject("");
+    }
+  }, [projectPendingDelete, currentProjectId, deleteProject, openProject]);
+
   // Auto-select the newest printable part after a build. A build streams
   // `artifact_changed` events and the catalog refreshes a beat later, so we
   // record the printable artifacts a turn touched and, once the matching
@@ -5692,7 +5768,7 @@ export default function CadWorkspace({
     viewerLoading
   ]);
 
-  const toggleDirectory = (directoryId) => {
+  const toggleDirectory = useCallback((directoryId) => {
     setFileViewerDirectoryStateInitialized(true);
     setExpandedDirectoryIds((current) => {
       const next = new Set(current);
@@ -5703,7 +5779,19 @@ export default function CadWorkspace({
       }
       return next;
     });
-  };
+  }, []);
+
+  // Multi-project file tree for the sidebar. The active project uses the live
+  // catalog (filteredEntriesTree); non-active projects lazily load their own
+  // files via project_catalog_read on expand.
+  const { projectNodes, toggleProject, onToggleDirectory: onToggleProjectDirectory } = useProjectsFileTree({
+    activeProjectId: currentProjectId,
+    activeEntriesTree: filteredEntriesTree,
+    activeEntries: filteredEntries,
+    activeExpandedDirectoryIds: expandedDirectoryIds,
+    onToggleActiveDirectory: toggleDirectory,
+    query,
+  });
   const selectionToolActive = effectiveRenderFormat === RENDER_FORMAT.STEP && tabToolMode === TAB_TOOL_MODE.REFERENCES;
   const drawToolActive = drawModeActive;
   const selectionCount = selectionCountBase;
@@ -5937,13 +6025,12 @@ export default function CadWorkspace({
               previewMode={previewMode}
               query={query}
               onQueryChange={setQuery}
-              filteredEntries={filteredEntries}
-              catalogEntries={catalogEntries}
-              filteredEntriesTree={filteredEntriesTree}
+              projectNodes={projectNodes}
               selectedKey={selectedKey}
-              expandedDirectoryIds={expandedDirectoryIds}
-              onToggleDirectory={toggleDirectory}
-              onSelectEntry={handleSelectEntry}
+              onToggleProject={toggleProject}
+              onToggleDirectory={onToggleProjectDirectory}
+              onSelectEntry={handleSidebarSelectEntry}
+              onRequestDeleteProject={handleRequestDeleteProject}
               entrySourceFormat={entrySourceFormat}
               entryHasMesh={entryHasMesh}
               entryHasDxf={entryHasDxf}
@@ -6244,6 +6331,13 @@ export default function CadWorkspace({
           viewerAlert={viewerAlert}
           previewMode={previewMode}
           setViewerAlertOpen={setViewerAlertOpen}
+        />
+
+        <DeleteConfirmDialog
+          open={Boolean(projectPendingDelete)}
+          projectName={projectPendingDelete?.name || ""}
+          onCancel={() => setProjectPendingDelete(null)}
+          onConfirm={handleConfirmDeleteProject}
         />
       </SidebarInset>
     </SidebarProvider>

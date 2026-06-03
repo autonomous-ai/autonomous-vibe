@@ -101,6 +101,7 @@ pub fn run() {
             app::app_install_claude_code,
             // catalog
             catalog::catalog_read,
+            catalog::project_catalog_read,
             catalog::generation_status_read,
             // files
             files::file_read_bytes,

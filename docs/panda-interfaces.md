@@ -217,6 +217,16 @@ interface Catalog {
 }
 function catalog_read(): Promise<Catalog>;
 
+// project_catalog_read — read a SPECIFIC project's files by id, WITHOUT
+// changing the active project. Powers the sidebar's lazy per-project subtrees:
+// expanding a non-active project loads its catalog here, leaving the active
+// project (chat session + 3D viewer) untouched. Same scanner/shape as
+// catalog_read but scoped to `<data-dir>/projects/<id>/`. `revision` is 0
+// (non-active subtrees are display-only; selecting a file switches the active
+// project, after which catalog_read takes over). Rejects ids that are not bare
+// directory names (path traversal) with IpcError code "INVALID_PROJECT_ID".
+function project_catalog_read(id: string): Promise<Catalog>;
+
 // generation_status_read — replaces GET /__cad/generation-status
 interface GenerationStatus {
   queue: Array<{ file: string; startedAt: number; kind: "step" }>;

@@ -8,7 +8,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useProjectsStore } from "@/store/projects.ts";
@@ -18,9 +17,10 @@ import { PLACEHOLDER_PROJECT_NAME } from "@/components/chat/chatInputHelpers";
 import DeleteConfirmDialog from "@/components/library/DeleteConfirmDialog.jsx";
 
 /**
- * Top-bar project switcher. Replaces the old projects sidebar: the app focuses
- * on a single active project at a time, so project create/switch/delete lives
- * in a compact dropdown anchored next to the workspace sidebar toggle.
+ * Top-bar project menu. Project switching now lives in the workspace sidebar's
+ * project tree (each project expands to its files; clicking a file switches the
+ * active project). This dropdown is reduced to create + delete; the trigger
+ * still shows the active project's name. Delete targets the active project.
  *
  * No naming dialog and no rename: a new project is created with a placeholder
  * name that Claude Code's AI title replaces in place once available (see
@@ -37,7 +37,6 @@ export default function ProjectMenu() {
 
   const sorted = useMemo(() => sortProjects(projects), [projects]);
   const current = sorted.find((project) => project.id === currentProjectId) || null;
-  const others = sorted.filter((project) => project.id !== currentProjectId);
 
   const switchTo = async (id) => {
     try {
@@ -91,19 +90,6 @@ export default function ProjectMenu() {
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="min-w-[220px]">
           <DropdownMenuLabel>Project</DropdownMenuLabel>
-          {others.length ? (
-            <>
-              {others.map((project) => (
-                <DropdownMenuItem
-                  key={project.id}
-                  onSelect={() => void switchTo(project.id)}
-                >
-                  <span className="truncate">{project.name || "Untitled project"}</span>
-                </DropdownMenuItem>
-              ))}
-              <DropdownMenuSeparator />
-            </>
-          ) : null}
           <DropdownMenuItem onSelect={() => void handleCreate()}>
             <FolderPlus className="size-4" aria-hidden />
             New project

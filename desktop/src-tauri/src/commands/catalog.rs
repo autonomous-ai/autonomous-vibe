@@ -37,6 +37,24 @@ const SKIPPED_DIRECTORIES: &[&str] = &[
     "venv",
 ];
 
+/// Validate a project id is a bare directory name (no path traversal), so
+/// `project_catalog_read` cannot be coerced into scanning outside the projects
+/// root. Returns the trimmed id on success.
+fn validate_project_id(id: &str) -> IpcResult<&str> {
+    let trimmed = id.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains("..")
+    {
+        return Err(IpcError::new(
+            "INVALID_PROJECT_ID",
+            "project id must be a bare directory name",
+        ));
+    }
+    Ok(trimmed)
+}
+
 fn is_skipped_dir(entry: &DirEntry) -> bool {
     if !entry.file_type().is_dir() {
         return false;
@@ -68,6 +86,28 @@ pub async fn catalog_read(state: State<'_, AppState>) -> IpcResult<Catalog> {
         entries,
         root_path: root.display().to_string(),
         revision: state.current_revision(),
+    })
+}
+
+#[tauri::command]
+pub async fn project_catalog_read(id: String) -> IpcResult<Catalog> {
+    // Read a specific project's files by id WITHOUT changing the active
+    // project. Powers the sidebar's lazy per-project subtrees: expanding a
+    // non-active project loads its catalog here, leaving `state.active_project`
+    // (and thus the chat session + 3D viewer) untouched. Selecting a file then
+    // switches the active project via `project_open`, after which the live
+    // `catalog_read` takes over.
+    let id = validate_project_id(&id)?;
+    let root = paths::project_root(id);
+    tokio::fs::create_dir_all(&root).await.map_err(IpcError::from)?;
+    let entries = scan_workspace(&root)?;
+    Ok(Catalog {
+        entries,
+        root_path: root.display().to_string(),
+        // Non-active subtrees are not rendered in the 3D pane (selecting a file
+        // first switches the active project, which re-reads via `catalog_read`),
+        // so no per-revision cache-busting is needed here.
+        revision: 0,
     })
 }
 
@@ -376,6 +416,17 @@ mod tests {
         let entries = scan_workspace(root).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].file, "parts/base.step");
+    }
+
+    #[test]
+    fn validate_project_id_accepts_bare_names_and_rejects_traversal() {
+        assert_eq!(validate_project_id("  abc-123 ").unwrap(), "abc-123");
+        for bad in ["", "   ", "..", "a/b", "a\\b", "../escape", "x/.."] {
+            assert!(
+                validate_project_id(bad).is_err(),
+                "expected {bad:?} to be rejected",
+            );
+        }
     }
 
     #[test]

@@ -67,6 +67,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Derive the bundle version from the pushed tag (v0.1.12 -> 0.1.12) and
+      # stamp it into tauri.conf.json + Cargo.toml + Cargo.lock, so the release
+      # version always matches the tag with no hand-edited "bump version" commit.
+      - name: Stamp version from tag
+        shell: bash
+        run: scripts/build/set-version.sh "${GITHUB_REF_NAME}"
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:

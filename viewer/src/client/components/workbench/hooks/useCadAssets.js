@@ -45,6 +45,7 @@ import {
 } from "cadjs/lib/render/meshLoaders";
 import { shouldUseGlbMeshWorkerForEntry } from "cadjs/lib/render/meshCost";
 import { RENDER_FORMAT } from "cadjs/lib/fileFormats";
+import { loadImplicitModuleFromSource } from "implicitjs/lib/implicitCad/loader.js";
 import { buildDisplayEdgeRuntime } from "cadjs/lib/selectors/runtime";
 
 const ROBOT_MESH_LOAD_CONCURRENCY = 3;
@@ -164,6 +165,10 @@ export function useCadAssets({
   const [displayEdgeStatus, setDisplayEdgeStatus] = useState(REFERENCE_STATUS.IDLE);
   const [displayEdgeError, setDisplayEdgeError] = useState("");
   const [displayEdgeLoadStage, setDisplayEdgeLoadStage] = useState("");
+  const [implicitState, setImplicitState] = useState(null);
+  const [implicitStatus, setImplicitStatus] = useState(ASSET_STATUS.PENDING);
+  const [implicitError, setImplicitError] = useState("");
+  const [implicitLoadStage, setImplicitLoadStage] = useState("");
 
   const requestIdRef = useRef(0);
   const dxfRequestIdRef = useRef(0);
@@ -177,6 +182,8 @@ export function useCadAssets({
   const urdfAbortControllerRef = useRef(null);
   const referenceAbortControllerRef = useRef(null);
   const displayEdgeAbortControllerRef = useRef(null);
+  const implicitRequestIdRef = useRef(0);
+  const implicitAbortControllerRef = useRef(null);
 
   const getAssemblyMeshHash = useCallback((entry) => {
     return entryMeshAssetSignature(entry);
@@ -344,6 +351,12 @@ export function useCadAssets({
     dxfRequestIdRef.current += 1;
     abortLoad(dxfAbortControllerRef);
     setDxfLoadStage("");
+  }, []);
+
+  const cancelImplicitLoad = useCallback(() => {
+    implicitRequestIdRef.current += 1;
+    abortLoad(implicitAbortControllerRef);
+    setImplicitLoadStage("");
   }, []);
 
   const cancelGcodeLoad = useCallback(() => {
@@ -648,6 +661,61 @@ export function useCadAssets({
     }
   }, [cancelDxfLoad, entryHasDxf, getCachedDxfState]);
 
+  const loadImplicitForEntry = useCallback(async (entry) => {
+    cancelImplicitLoad();
+    const requestId = implicitRequestIdRef.current;
+
+    if (String(entry?.kind || "").trim().toLowerCase() !== RENDER_FORMAT.IMPLICIT) {
+      setImplicitState(null);
+      setImplicitStatus(ASSET_STATUS.PENDING);
+      setImplicitError("");
+      return;
+    }
+
+    const controller = new AbortController();
+    implicitAbortControllerRef.current = controller;
+    setImplicitStatus(ASSET_STATUS.LOADING);
+    setImplicitError("");
+    setImplicitLoadStage("loading implicit CAD");
+
+    try {
+      // Read the `.implicit.js` source over the asset URL (pandaasset:// in the
+      // Tauri app, /__cad/asset in browser-only dev) and evaluate it via a
+      // data: URL import — avoids dynamic-importing a custom-protocol URL.
+      const response = await fetch(entry.url, { signal: controller.signal });
+      if (!response.ok) {
+        throw new Error(`Failed to read implicit source (${response.status})`);
+      }
+      const source = await response.text();
+      const model = await loadImplicitModuleFromSource(source, {
+        signal: controller.signal,
+        sourceUrl: entry.file
+      });
+      if (requestId !== implicitRequestIdRef.current) {
+        return;
+      }
+      setImplicitState({
+        file: entry.file,
+        kind: entry.kind,
+        model
+      });
+      setImplicitStatus(ASSET_STATUS.READY);
+    } catch (err) {
+      if (requestId !== implicitRequestIdRef.current || isAbortError(err) || controller.signal.aborted) {
+        return;
+      }
+      setImplicitStatus(ASSET_STATUS.ERROR);
+      setImplicitError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (implicitAbortControllerRef.current === controller) {
+        implicitAbortControllerRef.current = null;
+      }
+      if (requestId === implicitRequestIdRef.current) {
+        setImplicitLoadStage("");
+      }
+    }
+  }, [cancelImplicitLoad]);
+
   const loadGcodeForEntry = useCallback(async (entry) => {
     cancelGcodeLoad();
     const requestId = gcodeRequestIdRef.current;
@@ -838,6 +906,13 @@ export function useCadAssets({
     displayEdgeError,
     setDisplayEdgeError,
     displayEdgeLoadStage,
+    implicitState,
+    setImplicitState,
+    implicitStatus,
+    setImplicitStatus,
+    implicitError,
+    setImplicitError,
+    implicitLoadStage,
     getCachedMeshState,
     getCachedReferenceState,
     getCachedDisplayEdgeState,
@@ -846,12 +921,14 @@ export function useCadAssets({
     getCachedUrdfState,
     cancelMeshLoad,
     cancelDxfLoad,
+    cancelImplicitLoad,
     cancelGcodeLoad,
     cancelUrdfLoad,
     cancelReferenceLoad,
     cancelDisplayEdgeLoad,
     loadMeshForEntry,
     loadDxfForEntry,
+    loadImplicitForEntry,
     loadGcodeForEntry,
     loadUrdfForEntry,
     loadReferencesForEntry,

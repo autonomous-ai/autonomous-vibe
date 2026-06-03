@@ -17,6 +17,7 @@
     "@vercel/blob": "^2.4.0",
     "cadjs": "file:./packages/cadjs",
     "class-variance-authority": "^0.7.1",
+    "implicitjs": "file:./packages/implicitjs",
     "clsx": "^2.1.1",
     "lucide-react": "^1.8.0",
     "radix-ui": "^1.4.3",

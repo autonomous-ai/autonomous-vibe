@@ -43,6 +43,7 @@ const viewerPort = normalizeViewerPort(process.env.VIEWER_PORT, DEFAULT_VIEWER_P
 const viewerAppRoot = path.dirname(fileURLToPath(import.meta.url));
 const viewerClientRoot = path.join(viewerAppRoot, "src", "client");
 const cadJsPackageRoot = resolveCadJsPackageRoot();
+const implicitJsPackageRoot = resolveImplicitJsPackageRoot();
 const viewerNodeModulesRoot = path.join(viewerAppRoot, "node_modules");
 const defaultWorkspaceRoot = path.resolve(viewerAppRoot, "..");
 const workspaceRoot = resolveWorkspaceRoot();
@@ -92,6 +93,15 @@ function resolveCadJsPackageRoot() {
   }
   const rootPackageSrc = findRootPackageSrc("cadjs");
   return rootPackageSrc || path.resolve(viewerAppRoot, "../packages/cadjs/src");
+}
+
+function resolveImplicitJsPackageRoot() {
+  const installedPackageSrc = path.join(viewerAppRoot, "node_modules", "implicitjs", "src");
+  if (fs.existsSync(installedPackageSrc)) {
+    return installedPackageSrc;
+  }
+  const rootPackageSrc = findRootPackageSrc("implicitjs");
+  return rootPackageSrc || path.resolve(viewerAppRoot, "../packages/implicitjs/src");
 }
 
 function resolveWorkspaceRoot() {
@@ -308,6 +318,7 @@ export default defineConfig(({ command }) => ({
     alias: {
       "@": viewerClientRoot,
       "cadjs": cadJsPackageRoot,
+      "implicitjs": implicitJsPackageRoot,
       "clsx": path.join(viewerNodeModulesRoot, "clsx"),
       "gifenc": path.join(viewerNodeModulesRoot, "gifenc", "dist", "gifenc.esm.js"),
       "tailwind-merge": path.join(viewerNodeModulesRoot, "tailwind-merge"),

@@ -27,7 +27,7 @@ export interface AppInfo {
   pid: number;
 }
 
-export type CatalogKind = "step" | "stl" | "gcode" | "py" | "json" | "png";
+export type CatalogKind = "step" | "stl" | "gcode" | "py" | "json" | "png" | "implicit";
 export type SourceKindValue = "python" | "static";
 
 export interface CatalogArtifact {

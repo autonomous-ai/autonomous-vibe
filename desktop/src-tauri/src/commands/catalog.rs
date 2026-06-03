@@ -126,10 +126,11 @@ pub async fn generation_status_read(state: State<'_, AppState>) -> IpcResult<Gen
 
 /// Walk the workspace and return one [`CatalogEntry`] per relevant file.
 ///
-/// "Relevant" means the file's lowercase extension maps to a
-/// [`CatalogKind`] (step/stp/stl/gcode/py/json/png). The mapping is
-/// deliberately narrow: contract §2 freezes the enum, and broader file
-/// types (e.g. `.dxf`, `.3mf`, `.urdf`) belong to deferred catalogs.
+/// "Relevant" means the file's name maps to a [`CatalogKind`] via
+/// [`CatalogKind::from_filename`] (step/stp/stl/gcode/py/json/png, plus
+/// `.implicit.js`/`.implicit.mjs` implicit CAD models). The mapping is
+/// deliberately narrow: broader file types (e.g. `.dxf`, `.3mf`, `.urdf`)
+/// belong to deferred catalogs.
 pub fn scan_workspace(root: &Path) -> IpcResult<Vec<CatalogEntry>> {
     let mut entries: Vec<CatalogEntry> = Vec::new();
     let mut path_index: HashMap<PathBuf, ()> = HashMap::new();
@@ -155,14 +156,10 @@ pub fn scan_workspace(root: &Path) -> IpcResult<Vec<CatalogEntry>> {
     }
 
     for absolute in &all_files {
-        let Some(extension) = absolute
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_ascii_lowercase())
-        else {
+        let Some(file_name) = absolute.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        let Some(kind) = CatalogKind::from_extension(&extension) else {
+        let Some(kind) = CatalogKind::from_filename(file_name) else {
             continue;
         };
         // Hide auxiliary files from the catalog so the file list shows only the
@@ -234,7 +231,8 @@ fn classify_source_kind(
         CatalogKind::Stl
         | CatalogKind::Gcode
         | CatalogKind::Json
-        | CatalogKind::Png => Some(SourceKind::Static),
+        | CatalogKind::Png
+        | CatalogKind::Implicit => Some(SourceKind::Static),
         CatalogKind::Py => None,
     }
 }
@@ -294,6 +292,45 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, b"").unwrap();
+    }
+
+    #[test]
+    fn from_filename_recognizes_implicit_but_not_plain_js() {
+        assert_eq!(
+            CatalogKind::from_filename("sphere.implicit.js"),
+            Some(CatalogKind::Implicit),
+        );
+        assert_eq!(
+            CatalogKind::from_filename("Sphere.IMPLICIT.MJS"),
+            Some(CatalogKind::Implicit),
+        );
+        assert_eq!(CatalogKind::from_filename("script.js"), None);
+        assert_eq!(CatalogKind::from_filename("module.mjs"), None);
+        assert_eq!(
+            CatalogKind::from_filename("model.step"),
+            Some(CatalogKind::Step),
+        );
+    }
+
+    #[test]
+    fn catalogs_implicit_models_and_skips_plain_js() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(&root.join("sphere.implicit.js"));
+        touch(&root.join("helper.js")); // plain JS must stay out of the catalog
+
+        let entries = scan_workspace(root).unwrap();
+        let by_file: HashMap<&str, &CatalogEntry> =
+            entries.iter().map(|e| (e.file.as_str(), e)).collect();
+        let implicit = by_file
+            .get("sphere.implicit.js")
+            .expect("implicit model catalogued");
+        assert_eq!(implicit.kind, CatalogKind::Implicit);
+        assert_eq!(implicit.source_kind, Some(SourceKind::Static));
+        assert!(
+            !by_file.contains_key("helper.js"),
+            "plain .js files must not be catalogued",
+        );
     }
 
     #[test]

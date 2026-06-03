@@ -6,19 +6,20 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 MODE="write"
 
-CADJS_SRC="$REPO_ROOT/packages/cadjs"
-CADJS_DST="$REPO_ROOT/viewer/packages/cadjs"
+# Packages mirrored from packages/<name>/ into viewer/packages/<name>/ so the
+# viewer build can import them as local file dependencies.
+PACKAGES=(cadjs implicitjs)
 
 usage() {
   cat <<'EOF'
 Usage:
   scripts/build/build-viewer-packages.sh [--check]
 
-Sync packages/cadjs/ into viewer/packages/cadjs/ so the viewer build can
-import cadjs as a local file dependency.
+Sync packages/<name>/ into viewer/packages/<name>/ (cadjs, implicitjs) so the
+viewer build can import them as local file dependencies.
 
 Options:
-  --check     Fail if viewer/packages/cadjs is stale.
+  --check     Fail if any viewer/packages/<name> is stale.
   -h, --help  Show this help.
 EOF
 }
@@ -31,11 +32,6 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
-
-if [ ! -f "$CADJS_SRC/package.json" ] || [ ! -d "$CADJS_SRC/src" ]; then
-  echo "Missing cadjs source: $CADJS_SRC" >&2
-  exit 1
-fi
 
 if ! command -v rsync >/dev/null 2>&1; then
   echo "rsync is required." >&2
@@ -51,29 +47,39 @@ EXCLUDES=(
   --exclude .DS_Store
 )
 
-case "$MODE" in
-  write)
-    mkdir -p "$CADJS_DST"
-    rsync -a --delete --delete-excluded "${EXCLUDES[@]}" "$CADJS_SRC/" "$CADJS_DST/"
-    echo "Synced packages/cadjs/ → viewer/packages/cadjs/"
-    ;;
-  check)
-    if [ ! -d "$CADJS_DST" ]; then
-      echo "Missing generated viewer cadjs package." >&2
-      echo "Run scripts/build/build-viewer-packages.sh and commit the result." >&2
-      exit 1
-    fi
-    DIFF_TMP="$(mktemp)"
-    trap 'rm -f "$DIFF_TMP"' EXIT
-    if ! diff -qr \
-      -x node_modules -x dist -x coverage -x tmp -x .vite -x .DS_Store \
-      "$CADJS_SRC" "$CADJS_DST" >"$DIFF_TMP"; then
-      cat "$DIFF_TMP" >&2
-      echo "" >&2
-      echo "viewer/packages/cadjs is stale." >&2
-      echo "Run scripts/build/build-viewer-packages.sh and commit." >&2
-      exit 1
-    fi
-    echo "viewer/packages/cadjs is up to date."
-    ;;
-esac
+for name in "${PACKAGES[@]}"; do
+  SRC="$REPO_ROOT/packages/$name"
+  DST="$REPO_ROOT/viewer/packages/$name"
+
+  if [ ! -f "$SRC/package.json" ] || [ ! -d "$SRC/src" ]; then
+    echo "Missing $name source: $SRC" >&2
+    exit 1
+  fi
+
+  case "$MODE" in
+    write)
+      mkdir -p "$DST"
+      rsync -a --delete --delete-excluded "${EXCLUDES[@]}" "$SRC/" "$DST/"
+      echo "Synced packages/$name/ → viewer/packages/$name/"
+      ;;
+    check)
+      if [ ! -d "$DST" ]; then
+        echo "Missing generated viewer $name package." >&2
+        echo "Run scripts/build/build-viewer-packages.sh and commit the result." >&2
+        exit 1
+      fi
+      DIFF_TMP="$(mktemp)"
+      trap 'rm -f "$DIFF_TMP"' EXIT
+      if ! diff -qr \
+        -x node_modules -x dist -x coverage -x tmp -x .vite -x .DS_Store \
+        "$SRC" "$DST" >"$DIFF_TMP"; then
+        cat "$DIFF_TMP" >&2
+        echo "" >&2
+        echo "viewer/packages/$name is stale." >&2
+        echo "Run scripts/build/build-viewer-packages.sh and commit." >&2
+        exit 1
+      fi
+      echo "viewer/packages/$name is up to date."
+      ;;
+  esac
+done

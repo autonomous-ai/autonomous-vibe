@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import CadViewer from "../CadViewer";
 import DxfViewer from "../DxfViewer";
+import ImplicitCadViewer from "../ImplicitCadViewer";
 import { CircleAlert, X } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
@@ -57,6 +58,9 @@ export default function CadRenderPane({
   viewportFrameInsets,
   viewerLoading,
   viewerAlert,
+  implicitModel = null,
+  implicitGraphicsSettings = null,
+  implicitError = "",
   stepUpdateInProgress,
   referenceSelectionPending = false,
   referenceSelectionUnavailable = false,
@@ -96,6 +100,7 @@ export default function CadRenderPane({
   const resolvedStepParameters = stepParameters;
   const viewerAlertIconLabel = "Viewer error. See the Issues section for details.";
   const dxfMode = renderFormat === RENDER_FORMAT.DXF;
+  const implicitMode = renderFormat === RENDER_FORMAT.IMPLICIT;
   const gcodeMode = renderFormat === RENDER_FORMAT.GCODE;
   const urdfMode = isRobotRenderFormat(renderFormat);
   const meshOnlyMode = isMeshRenderFormat(renderFormat);
@@ -177,7 +182,23 @@ export default function CadRenderPane({
 
   return (
     <div className="absolute inset-0">
-      {dxfMode && !dxfMeshPreviewReady ? (
+      {implicitMode ? (
+        <ImplicitCadViewer
+          ref={viewerRef}
+          model={implicitModel}
+          modelKey={selectedKey}
+          graphicsSettings={implicitGraphicsSettings}
+          isLoading={viewerLoading}
+          previewMode={previewMode}
+          viewportFrameInsets={viewportFrameInsets}
+          viewPlaneOffsetRight={viewPlaneOffsetRight}
+          themeSettings={themeSettings}
+          perspective={viewerPerspective}
+          perspectiveRef={viewerPerspectiveRef}
+          onPerspectiveChange={handlePerspectiveChange}
+          onViewerAlertChange={handleViewerAlertChange}
+        />
+      ) : dxfMode && !dxfMeshPreviewReady ? (
         <DxfViewer
           ref={viewerRef}
           dxfData={selectedDxfData}

@@ -6,6 +6,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import CadRenderPane from "./workbench/CadRenderPane";
 import DxfFileSheet from "./workbench/DxfFileSheet";
 import GcodeFileSheet from "./workbench/GcodeFileSheet";
+import ImplicitFileSheet from "./workbench/ImplicitFileSheet";
 import FileViewerSidebar from "./workbench/FileViewerSidebar";
 import MeshFileSheet from "./workbench/MeshFileSheet";
 import StepFileSheet, { STEP_TREE_ROOT_ITEM_LIMIT } from "./workbench/StepFileSheet";
@@ -21,6 +22,7 @@ import {
   resolveDesktopPanelWidths,
   useCadWorkspaceLayout
 } from "./workbench/hooks/useCadWorkspaceLayout";
+import { useImplicitWorkspace } from "./workbench/hooks/useImplicitWorkspace";
 import { useCadWorkspaceSelection } from "./workbench/hooks/useCadWorkspaceSelection";
 import { useCadWorkspaceSession } from "./workbench/hooks/useCadWorkspaceSession";
 import { useCadWorkspaceSelectors } from "./workbench/hooks/useCadWorkspaceSelectors";
@@ -607,6 +609,9 @@ export default function CadWorkspace({
     setDisplayEdgeState,
     setDisplayEdgeStatus,
     setDisplayEdgeError,
+    implicitState,
+    implicitStatus,
+    implicitError,
     getCachedMeshState,
     getCachedReferenceState,
     getCachedDxfState,
@@ -620,6 +625,8 @@ export default function CadWorkspace({
     cancelDisplayEdgeLoad,
     loadMeshForEntry,
     loadDxfForEntry,
+    loadImplicitForEntry,
+    cancelImplicitLoad,
     loadGcodeForEntry,
     loadUrdfForEntry,
     loadReferencesForEntry,
@@ -720,6 +727,16 @@ export default function CadWorkspace({
   const isAssemblyView = selectedEntry?.kind === "assembly";
   const isUrdfView = isRobotRenderFormat(selectedEntrySourceFormat);
   const isGcodeView = selectedEntrySourceFormat === RENDER_FORMAT.GCODE;
+  const isImplicitView = selectedEntrySourceFormat === RENDER_FORMAT.IMPLICIT;
+  const selectedImplicitMatches = Boolean(
+    implicitState && selectedEntry && implicitState.file === selectedEntry.file
+  );
+  const selectedImplicitModel = selectedImplicitMatches ? implicitState.model : null;
+  const implicitWorkspace = useImplicitWorkspace({
+    selectedImplicitModel,
+    status: implicitStatus,
+    error: implicitError
+  });
   const selectedStepModuleUrl = isStepView ? entryStepModuleUrl(selectedEntry) : "";
   const selectedStepModuleCadPath = selectedStepModuleUrl ? cadPathForEntry(selectedEntry) : "";
   const selectedStepModuleDefinition = stepModuleLoadState.url === selectedStepModuleUrl
@@ -1688,6 +1705,10 @@ export default function CadWorkspace({
     !!selectedEntry &&
     urdfStatus !== ASSET_STATUS.ERROR &&
     (!selectedUrdfMatches || urdfStatus === ASSET_STATUS.LOADING);
+  const implicitViewerLoading =
+    !!selectedEntry &&
+    implicitStatus !== ASSET_STATUS.ERROR &&
+    (!selectedImplicitMatches || implicitStatus === ASSET_STATUS.LOADING);
   const stepArtifactBlocksRender =
     effectiveRenderFormat === RENDER_FORMAT.STEP &&
     selectedEntry?.artifact &&
@@ -1703,9 +1724,11 @@ export default function CadWorkspace({
     ? dxfViewerLoading
     : effectiveRenderFormat === RENDER_FORMAT.GCODE
       ? gcodeViewerLoading
-      : isRobotRenderFormat(effectiveRenderFormat)
-        ? urdfViewerLoading
-        : stepViewerLoading;
+      : effectiveRenderFormat === RENDER_FORMAT.IMPLICIT
+        ? implicitViewerLoading
+        : isRobotRenderFormat(effectiveRenderFormat)
+          ? urdfViewerLoading
+          : stepViewerLoading;
   const effectiveViewerLoading = viewerLoading || selectedGeneratorRunning || fileParamSelectionPending;
   const assemblySidebarLoading =
     isAssemblyView &&
@@ -2239,12 +2262,14 @@ export default function CadWorkspace({
       selectedStepModuleError
     ),
     hasFileStatus: selectedFileHasWarningOrErrorStatus,
+    hasImplicitParameterPanel: Boolean(selectedImplicitModel?.definition?.parameters?.length),
     isSdf: selectedFileSheetKind === "sdf",
     motionEnabled: selectedFileSheetKind === "srdf" && selectedUrdfMotionEndEffectors.length > 0,
     showJoints: selectedFileSheetKind === "urdf" || selectedFileSheetKind === "srdf" || selectedFileSheetKind === "sdf"
   }), [
     selectedFileSheetKind,
     selectedFileHasWarningOrErrorStatus,
+    selectedImplicitModel,
     selectedStepModuleDefinition,
     selectedStepModuleError,
     selectedStepModuleStatus,
@@ -3368,6 +3393,25 @@ export default function CadWorkspace({
     setDxfError,
     setDxfState,
     setDxfStatus
+  ]);
+
+  useEffect(() => {
+    if (!selectedEntry || effectiveRenderFormat !== RENDER_FORMAT.IMPLICIT) {
+      cancelImplicitLoad();
+      return;
+    }
+    if (selectedImplicitMatches) {
+      return;
+    }
+    loadImplicitForEntry(selectedEntry).catch(() => {
+      // Errors surface via implicitStatus/implicitError inside the hook.
+    });
+  }, [
+    cancelImplicitLoad,
+    effectiveRenderFormat,
+    loadImplicitForEntry,
+    selectedEntry,
+    selectedImplicitMatches
   ]);
 
   useEffect(() => {
@@ -5933,6 +5977,9 @@ export default function CadWorkspace({
           viewportFrameInsets={viewportFrameInsets}
           viewerLoading={viewerLoading}
           viewerAlert={viewerAlert}
+          implicitModel={implicitWorkspace.model}
+          implicitGraphicsSettings={implicitWorkspace.graphicsSettings}
+          implicitError={implicitWorkspace.error || implicitError}
           stepUpdateInProgress={effectiveRenderFormat === RENDER_FORMAT.STEP && stepUpdateInProgress}
           referenceSelectionPending={referenceSelectionPending}
           referenceSelectionUnavailable={referenceSelectionUnavailable}
@@ -6296,6 +6343,31 @@ export default function CadWorkspace({
                 selectedEntry={selectedEntry}
                 onOpenChange={setTabToolsOpen}
                 onStartResize={handleStartFileSheetResize}
+                fileDownloadAvailable={fileLinkCopyAvailable}
+                viewerServerInfo={viewerServerInfo}
+                localFileOpenAvailable={fileRevealAvailable}
+                fileAccessBusyKey={fileAccessBusyKey}
+                onOpenFileAsset={handleRevealFileAsset}
+                suppressDynamicMetadataStatus={selectedGeneratorRunning}
+                statusItems={selectedFileStatusItems}
+                themeSections={themeSections}
+                openSectionIds={effectiveFileSheetOpenSectionIds}
+                onOpenSectionIdsChange={handleFileSheetOpenSectionIdsChange}
+              />
+            ) : null}
+
+            {selectedFileSheetKind === "implicit" ? (
+              <ImplicitFileSheet
+                key={`implicit:${selectedKey}`}
+                open={fileSheetOpen}
+                title="Implicit CAD"
+                isDesktop={isDesktop}
+                width={activeSheetWidth || tabToolsWidth}
+                selectedEntry={selectedEntry}
+                onOpenChange={setTabToolsOpen}
+                onStartResize={handleStartFileSheetResize}
+                parameterRuntime={implicitWorkspace.parameterRuntime}
+                graphicsRuntime={implicitWorkspace.graphicsRuntime}
                 fileDownloadAvailable={fileLinkCopyAvailable}
                 viewerServerInfo={viewerServerInfo}
                 localFileOpenAvailable={fileRevealAvailable}

@@ -44,6 +44,7 @@ pub enum CatalogKind {
     Py,
     Json,
     Png,
+    Implicit,
 }
 
 impl CatalogKind {
@@ -59,6 +60,22 @@ impl CatalogKind {
             "png" => Some(Self::Png),
             _ => None,
         }
+    }
+
+    /// Resolve a catalog kind from a full file name. Implicit CAD models use a
+    /// compound `.implicit.js` / `.implicit.mjs` suffix whose trailing
+    /// extension (`js`/`mjs`) is too generic for [`from_extension`], so they are
+    /// matched on the suffix first; everything else falls back to the single
+    /// extension. Plain `.js`/`.mjs` files therefore stay out of the catalog.
+    pub fn from_filename(name: &str) -> Option<Self> {
+        let lower = name.to_ascii_lowercase();
+        if lower.ends_with(".implicit.js") || lower.ends_with(".implicit.mjs") {
+            return Some(Self::Implicit);
+        }
+        let ext = std::path::Path::new(&lower)
+            .extension()
+            .and_then(|e| e.to_str())?;
+        Self::from_extension(ext)
     }
 }
 

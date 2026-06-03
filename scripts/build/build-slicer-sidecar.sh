@@ -215,10 +215,13 @@ case "${TRIPLE}" in
       echo "error: need one of unzip / 7z / powershell to extract the portable zip" >&2
       exit 1
     fi
-    # Find the executable inside the portable zip.
-    EXE="$(find "${UNZIP_DIR}" -maxdepth 4 -iname 'OrcaSlicer.exe' | head -1)"
+    # Find the executable inside the portable zip. As of v2.3.x the Windows
+    # binary is named `orca-slicer.exe` (hyphenated, lowercase) and sits at the
+    # zip root alongside its DLLs; older releases shipped `OrcaSlicer.exe`. Match
+    # either.
+    EXE="$(find "${UNZIP_DIR}" -maxdepth 4 \( -iname 'orca-slicer.exe' -o -iname 'OrcaSlicer.exe' \) | head -1)"
     if [[ -z "${EXE}" ]]; then
-      echo "error: OrcaSlicer.exe not found inside portable zip" >&2
+      echo "error: orca-slicer.exe not found inside portable zip" >&2
       exit 1
     fi
     # Windows binary depends on adjacent DLLs — copy the whole directory and

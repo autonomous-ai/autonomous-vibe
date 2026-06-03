@@ -319,7 +319,15 @@ fn home_dir() -> Option<PathBuf> {
     // `directories::ProjectDirs` doesn't give us the bare home dir, so
     // fall back to env. This matches what shells, Python, and the
     // `claude` CLI itself use.
-    std::env::var_os("HOME").map(PathBuf::from)
+    if let Some(home) = std::env::var_os("HOME") {
+        return Some(PathBuf::from(home));
+    }
+    // Windows has no HOME by default; shells and tooling use USERPROFILE.
+    #[cfg(target_os = "windows")]
+    if let Some(profile) = std::env::var_os("USERPROFILE") {
+        return Some(PathBuf::from(profile));
+    }
+    None
 }
 
 /// PATH for resolving + running `claude`, robust to launch context.
@@ -327,9 +335,10 @@ fn home_dir() -> Option<PathBuf> {
 /// A macOS app launched from Finder/Dock (or via `open`) inherits
 /// launchd's minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) — it does NOT
 /// see the user's shell PATH, so `claude` (commonly at `~/.local/bin`) and
-/// the `node` it needs are invisible. We prepend the usual user/Homebrew
-/// bin dirs to whatever PATH we inherited so both the driver's `claude`
-/// lookup and the child process (claude → node, skill → python) resolve.
+/// the `node` it needs are invisible. On Windows the GUI process likewise
+/// may not carry the npm-global dir. We prepend the usual user bin dirs to
+/// whatever PATH we inherited so both the driver's `claude` lookup and the
+/// child process (claude → node, skill → python) resolve.
 pub fn augmented_path() -> std::ffi::OsString {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(home) = home_dir() {
@@ -338,6 +347,20 @@ pub fn augmented_path() -> std::ffi::OsString {
         dirs.push(home.join(".bun").join("bin"));
         dirs.push(home.join(".volta").join("bin"));
     }
+    #[cfg(target_os = "windows")]
+    {
+        // npm global installs put `claude` (claude.cmd / claude.ps1) under
+        // %APPDATA%\npm; the native Windows installer uses
+        // %LOCALAPPDATA%\Programs\claude. Add both explicitly since the GUI
+        // process often launches without them on PATH.
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            dirs.push(PathBuf::from(appdata).join("npm"));
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            dirs.push(PathBuf::from(local).join("Programs").join("claude"));
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
     for p in [
         "/opt/homebrew/bin",
         "/opt/homebrew/sbin",
@@ -358,9 +381,52 @@ pub fn augmented_path() -> std::ffi::OsString {
 /// Resolve the absolute path to the `claude` binary using the augmented
 /// PATH (see [`augmented_path`]). Returns `None` if it cannot be found —
 /// the driver then reports `CLAUDE_NOT_INSTALLED`.
+///
+/// On Windows, `which` resolves an npm `claude.cmd` batch wrapper. We must
+/// NOT spawn that wrapper: our `--append-system-prompt` argument contains
+/// newlines, and a batch file can carry neither a direct-spawn arg (std
+/// rejects it: "batch file arguments are invalid") nor a `cmd /C` arg (a
+/// newline terminates the command). So we follow the wrapper to the real
+/// `claude.exe` it launches — a native exe takes arbitrary argv via
+/// `CreateProcess`. See [`real_exe_behind_cmd_wrapper`] and its test.
 pub fn resolve_claude(cwd: &Path) -> Option<PathBuf> {
     let path = augmented_path();
-    which::which_in("claude", Some(&path), cwd).ok()
+    let resolved = which::which_in("claude", Some(&path), cwd).ok()?;
+    #[cfg(target_os = "windows")]
+    if let Some(exe) = real_exe_behind_cmd_wrapper(&resolved) {
+        return Some(exe);
+    }
+    Some(resolved)
+}
+
+/// If `wrapper` is a Windows `.cmd`/`.bat` shim that launches a real `.exe`
+/// (npm installs `claude.cmd` as
+/// `"%dp0%\node_modules\@anthropic-ai\claude-code\bin\claude.exe" %*`),
+/// return that `.exe`. Parses the shim rather than hard-coding the package
+/// path, and substitutes the batch `%dp0%` / `%~dp0` (the shim's own dir).
+/// Returns `None` if `wrapper` isn't a shim, names no `.exe`, or the target
+/// doesn't exist — callers then fall back to the wrapper itself.
+#[cfg(target_os = "windows")]
+fn real_exe_behind_cmd_wrapper(wrapper: &Path) -> Option<PathBuf> {
+    let ext = wrapper.extension().and_then(|e| e.to_str())?;
+    if !ext.eq_ignore_ascii_case("cmd") && !ext.eq_ignore_ascii_case("bat") {
+        return None;
+    }
+    let text = std::fs::read_to_string(wrapper).ok()?;
+    let dir = wrapper.parent()?.to_string_lossy().into_owned();
+    // Launch line looks like: "%dp0%\...\claude.exe"   %*
+    // Split on quotes and take the token that names an .exe.
+    for token in text.split('"') {
+        if !token.to_ascii_lowercase().trim_end().ends_with(".exe") {
+            continue;
+        }
+        let substituted = token.replace("%~dp0", &dir).replace("%dp0%", &dir);
+        let candidate = PathBuf::from(substituted.trim());
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// Clean a raw title string from the title-generation model into a short,
@@ -832,6 +898,8 @@ where
 
     // argv[0] is "claude"; the rest are flags + the prompt. We spawn the
     // resolved absolute path (argv[0] is kept for build_command parity).
+    // A Windows `claude.cmd` is run directly — std handles batch wrappers
+    // (see resolve_claude); an explicit `cmd /C` would mangle the args.
     let mut command = Command::new(&claude_path);
     command
         .args(&argv[1..])
@@ -1226,8 +1294,46 @@ mod tests {
             .any(|p| p.ends_with(".local/bin") || p.ends_with(".local\\bin"));
         assert!(has_local_bin, "augmented PATH should include ~/.local/bin: {entries:?}");
         // Homebrew + system dirs present regardless of inherited PATH.
-        assert!(entries.iter().any(|p| p == &PathBuf::from("/opt/homebrew/bin")));
-        assert!(entries.iter().any(|p| p == &PathBuf::from("/usr/bin")));
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert!(entries.iter().any(|p| p == &PathBuf::from("/opt/homebrew/bin")));
+            assert!(entries.iter().any(|p| p == &PathBuf::from("/usr/bin")));
+        }
+        // npm-global dir present so an npm install of `claude` resolves.
+        #[cfg(target_os = "windows")]
+        if std::env::var_os("APPDATA").is_some() {
+            assert!(
+                entries.iter().any(|p| p.ends_with("npm")),
+                "augmented PATH should include %APPDATA%\\npm: {entries:?}"
+            );
+        }
+    }
+
+    /// `resolve_claude` must follow an npm `claude.cmd` shim to the real
+    /// `claude.exe` it launches — a `.cmd` can't carry our multi-line
+    /// `--append-system-prompt` arg (direct spawn → "batch file arguments
+    /// are invalid"; `cmd /C` → a newline ends the command), but a native
+    /// exe takes arbitrary argv. Mirrors npm's actual shim layout.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn follows_cmd_shim_to_real_exe() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe_dir = dir.path().join("node_modules\\@anthropic-ai\\claude-code\\bin");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        let exe = exe_dir.join("claude.exe");
+        std::fs::write(&exe, b"").unwrap(); // existence is all the parser checks
+        let cmd = dir.path().join("claude.cmd");
+        std::fs::write(
+            &cmd,
+            "@ECHO off\r\nSET dp0=%~dp0\r\n\"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe\"   %*\r\n",
+        )
+        .unwrap();
+
+        let resolved = real_exe_behind_cmd_wrapper(&cmd).expect("should follow shim to exe");
+        assert_eq!(resolved, exe);
+
+        // A plain .exe (not a shim) is returned untouched / ignored.
+        assert!(real_exe_behind_cmd_wrapper(&exe).is_none());
     }
 
     #[test]
@@ -1531,14 +1637,18 @@ mod tests {
     /// Code stays green.
     #[test]
     fn live_claude_version_smoke() {
-        let Ok(_) = which::which("claude") else {
-            eprintln!("skipping: claude not on PATH");
+        let cwd = std::env::current_dir().unwrap();
+        let Some(claude) = resolve_claude(&cwd) else {
+            eprintln!("skipping: claude not resolvable");
             return;
         };
-        let out = std::process::Command::new("claude")
+        // Spawn the resolved path directly — std runs a Windows `claude.cmd`
+        // wrapper for us. (The old bare `Command::new("claude")` failed with
+        // "program not found" because CreateProcess only appends `.exe`.)
+        let out = std::process::Command::new(&claude)
             .arg("--version")
             .output()
-            .expect("claude --version should run when on PATH");
+            .expect("claude --version should run when resolvable");
         assert!(out.status.success(), "claude --version should exit 0");
     }
 
@@ -1583,5 +1693,59 @@ mod tests {
         eprintln!("project.json name is now: {name:?}");
         assert_ne!(name, "New project");
         assert!(!name.is_empty());
+    }
+
+    /// Optional live end-to-end of a real PLAN turn through `spawn_turn` —
+    /// the exact path that broke on Windows. It spawns the resolved `claude`
+    /// with the multi-line `--append-system-prompt`; a `.cmd`/`cmd /C` route
+    /// fails here ("Input must be provided ..." / "batch file arguments are
+    /// invalid"), while the real `.exe` resolved by `resolve_claude` does
+    /// not. Asserts the turn produces content and no arg-passing error.
+    /// Ignored by default (costs quota + network); run with:
+    /// `cargo test --manifest-path desktop/src-tauri/Cargo.toml -- --ignored --nocapture live_plan_turn`
+    #[tokio::test]
+    #[ignore]
+    async fn live_plan_turn_passes_multiline_system_prompt() {
+        let workspace = tempfile::tempdir().unwrap();
+        if resolve_claude(workspace.path()).is_none() {
+            eprintln!("skipping: claude not resolvable");
+            return;
+        }
+        let events = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<ChatEvent>::new()));
+        let sink = events.clone();
+        let res = spawn_turn(
+            workspace.path(),
+            uuid::Uuid::new_v4(), // fresh session so reruns don't collide
+            "design a simple 20mm cube keychain with a 4mm hole",
+            "T-live-plan",
+            TurnPhase::Plan,
+            move |e| sink.lock().push(e),
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(res.is_ok(), "spawn_turn returned Err: {res:?}");
+
+        let evs = events.lock();
+        for e in evs.iter() {
+            if let ChatEvent::Error { message, .. } = e {
+                assert!(
+                    !message.contains("Input must be provided")
+                        && !message.contains("batch file arguments are invalid")
+                        && !message.contains("failed to spawn"),
+                    "arg-passing regression: {message:?}"
+                );
+            }
+        }
+        let produced_content = evs.iter().any(|e| {
+            matches!(
+                e,
+                ChatEvent::TextDelta { .. }
+                    | ChatEvent::ThinkingDelta { .. }
+                    | ChatEvent::ToolUseStart { .. }
+                    | ChatEvent::PlanProposed { .. }
+            )
+        });
+        assert!(produced_content, "no content from claude; events: {evs:?}");
+        assert!(matches!(evs.last(), Some(ChatEvent::TurnEnd { .. })));
     }
 }

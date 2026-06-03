@@ -21,10 +21,9 @@ Changes since pre-flight:
 ### Scope
 
 Defines what a Panda CAD project's `gen_step()` function may return and what
-`cadpy.generation.generate_step()` produces. v1 adds CadQuery support to the
-existing build123d-only entry path; both libraries are accepted by the same
-function, dispatched on the input's Python type. Build123d behavior is
-unchanged (regression rule).
+`cadpy.generation.generate_step()` produces. CadQuery is the only modeling
+library; the input is resolved by duck-typing on its underlying OCCT
+`TopoDS_Shape`.
 
 ### Project shape
 
@@ -51,7 +50,6 @@ accepted; the runner treats it as if `gen_step()` returned `result`.
 | Form | Type | Meaning |
 |---|---|---|
 | **Shape (CadQuery)** | `cq.Workplane` or `cq.Shape` | Single-solid part. Internally normalized to `{"shape": cq_obj}`. |
-| **Shape (build123d)** | `build123d.Shape` | Same, for backward compat. |
 | **Assembly (CadQuery)** | `cq.Assembly` | Named hierarchy. Walked into `{"children": [...]}` of instances. |
 | **List** | `list[Instance]` | Manual assembly composition (see `assembly_spec.AssemblyInstance`). |
 | **Envelope dict** | `dict` | Explicit form, see below. |
@@ -65,32 +63,32 @@ A dict return must contain **exactly one** of `shape`, `instances`,
 ```python
 {
     # Exactly one content key:
-    "shape":     <cq.Workplane | cq.Shape | build123d.Shape>,
+    "shape":     <cq.Workplane | cq.Shape>,
     "instances": list[AssemblyInstance],
     "children":  list[Shape | Workplane | AssemblyInstance],
 
     # Optional output controls (all bypass-able):
     "step_output":           str | Path,   # override the STEP path
-    "stl":                   bool | str,   # also write STL (path optional)
-    "3mf":                   bool | str,   # also write 3MF (path optional)
     "mesh_tolerance":        float,        # linear, mm; default 0.05
     "mesh_angular_tolerance": float,       # deg; default 3.0
 }
 ```
 
+The `.stl` is always written (it is both the printable deliverable and the
+viewer's preview mesh); there is no envelope flag to toggle it.
+
 ### Library-agnostic resolution
 
 `generation.py` MUST resolve the input via duck-typing on `.wrapped` —
-**not** isinstance checks against `cq.Workplane` or `build123d.Shape`
-exclusively. The rule, in order:
+**not** isinstance checks against `cq.Workplane` / `cq.Shape`. The rule, in
+order:
 
 1. If `result` is a `dict`, dispatch on `(shape|instances|children)` key.
 2. If `result` is a `list`, treat as `{"children": result}`.
 3. If `result` has callable `.val()` and `.val().wrapped` is a
    `TopoDS_Shape`, treat as `{"shape": result}` (CadQuery `Workplane`).
 4. If `result.wrapped` is a `TopoDS_Shape`, treat as `{"shape": result}`
-   (CadQuery `Shape`, build123d `Shape`, or any future `TopoDS_Shape`
-   wrapper).
+   (CadQuery `Shape` or any future `TopoDS_Shape` wrapper).
 5. If `result` is a `cq.Assembly` (has `.children` and `.toCompound()`),
    walk it into `{"children": [...]}`.
 6. Otherwise raise `TypeError` with the offending type name.
@@ -98,17 +96,14 @@ exclusively. The rule, in order:
 This keeps the contract open to future OCP wrappers without invasive
 edits.
 
-### Topology-ID stability
+### Face-ID stability
 
-`@cad[…#f3]` face / edge / vertex ordinals MUST come from
+Face / edge / vertex ordinals MUST come from
 `TopExp.MapShapes_s(shape.wrapped, TopAbs_*)` over the OCCT topology tree —
-**not** from CadQuery-specific tags or build123d-specific selectors. This is
-already true for build123d in v0; the CadQuery path must follow the same
-rule so refs are interchangeable.
-
-A regression test in `tests/test_cadquery_generation.py` MUST assert that a
-build123d `Box(20, 20, 5)` and `cq.Workplane().box(20, 20, 5)` produce
-**identical face-ID ordinals** for their top face.
+**not** from CadQuery-specific tags or selectors — so a given CadQuery shape
+yields deterministic ordinals. A regression test in
+`tests/test_cadquery_generation.py` asserts the stable top-face ordinal for
+`cq.Workplane().box(20, 20, 5)`.
 
 ### Public entry point
 
@@ -124,8 +119,8 @@ def generate_step(
 
 Loads `<project_dir>/main.py`, calls `gen_step()` (or picks up legacy
 module-level `result`), and writes the artifacts below. Returns a dict
-with `step_path`, `glb_path`, `topology_path`, `metadata_path`, optional
-`stl_path` / `threemf_path`, plus `is_solid`, `volume_mm3`, and `bbox`.
+with `step_path`, `stl_path`, `metadata_path`, plus `is_solid`,
+`volume_mm3`, and `bbox`.
 
 `generate_step_targets()` remains the multi-target CLI entry; the new
 `generate_step()` is the single-project wrapper Panda's runner uses.
@@ -138,14 +133,11 @@ shown relative to `output_path`'s parent.
 | File | Always written? | Purpose |
 |---|---|---|
 | `<stem>.step` | yes | B-rep archival, labels + colors via XCAF |
-| `<stem>.glb` | yes | Preview mesh with embedded face-ID extension |
-| `<stem>.topology.json` | yes | Map of face/edge/vertex ordinal → STEP entity |
+| `<stem>.stl` | yes | Printable mesh + the viewer's preview mesh |
 | `<stem>.step.json` | yes | Source hash, generator metadata, validation summary |
-| `<stem>.stl` | only if `envelope["stl"]` truthy | Slicer-ready mesh |
-| `<stem>.3mf` | only if `envelope["3mf"]` truthy | Alt mesh format |
 
 `<stem>` is the basename of `output_path`. The driver's mtime snapshotter
-(contract §3) watches all six extensions.
+(contract §3) watches all three extensions.
 
 ### Error contract
 
@@ -209,12 +201,11 @@ function app_info(): Promise<AppInfo>;
 // file_read_bytes / file_reveal resolve these bare refs under the same dir.
 interface CatalogEntry {
   file: string;                 // project-relative path (bare)
-  kind: "step" | "stl" | "glb" | "gcode" | "py" | "json" | "png";
+  kind: "step" | "stl" | "gcode" | "py" | "json" | "png";
   sourceKind: "python" | "static" | null;
   url: string;                  // tauri:// URI for fetching bytes
   artifact?: {
-    glbUrl?: string;
-    topologyUrl?: string;
+    stlUrl?: string;            // sibling .stl the viewer renders for a .step entry
     metadataUrl?: string;
   };
   relations?: Record<string, string>;
@@ -228,7 +219,7 @@ function catalog_read(): Promise<Catalog>;
 
 // generation_status_read — replaces GET /__cad/generation-status
 interface GenerationStatus {
-  queue: Array<{ file: string; startedAt: number; kind: "step" | "glb" }>;
+  queue: Array<{ file: string; startedAt: number; kind: "step" }>;
   pythonAvailable: boolean;
   lastError?: { file: string; message: string; at: number };
 }
@@ -502,11 +493,8 @@ interface CadcodeResult {
 
   // Always present on success:
   step_path?: string;           // workspace-relative
-  stl_path?: string;            // optional, only if STL requested
-  glb_path?: string;
-  topology_path?: string;
+  stl_path?: string;            // always written (printable + preview mesh)
   metadata_path?: string;       // <stem>.step.json
-  png_path?: string;            // optional canonical preview
 
   // Geometry facts (success):
   is_solid?: boolean;
@@ -534,12 +522,8 @@ dir):
 | Extension | Source | Always? |
 |---|---|---|
 | `.step` | cadpy STEP export with XCAF labels | yes (on success) |
-| `.glb` | cadpy GLB with face-ID extension | yes (on success) |
-| `.topology.json` | cadpy topology sidecar (face/edge/vertex IDs) | yes (on success) |
+| `.stl` | cadpy mesh export (printable + viewer preview) | yes (on success) |
 | `.step.json` | cadpy metadata (source hash, generator, validation) | yes (on success) |
-| `.stl` | cadpy mesh export | only if envelope `stl=True` |
-| `.3mf` | cadpy mesh export | only if envelope `3mf=True` |
-| `.png` | optional preview render from GLB | only if explicitly requested |
 | `.py` (any) | the agent's `gen_step()` source | written by the agent's `Write` tool, not by the skill itself |
 
 ### mtime snapshot watchlist
@@ -548,7 +532,7 @@ The Rust driver (`desktop/src-tauri/src/commands/claude_driver.rs`)
 snapshots all files in the per-session workspace dir before each turn and
 diffs after. A file counts as an "artifact event" if:
 
-1. Its extension is one of: `.step .stp .stl .3mf .glb .gcode .png .py
+1. Its extension is one of: `.step .stp .stl .3mf .gcode .png .py
    .json` (lowercase, case-sensitive)
 2. AND it was created, OR its mtime moved forward by ≥ 1 second.
 
@@ -579,10 +563,8 @@ For each artifact event, the driver emits a `chat_event`:
 ├── features/                ← optional
 ├── assemblies/              ← optional
 ├── model.step               ← cadpy STEP
-├── model.glb                ← cadpy GLB preview
-├── model.topology.json      ← cadpy topology sidecar
 ├── model.step.json          ← cadpy metadata
-├── model.stl                ← cadpy mesh (slice-input)
+├── model.stl                ← cadpy mesh (slice-input + viewer preview)
 ├── model.gcode              ← OrcaSlicer output
 └── chat.jsonl               ← Panda-managed chat history (one event per line)
 ```

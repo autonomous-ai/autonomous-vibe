@@ -40,7 +40,6 @@ pub struct CatalogEntry {
 pub enum CatalogKind {
     Step,
     Stl,
-    Glb,
     Gcode,
     Py,
     Json,
@@ -54,7 +53,6 @@ impl CatalogKind {
         match ext {
             "step" | "stp" => Some(Self::Step),
             "stl" => Some(Self::Stl),
-            "glb" => Some(Self::Glb),
             "gcode" => Some(Self::Gcode),
             "py" => Some(Self::Py),
             "json" => Some(Self::Json),
@@ -74,10 +72,10 @@ pub enum SourceKind {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogArtifact {
+    /// URL of the sibling `.stl` the viewer renders as the preview mesh for a
+    /// `.step` entry.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub glb_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub topology_url: Option<String>,
+    pub stl_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata_url: Option<String>,
 }
@@ -111,7 +109,6 @@ pub struct GenerationQueueItem {
 #[serde(rename_all = "lowercase")]
 pub enum GenerationQueueKind {
     Step,
-    Glb,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

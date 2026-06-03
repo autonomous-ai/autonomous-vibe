@@ -3,7 +3,7 @@
 //!
 //! The catalog hands the frontend `pandaasset://localhost/<project-relative
 //! path>` URLs (see [`crate::commands::catalog`]); cadjs `fetch()`es them to
-//! load GLB/STL/PNG bytes for the 3D viewer. We resolve each request against
+//! load STL/PNG bytes for the 3D viewer. We resolve each request against
 //! the active project dir — the same scoping as `file_read_bytes` — and
 //! return the bytes. Without this bridge no model can render: the prior
 //! `tauri://localhost/...` URLs resolved to the app's own frontend origin
@@ -76,7 +76,6 @@ fn content_type_for(path: &Path) -> &'static str {
         .map(|e| e.to_ascii_lowercase())
         .as_deref()
     {
-        Some("glb") | Some("gltf") => "model/gltf-binary",
         Some("stl") => "model/stl",
         Some("3mf") => "model/3mf",
         Some("png") => "image/png",

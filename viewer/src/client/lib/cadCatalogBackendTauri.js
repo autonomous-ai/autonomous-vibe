@@ -17,13 +17,13 @@ import { transport } from "./transport.ts";
 
 // The Rust catalog (Track C, simplified) omits the per-asset `hash` that
 // cadjs's `entryHasMesh` requires before it treats a mesh as renderable —
-// without it, no STL/GLB ever renders. Synthesize one from the asset URL +
+// without it, no STL ever renders. Synthesize one from the asset URL +
 // catalog revision: stable within a revision and cache-busting when
 // artifacts change (the revision bumps on `artifact_changed`). Scoped to
-// directly-renderable mesh kinds so STEP entries stay "no mesh" instead of
-// trying to load a `.step` as a GLB (Panda doesn't emit a STEP→GLB sidecar
-// in cadjs's shape yet). The bytes are served by the pandaasset:// scheme.
-const RENDERABLE_MESH_KINDS = new Set(["stl", "glb"]);
+// the directly-renderable `.stl` mesh so STEP entries stay "no mesh" (their
+// archival B-rep is not rendered; the sibling `.stl` is the preview). The
+// bytes are served by the pandaasset:// scheme.
+const RENDERABLE_MESH_KINDS = new Set(["stl"]);
 
 function withRenderableMeshHashes(catalog) {
   if (!catalog || !Array.isArray(catalog.entries)) {

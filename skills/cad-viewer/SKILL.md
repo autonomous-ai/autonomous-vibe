@@ -1,6 +1,6 @@
 ---
 name: cad-viewer
-description: Start or reuse CAD Viewer and return review links for explicit CAD, robot-description, and G-code files. Use when visually reviewing `.step`, `.stp`, `.glb`, `.stl`, `.3mf`, `.gcode`, `.dxf`, `.urdf`, `.srdf`, or `.sdf` files, especially when handed off from CAD, G-code, URDF, SRDF, or SDF generation skills.
+description: Start or reuse CAD Viewer and return review links for explicit CAD, robot-description, and G-code files. Use when visually reviewing `.step`, `.stp`, `.stl`, `.3mf`, `.gcode`, `.dxf`, `.urdf`, `.srdf`, or `.sdf` files, especially when handed off from CAD, G-code, URDF, SRDF, or SDF generation skills.
 ---
 
 # CAD Viewer
@@ -9,7 +9,7 @@ Use this skill to open existing or newly generated CAD, robot-description, DXF, 
 
 ## Start Viewer
 
-Always start CAD Viewer with the root directory that owns the model files (.step, .glb, .stl, .urdf, etc).
+Always start CAD Viewer with the root directory that owns the model files (.step, .stl, .urdf, etc).
 Always pass `--root-dir /path/to/root`; the flag is required. This flag is
 the full Viewer root directory; do not treat it as a subdirectory inside another
 repo root.

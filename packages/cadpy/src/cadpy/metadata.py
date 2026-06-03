@@ -296,6 +296,12 @@ def _is_compound_assembly_expression(
     local_assignments: dict[str, ast.expr],
     seen_names: set[str] | None = None,
 ) -> bool:
+    """True if the returned shape expression constructs a ``cq.Assembly``.
+
+    CadQuery assemblies are ``cq.Assembly(...)`` containers (parts attached via
+    ``.add()``), so any ``Assembly(...)`` constructor call — resolved through
+    local assignments — classifies the project as an assembly.
+    """
     if isinstance(expression, ast.Name):
         seen_names = set(seen_names or set())
         if expression.id in seen_names:
@@ -309,22 +315,9 @@ def _is_compound_assembly_expression(
             local_assignments=local_assignments,
             seen_names=seen_names,
         )
-    if not isinstance(expression, ast.Call) or _call_tail_name(expression.func) != "Compound":
+    if not isinstance(expression, ast.Call):
         return False
-    if expression.args and _is_multi_item_sequence_expression(
-        expression.args[0],
-        local_assignments=local_assignments,
-    ):
-        return True
-    for keyword in expression.keywords:
-        if keyword.arg == "children" and _is_nonempty_expression(keyword.value):
-            return True
-        if keyword.arg == "obj" and _is_multi_item_sequence_expression(
-            keyword.value,
-            local_assignments=local_assignments,
-        ):
-            return True
-    return False
+    return _call_tail_name(expression.func) == "Assembly"
 
 
 def _call_tail_name(function: ast.expr) -> str | None:
@@ -333,38 +326,6 @@ def _call_tail_name(function: ast.expr) -> str | None:
     if isinstance(function, ast.Attribute):
         return function.attr
     return None
-
-
-def _is_nonempty_expression(expression: ast.expr) -> bool:
-    if isinstance(expression, ast.Constant) and expression.value is None:
-        return False
-    if isinstance(expression, (ast.List, ast.Tuple, ast.Set)):
-        return bool(expression.elts)
-    return True
-
-
-def _is_multi_item_sequence_expression(
-    expression: ast.expr,
-    *,
-    local_assignments: dict[str, ast.expr],
-    seen_names: set[str] | None = None,
-) -> bool:
-    if isinstance(expression, ast.Name):
-        seen_names = set(seen_names or set())
-        if expression.id in seen_names:
-            return False
-        target = local_assignments.get(expression.id)
-        if target is None:
-            return False
-        seen_names.add(expression.id)
-        return _is_multi_item_sequence_expression(
-            target,
-            local_assignments=local_assignments,
-            seen_names=seen_names,
-        )
-    if isinstance(expression, (ast.List, ast.Tuple, ast.Set)):
-        return len(expression.elts) > 1
-    return False
 
 
 def _parse_dxf_envelope_metadata(

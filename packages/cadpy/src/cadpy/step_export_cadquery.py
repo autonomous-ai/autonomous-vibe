@@ -1,16 +1,14 @@
-"""CadQuery-flavored mirror of :mod:`cadpy.step_export`.
+"""CadQuery → XCAF-doc adapter for :mod:`cadpy.step_export`.
 
 The OCCT-level pipeline (XCAF doc → STEPCAFControl_Writer → STEP file →
 LoadedStepScene) is library-agnostic; only the *input* shape needs a
 CadQuery-aware adapter. This module wraps `cq.Workplane`, `cq.Shape`, and
-`cq.Assembly` into the same XCAF-doc the build123d path uses, then defers to
-the shared `step_export.export_xcaf_doc_step_scene` / `write_xcaf_doc_step_file`
-helpers.
+`cq.Assembly` into an XCAF-doc, then defers to the shared
+`step_export.export_xcaf_doc_step_scene` / `write_xcaf_doc_step_file` helpers.
 
-The contract that lets this work is: CadQuery and build123d both wrap the same
-OCCT `TopoDS_Shape` instance via `.wrapped`. `cq.Workplane.val().wrapped` and
-`cq.Assembly.toCompound().wrapped` are interchangeable with the build123d
-equivalents at the OCCT layer.
+The contract that lets this work is: a CadQuery shape exposes its underlying
+OCCT `TopoDS_Shape` via `.wrapped` (`cq.Workplane.val().wrapped`,
+`cq.Assembly.toCompound().wrapped`), which the OCCT layer consumes directly.
 """
 
 from __future__ import annotations
@@ -56,7 +54,7 @@ def _topods_from_cadquery(to_export: Any) -> Any:
         wrapped = getattr(val, "wrapped", None)
         if wrapped is not None:
             return wrapped
-    # cq.Shape or build123d.Shape: read .wrapped directly.
+    # cq.Shape (or any OCCT wrapper): read .wrapped directly.
     wrapped = getattr(to_export, "wrapped", None)
     if wrapped is not None:
         return wrapped
@@ -221,8 +219,8 @@ def _add_cq_assembly_to_doc(assembly: Any, doc: Any) -> Any:
         obj = getattr(node, "obj", None)
 
         # A node may carry BOTH children and its own obj (cq lets you stack
-        # geometry on a parent). To keep parity with the build123d path we
-        # treat any node with children as an "assembly" node, and synthesize
+        # geometry on a parent). We treat any node with children as an
+        # "assembly" node, and synthesize
         # an extra child for `obj` if present.
         if children or obj is None:
             definition_label = shape_tool.NewShape()
@@ -305,7 +303,7 @@ def _create_xcaf_doc_for_cadquery(to_export: Any) -> Any:
         return doc
 
     # Single shape (cq.Workplane / cq.Shape): add it as a sole top-level
-    # shape, mirroring the build123d non-assembly path.
+    # shape (single top-level shape).
     from OCP.XCAFDoc import XCAFDoc_DocumentTool
 
     wrapped = _topods_from_cadquery(to_export)

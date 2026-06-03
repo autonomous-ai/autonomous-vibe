@@ -17,7 +17,7 @@ pub struct AppState {
     /// client can invalidate its cached view.
     catalog_revision: AtomicU64,
 
-    /// In-progress STEP/GLB regeneration jobs (contract §2:
+    /// In-progress STEP regeneration jobs (contract §2:
     /// `GenerationStatus.queue`).
     generation_queue: Mutex<Vec<GenerationQueueItem>>,
     last_generation_error: Mutex<Option<GenerationLastError>>,

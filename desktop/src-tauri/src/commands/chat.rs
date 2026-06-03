@@ -129,7 +129,7 @@ pub async fn chat_approve_plan(
     // text back honors any edits without diffing.
     let message = format!(
         "The plan below is approved. Implement it now, generating all parts \
-         and STL/STEP/GLB artifacts as described.\n\n{}",
+         and STL/STEP artifacts as described.\n\n{}",
         req.plan_text
     );
     let turn_id = spawn_chat_turn(app, &req.project_id, message, TurnPhase::Implement);

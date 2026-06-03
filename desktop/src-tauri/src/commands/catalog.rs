@@ -87,7 +87,7 @@ pub async fn generation_status_read(state: State<'_, AppState>) -> IpcResult<Gen
 /// Walk the workspace and return one [`CatalogEntry`] per relevant file.
 ///
 /// "Relevant" means the file's lowercase extension maps to a
-/// [`CatalogKind`] (step/stp/stl/glb/gcode/py/json/png). The mapping is
+/// [`CatalogKind`] (step/stp/stl/gcode/py/json/png). The mapping is
 /// deliberately narrow: contract §2 freezes the enum, and broader file
 /// types (e.g. `.dxf`, `.3mf`, `.urdf`) belong to deferred catalogs.
 pub fn scan_workspace(root: &Path) -> IpcResult<Vec<CatalogEntry>> {
@@ -126,7 +126,7 @@ pub fn scan_workspace(root: &Path) -> IpcResult<Vec<CatalogEntry>> {
             continue;
         };
         // Hide auxiliary files from the catalog so the file list shows only the
-        // main deliverables (source `.py` + `.step`/`.stl`/`.glb`). `path_index`
+        // main deliverables (source `.py` + `.step`/`.stl`). `path_index`
         // still holds every file, so `.step`→`.py` sibling detection and the
         // sidecar artifact URLs below resolve from disk regardless.
         if is_auxiliary_file(absolute, kind) {
@@ -155,11 +155,11 @@ pub fn scan_workspace(root: &Path) -> IpcResult<Vec<CatalogEntry>> {
 /// should not clutter the workspace file list as standalone entries:
 /// - `.json` — `.topology.json` / `.step.json` sidecars + other metadata
 ///   (surfaced via a `.step` entry's `artifact`, never on their own).
-/// - `.png` — QA render images; never an app deliverable (the viewer uses `.glb`).
+/// - `.png` — QA render images; never an app deliverable (the viewer renders the `.stl`).
 /// - underscore-prefixed `.py` — internal helper scripts (e.g. `_export.py`,
 ///   `_render.py`), not the user's editable source.
 ///
-/// Kept: `.step`/`.stp`/`.stl`/`.glb`/`.gcode` and real (non-underscore) `.py`.
+/// Kept: `.step`/`.stp`/`.stl`/`.gcode` and real (non-underscore) `.py`.
 fn is_auxiliary_file(absolute: &Path, kind: CatalogKind) -> bool {
     match kind {
         CatalogKind::Json | CatalogKind::Png => true,
@@ -192,7 +192,6 @@ fn classify_source_kind(
             }
         }
         CatalogKind::Stl
-        | CatalogKind::Glb
         | CatalogKind::Gcode
         | CatalogKind::Json
         | CatalogKind::Png => Some(SourceKind::Static),
@@ -200,8 +199,9 @@ fn classify_source_kind(
     }
 }
 
-/// For a .step entry, fish out matching sidecar URLs (GLB / topology
-/// JSON / metadata JSON) if they exist next to the file.
+/// For a .step entry, fish out matching sidecar URLs (the `.stl` the viewer
+/// renders as the preview mesh, plus the `.step.json` metadata) if they exist
+/// next to the file.
 fn sidecar_artifact(
     kind: CatalogKind,
     absolute: &Path,
@@ -221,15 +221,13 @@ fn sidecar_artifact(
             None
         }
     };
-    let glb_url = make_url(".glb");
-    let topology_url = make_url(".topology.json");
+    let stl_url = make_url(".stl");
     let metadata_url = make_url(".step.json");
-    if glb_url.is_none() && topology_url.is_none() && metadata_url.is_none() {
+    if stl_url.is_none() && metadata_url.is_none() {
         return None;
     }
     Some(CatalogArtifact {
-        glb_url,
-        topology_url,
+        stl_url,
         metadata_url,
     })
 }
@@ -286,8 +284,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         touch(&root.join("model.step"));
-        touch(&root.join("model.glb"));
-        touch(&root.join("model.topology.json"));
+        touch(&root.join("model.stl"));
         touch(&root.join("model.step.json"));
 
         let entries = scan_workspace(root).unwrap();
@@ -296,8 +293,7 @@ mod tests {
             .find(|e| e.file == "model.step")
             .expect("model.step entry present");
         let artifact = step.artifact.clone().expect("artifact attached");
-        assert!(artifact.glb_url.unwrap().ends_with("model.glb"));
-        assert!(artifact.topology_url.unwrap().ends_with("model.topology.json"));
+        assert!(artifact.stl_url.unwrap().ends_with("model.stl"));
         assert!(artifact.metadata_url.unwrap().ends_with("model.step.json"));
     }
 
@@ -309,13 +305,11 @@ mod tests {
         touch(&root.join("model.py"));
         touch(&root.join("model.step"));
         touch(&root.join("model.stl"));
-        touch(&root.join("model.glb"));
         // Auxiliary clutter that must NOT appear as standalone entries.
         touch(&root.join("_export.py"));
         touch(&root.join("_render.py"));
         touch(&root.join("model_iso.png"));
         touch(&root.join("model_side.png"));
-        touch(&root.join("model.topology.json"));
         touch(&root.join("model.step.json"));
 
         let entries = scan_workspace(root).unwrap();
@@ -323,8 +317,8 @@ mod tests {
         files.sort();
         assert_eq!(
             files,
-            vec!["model.glb", "model.py", "model.step", "model.stl"],
-            "only the four main files survive; helpers/renders/sidecars are hidden",
+            vec!["model.py", "model.step", "model.stl"],
+            "only the three main files survive; helpers/renders/sidecars are hidden",
         );
 
         // Sibling detection + sidecar URLs still resolve from disk even though the
@@ -332,8 +326,7 @@ mod tests {
         let step = entries.iter().find(|e| e.file == "model.step").unwrap();
         assert_eq!(step.source_kind, Some(SourceKind::Python));
         let artifact = step.artifact.clone().expect("sidecars attached to .step");
-        assert!(artifact.glb_url.unwrap().ends_with("model.glb"));
-        assert!(artifact.topology_url.unwrap().ends_with("model.topology.json"));
+        assert!(artifact.stl_url.unwrap().ends_with("model.stl"));
         assert!(artifact.metadata_url.unwrap().ends_with("model.step.json"));
     }
 

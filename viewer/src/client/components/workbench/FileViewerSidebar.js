@@ -7,10 +7,12 @@ import {
   Cuboid,
   DraftingCompass,
   FileBox,
+  Folder,
   Layers3,
   LoaderCircle,
   Package,
-  Route
+  Route,
+  Trash2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,6 +35,7 @@ import {
   SidebarHeader,
   SidebarInput,
   SidebarMenu,
+  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuSub,
@@ -312,6 +315,167 @@ function DirectoryNode({
   );
 }
 
+// Render one project's directory tree (the top level of items inside a project
+// node). Mirrors the per-item branch that DirectoryNode uses for its children,
+// so directories and files render identically at every depth.
+function ProjectFileItems({
+  tree,
+  queryActive,
+  expandedDirectoryIds,
+  onToggleDirectory,
+  selectedKey,
+  onSelectEntry,
+  treeProps
+}) {
+  return listSidebarItems(tree).map((item) => {
+    if (item.type === "directory") {
+      return (
+        <DirectoryNode
+          key={item.key}
+          directory={item.value}
+          depth={1}
+          queryActive={queryActive}
+          expandedDirectoryIds={expandedDirectoryIds}
+          onToggleDirectory={onToggleDirectory}
+          selectedKey={selectedKey}
+          onSelectEntry={onSelectEntry}
+          nested
+          {...treeProps}
+        />
+      );
+    }
+    return (
+      <SidebarMenuSubItem key={item.key} className="min-w-0 w-full max-w-full">
+        <FileEntryButton
+          entry={item.value}
+          depth={1}
+          selectedKey={selectedKey}
+          onSelectEntry={onSelectEntry}
+          nested
+          {...treeProps}
+        />
+      </SidebarMenuSubItem>
+    );
+  });
+}
+
+// A top-level project row: collapsible header + its file tree. Files load
+// lazily for non-active projects (the `status`/`error` come from the hook).
+function ProjectNode({
+  node,
+  queryActive,
+  onToggleProject,
+  onToggleDirectory,
+  onSelectEntry,
+  onRequestDeleteProject,
+  selectedKey,
+  treeProps,
+  activeCatalogHydrated,
+  activeCatalogRefreshing,
+  activeCatalogError
+}) {
+  const expanded = node.expanded;
+  const boundToggleDirectory = (dirId) => onToggleDirectory(node.id, dirId);
+  const boundSelectEntry = (key) => onSelectEntry(key, node.id);
+  // Highlight the selected file only inside the active project — file keys are
+  // project-relative, so the same key can exist in multiple projects.
+  const effectiveSelectedKey = node.isActive ? selectedKey : "";
+
+  let body = null;
+  if (node.isActive) {
+    const hasMatches = node.hasFiles;
+    const catalogLoading = !activeCatalogHydrated || (activeCatalogRefreshing && !hasMatches);
+    const catalogErrorMessage = String(activeCatalogError || "").trim();
+    if (hasMatches) {
+      body = (
+        <ProjectFileItems
+          tree={node.tree}
+          queryActive={queryActive}
+          expandedDirectoryIds={node.expandedDirectoryIds}
+          onToggleDirectory={boundToggleDirectory}
+          selectedKey={effectiveSelectedKey}
+          onSelectEntry={boundSelectEntry}
+          treeProps={treeProps}
+        />
+      );
+    } else if (catalogErrorMessage) {
+      body = <ProjectMessage>CAD catalog unavailable: {catalogErrorMessage}</ProjectMessage>;
+    } else if (catalogLoading) {
+      body = <ProjectMessage>Loading models…</ProjectMessage>;
+    } else if (queryActive) {
+      body = <ProjectMessage>No models match this filter.</ProjectMessage>;
+    } else {
+      body = <ProjectMessage>No models yet.</ProjectMessage>;
+    }
+  } else if (node.status === "loading") {
+    body = <ProjectMessage>Loading models…</ProjectMessage>;
+  } else if (node.status === "error") {
+    body = <ProjectMessage>Could not load files: {node.error}</ProjectMessage>;
+  } else if (node.hasFiles) {
+    body = (
+      <ProjectFileItems
+        tree={node.tree}
+        queryActive={queryActive}
+        expandedDirectoryIds={node.expandedDirectoryIds}
+        onToggleDirectory={boundToggleDirectory}
+        selectedKey={effectiveSelectedKey}
+        onSelectEntry={boundSelectEntry}
+        treeProps={treeProps}
+      />
+    );
+  } else {
+    body = <ProjectMessage>No models yet.</ProjectMessage>;
+  }
+
+  return (
+    <Collapsible asChild open={expanded}>
+      <SidebarMenuItem className="min-w-0 w-full max-w-full">
+        <CollapsibleTrigger asChild>
+          <SidebarMenuButton
+            type="button"
+            size="sm"
+            isActive={node.isActive}
+            title={node.name}
+            className="group/project min-w-0 w-full justify-start font-medium"
+            onClick={() => onToggleProject(node.id)}
+          >
+            <ChevronRight
+              className={cn("transition-transform", expanded && "rotate-90")}
+              aria-hidden="true"
+            />
+            <Folder className="size-4 shrink-0" aria-hidden="true" />
+            <span className="block min-w-0 flex-1 max-w-full overflow-hidden text-ellipsis whitespace-nowrap">{node.name || "Untitled project"}</span>
+          </SidebarMenuButton>
+        </CollapsibleTrigger>
+        {onRequestDeleteProject ? (
+          <SidebarMenuAction
+            showOnHover
+            aria-label={`Delete ${node.name || "project"}`}
+            title="Delete project"
+            className="text-muted-foreground hover:text-destructive focus-visible:text-destructive"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onRequestDeleteProject({ id: node.id, name: node.name });
+            }}
+          >
+            <Trash2 />
+          </SidebarMenuAction>
+        ) : null}
+        <CollapsibleContent className="min-w-0 w-full max-w-full">
+          <SidebarMenuSub className="min-w-0 w-full max-w-full">
+            {body}
+          </SidebarMenuSub>
+        </CollapsibleContent>
+      </SidebarMenuItem>
+    </Collapsible>
+  );
+}
+
+function ProjectMessage({ children }) {
+  return <p className="px-2 py-1.5 text-xs text-muted-foreground">{children}</p>;
+}
+
 function SidebarResizeHandle({ onStartResize }) {
   const { isMobile, state } = useSidebar();
 
@@ -337,13 +501,12 @@ function SidebarResizeHandle({ onStartResize }) {
 function FileViewerContents({
   query,
   onQueryChange,
-  filteredEntries,
-  catalogEntries,
-  filteredEntriesTree,
+  projectNodes = [],
   selectedKey,
-  expandedDirectoryIds,
+  onToggleProject,
   onToggleDirectory,
   onSelectEntry,
+  onRequestDeleteProject,
   entrySourceFormat,
   entryHasMesh,
   entryHasDxf,
@@ -367,23 +530,42 @@ function FileViewerContents({
   onStartResize
 }) {
   const queryActive = query.trim().length > 0;
-  const hasMatches = filteredEntries.length > 0;
-  const hasEntries = catalogEntries.length > 0;
-  const catalogErrorMessage = String(catalogError || "").trim();
-  const catalogLoading = !catalogHydrated || (catalogRefreshing && !hasEntries);
+  // Per-file render props shared by every project's tree. Generation/status
+  // props apply only to the active project; non-active entries render static
+  // (the hook tags them isActive=false, but these arrays are already scoped to
+  // the active project upstream).
+  const treeProps = {
+    entrySourceFormat,
+    entryHasMesh,
+    entryHasDxf,
+    entryHasGcode,
+    entryHasUrdf,
+    activeGenerationFiles,
+    activeStepArtifactGenerationFile,
+    stepArtifactGenerationAvailable,
+    canRevealFileAssets,
+    canCopyFileAssetLinks,
+    canCopyFileAssetPaths,
+    fileAccessBusyKey,
+    onDownloadFileAsset,
+    onRevealFileAsset,
+    onRevealInExplorerView,
+    onCopyFileAssetReference
+  };
+  const hasProjects = projectNodes.length > 0;
 
   return (
     <>
       <SidebarHeader>
         <div className="px-1 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Models
+          Projects
         </div>
         <SidebarInput
           type="search"
-          placeholder="Search models..."
+          placeholder="Search projects..."
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
-          aria-label="Search models"
+          aria-label="Search projects"
           className="h-7 text-xs md:text-xs"
         />
       </SidebarHeader>
@@ -392,75 +574,29 @@ function FileViewerContents({
         <ScrollArea className="cad-file-viewer-scroll min-h-0 min-w-0 flex-1 overflow-x-hidden" type="auto">
           <SidebarGroup>
             <SidebarGroupContent>
-              {hasMatches ? (
+              {hasProjects ? (
                 <SidebarMenu>
-                  {listSidebarItems(filteredEntriesTree).map((item) => {
-                    if (item.type === "directory") {
-                      return (
-                        <DirectoryNode
-                          key={item.key}
-                          directory={item.value}
-                          depth={0}
-                          queryActive={queryActive}
-                          expandedDirectoryIds={expandedDirectoryIds}
-                          onToggleDirectory={onToggleDirectory}
-                          selectedKey={selectedKey}
-                          onSelectEntry={onSelectEntry}
-                          entrySourceFormat={entrySourceFormat}
-                          entryHasMesh={entryHasMesh}
-                          entryHasDxf={entryHasDxf}
-                          entryHasGcode={entryHasGcode}
-                          entryHasUrdf={entryHasUrdf}
-                          activeGenerationFiles={activeGenerationFiles}
-                          activeStepArtifactGenerationFile={activeStepArtifactGenerationFile}
-                          stepArtifactGenerationAvailable={stepArtifactGenerationAvailable}
-                          canRevealFileAssets={canRevealFileAssets}
-                          canCopyFileAssetLinks={canCopyFileAssetLinks}
-                          canCopyFileAssetPaths={canCopyFileAssetPaths}
-                          fileAccessBusyKey={fileAccessBusyKey}
-                          onDownloadFileAsset={onDownloadFileAsset}
-                          onRevealFileAsset={onRevealFileAsset}
-                          onRevealInExplorerView={onRevealInExplorerView}
-                          onCopyFileAssetReference={onCopyFileAssetReference}
-                        />
-                      );
-                    }
-                    return (
-                      <SidebarMenuItem key={item.key} className="min-w-0 w-full max-w-full">
-                        <FileEntryButton
-                          entry={item.value}
-                          depth={0}
-                          selectedKey={selectedKey}
-                          onSelectEntry={onSelectEntry}
-                          entrySourceFormat={entrySourceFormat}
-                          entryHasMesh={entryHasMesh}
-                          entryHasDxf={entryHasDxf}
-                          entryHasGcode={entryHasGcode}
-                          entryHasUrdf={entryHasUrdf}
-                          activeGenerationFiles={activeGenerationFiles}
-                          activeStepArtifactGenerationFile={activeStepArtifactGenerationFile}
-                          stepArtifactGenerationAvailable={stepArtifactGenerationAvailable}
-                          canRevealFileAssets={canRevealFileAssets}
-                          canCopyFileAssetLinks={canCopyFileAssetLinks}
-                          canCopyFileAssetPaths={canCopyFileAssetPaths}
-                          fileAccessBusyKey={fileAccessBusyKey}
-                          onDownloadFileAsset={onDownloadFileAsset}
-                          onRevealFileAsset={onRevealFileAsset}
-                          onRevealInExplorerView={onRevealInExplorerView}
-                          onCopyFileAssetReference={onCopyFileAssetReference}
-                        />
-                      </SidebarMenuItem>
-                    );
-                  })}
+                  {projectNodes.map((node) => (
+                    <ProjectNode
+                      key={node.id}
+                      node={node}
+                      queryActive={queryActive}
+                      onToggleProject={onToggleProject}
+                      onToggleDirectory={onToggleDirectory}
+                      onSelectEntry={onSelectEntry}
+                      onRequestDeleteProject={onRequestDeleteProject}
+                      selectedKey={selectedKey}
+                      treeProps={treeProps}
+                      activeCatalogHydrated={catalogHydrated}
+                      activeCatalogRefreshing={catalogRefreshing}
+                      activeCatalogError={catalogError}
+                    />
+                  ))}
                 </SidebarMenu>
-              ) : catalogErrorMessage && !hasEntries ? (
-                <p className="px-2 py-3 text-xs text-muted-foreground">CAD catalog unavailable: {catalogErrorMessage}</p>
-              ) : catalogLoading ? (
-                <p className="px-2 py-3 text-xs text-muted-foreground">Loading CAD catalog...</p>
-              ) : hasEntries ? (
-                <p className="px-2 py-3 text-xs text-muted-foreground">No CAD entries match this filter.</p>
+              ) : queryActive ? (
+                <p className="px-2 py-3 text-xs text-muted-foreground">No projects match this filter.</p>
               ) : (
-                <p className="px-2 py-3 text-xs text-muted-foreground">No CAD entries found.</p>
+                <p className="px-2 py-3 text-xs text-muted-foreground">No projects yet.</p>
               )}
             </SidebarGroupContent>
           </SidebarGroup>
@@ -475,13 +611,12 @@ export default function FileViewerSidebar({
   previewMode,
   query,
   onQueryChange,
-  filteredEntries,
-  catalogEntries,
-  filteredEntriesTree,
+  projectNodes = [],
   selectedKey,
-  expandedDirectoryIds,
+  onToggleProject,
   onToggleDirectory,
   onSelectEntry,
+  onRequestDeleteProject,
   entrySourceFormat,
   entryHasMesh,
   entryHasDxf,
@@ -514,13 +649,12 @@ export default function FileViewerSidebar({
     <FileViewerContents
       query={query}
       onQueryChange={onQueryChange}
-      filteredEntries={filteredEntries}
-      catalogEntries={catalogEntries}
-      filteredEntriesTree={filteredEntriesTree}
+      projectNodes={projectNodes}
       selectedKey={selectedKey}
-      expandedDirectoryIds={expandedDirectoryIds}
+      onToggleProject={onToggleProject}
       onToggleDirectory={onToggleDirectory}
       onSelectEntry={onSelectEntry}
+      onRequestDeleteProject={onRequestDeleteProject}
       entrySourceFormat={entrySourceFormat}
       entryHasMesh={entryHasMesh}
       entryHasDxf={entryHasDxf}

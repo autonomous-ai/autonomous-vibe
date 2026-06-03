@@ -247,6 +247,17 @@ pub fn build_command(cfg: &ClaudeRunConfig) -> Vec<String> {
 /// host environment so the user's existing Claude Code auth applies.
 pub fn build_env(cfg: &ClaudeRunConfig) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = Vec::new();
+    // Disable Claude Code's self-updater on the spawned CLI. The host `claude`
+    // auto-updates by rewriting its own 200+ MB binary in place. If the driver
+    // spawns `claude` while that swap is mid-flight, the freshly created process
+    // loads a half-written image and dies during DLL initialization — on Windows
+    // it exits 0xC0000142 (STATUS_DLL_INIT_FAILED) with no stdout/stderr, which
+    // the driver surfaces as "claude produced no response". The first plan turn
+    // makes this likely: it spawns `claude` twice concurrently (the main turn and
+    // `generate_project_title`), so one process can trigger the update that
+    // rewrites the binary the other is being loaded from. The app pins/ships its
+    // own `claude`; it must not mutate itself underneath a turn.
+    env.push(("DISABLE_AUTOUPDATER".into(), "1".into()));
     if cfg.use_panda_cloud {
         env.push(("ANTHROPIC_BASE_URL".into(), "https://api.panda.app/v1".into()));
         if let Some(token) = &cfg.panda_token {
@@ -285,6 +296,15 @@ pub(crate) fn session_jsonl_path(workspace: &Path, session_id: &str) -> Option<P
     let abs = workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_path_buf());
+    // On Windows `canonicalize()` returns an extended-length path
+    // (`\\?\C:\Users\…`); Claude Code's `cwd` (from `process.cwd()`) has no such
+    // prefix, so encoding the canonical form yields `----C--Users-…` and never
+    // matches Claude's real `C--Users-…` session dir. `claude_session_exists`
+    // then returns false, the driver passes `--session-id` for an existing
+    // session, and claude dies "Session ID already in use" (turn stuck on
+    // PLANNING). Strip the verbatim prefix to match `process.cwd()`. No-op off
+    // Windows (paths never start with `\\?\`).
+    let abs = strip_verbatim_prefix(&abs);
     let encoded = encode_cwd(&abs);
     Some(
         home.join(".claude")
@@ -292,6 +312,21 @@ pub(crate) fn session_jsonl_path(workspace: &Path, session_id: &str) -> Option<P
             .join(encoded)
             .join(format!("{session_id}.jsonl")),
     )
+}
+
+/// Strip Windows' extended-length (`\\?\`) path prefix so the result matches the
+/// plain `cwd` Node's `process.cwd()` reports (and thus Claude Code's session
+/// dir encoding). `\\?\UNC\server\share` → `\\server\share`; `\\?\C:\x` → `C:\x`.
+/// Returns the path unchanged when there is no such prefix (always, off Windows).
+fn strip_verbatim_prefix(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        p.to_path_buf()
+    }
 }
 
 /// Encode an absolute path the way Claude Code persists session dirs:
@@ -496,6 +531,10 @@ async fn generate_project_title(claude_path: PathBuf, user_message: String) -> O
     // Same PATH augmentation as the main turn so a Finder/Dock-launched app can
     // still find `claude` and the `node` it needs.
     command.env("PATH", augmented_path());
+    // Disable the self-updater here too — this title call runs concurrently with
+    // the main turn on the first plan turn, so an in-place binary swap by either
+    // process can crash the other's spawn (see `build_env`).
+    command.env("DISABLE_AUTOUPDATER", "1");
 
     let output =
         match tokio::time::timeout(std::time::Duration::from_secs(20), command.output()).await {
@@ -1241,10 +1280,12 @@ mod tests {
             Some("https://api.panda.app/v1"),
         );
         assert_eq!(map.get("ANTHROPIC_API_KEY").map(String::as_str), Some("tok-123"));
+        // The self-updater is always disabled, cloud or not.
+        assert_eq!(map.get("DISABLE_AUTOUPDATER").map(String::as_str), Some("1"));
     }
 
     #[test]
-    fn build_env_default_is_empty() {
+    fn build_env_default_disables_autoupdater_only() {
         let cfg = ClaudeRunConfig {
             prompt: "hi".into(),
             workspace: PathBuf::from("/tmp/proj"),
@@ -1254,7 +1295,14 @@ mod tests {
             panda_token: None,
             phase: TurnPhase::Plan,
         };
-        assert!(build_env(&cfg).is_empty());
+        let map: HashMap<String, String> = build_env(&cfg).into_iter().collect();
+        // Default (non-cloud) env disables the self-updater so claude can't
+        // rewrite its own binary mid-turn (→ 0xC0000142 on Windows), and adds
+        // nothing else — host auth is inherited.
+        assert_eq!(map.get("DISABLE_AUTOUPDATER").map(String::as_str), Some("1"));
+        assert!(!map.contains_key("ANTHROPIC_BASE_URL"));
+        assert!(!map.contains_key("ANTHROPIC_API_KEY"));
+        assert_eq!(map.len(), 1);
     }
 
     #[test]
@@ -1283,6 +1331,28 @@ mod tests {
             enc,
             "-Users-alice-Library-Application-Support-app-Panda-Panda-projects-2f1df09b-468d-4a08-a6f2-03ee6fe40f92",
         );
+    }
+
+    #[test]
+    fn strip_verbatim_prefix_matches_node_process_cwd() {
+        // Regression: Windows `canonicalize()` returns `\\?\C:\…`, but Claude
+        // Code's `process.cwd()` (which it encodes into the session dir name) has
+        // no verbatim prefix. Encoding the canonical form gave `----C--Users-…`,
+        // never matched Claude's `C--Users-…`, so the driver passed `--session-id`
+        // for an existing session → "Session ID already in use".
+        let drive = strip_verbatim_prefix(&PathBuf::from(r"\\?\C:\Users\PC\AppData\Roaming\Panda"));
+        assert_eq!(drive, PathBuf::from(r"C:\Users\PC\AppData\Roaming\Panda"));
+        assert_eq!(
+            encode_cwd(&drive),
+            "C--Users-PC-AppData-Roaming-Panda",
+            "must match the dir Claude Code actually writes",
+        );
+        // UNC verbatim prefix collapses back to a plain UNC path.
+        let unc = strip_verbatim_prefix(&PathBuf::from(r"\\?\UNC\server\share\proj"));
+        assert_eq!(unc, PathBuf::from(r"\\server\share\proj"));
+        // No prefix (the POSIX case) is left untouched.
+        let posix = strip_verbatim_prefix(&PathBuf::from("/Users/alice/proj"));
+        assert_eq!(posix, PathBuf::from("/Users/alice/proj"));
     }
 
     #[test]

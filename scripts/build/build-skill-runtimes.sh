@@ -30,11 +30,26 @@ mkdir -p "${CADCODE_VENDOR}"
 # documentation and the .gitignore that keeps the rest of the vendored tree out
 # of git). `P` protects them from `--delete`, which would otherwise remove any
 # dest file absent from the source tree.
-rsync -a --delete \
-  --exclude='__pycache__' \
-  --exclude='*.pyc' \
-  --filter='P README.md' \
-  --filter='P .gitignore' \
-  "${CADPY_SRC}/" "${CADCODE_VENDOR}/"
+if command -v rsync >/dev/null 2>&1; then
+  rsync -a --delete \
+    --exclude='__pycache__' \
+    --exclude='*.pyc' \
+    --filter='P README.md' \
+    --filter='P .gitignore' \
+    "${CADPY_SRC}/" "${CADCODE_VENDOR}/"
+else
+  # Portable fallback for environments without rsync (e.g. Windows Git Bash).
+  # Mirror the rsync behaviour: wipe the vendored tree except the tracked
+  # README.md / .gitignore, then copy the source minus Python caches.
+  find "${CADCODE_VENDOR}" -mindepth 1 \
+    ! -name README.md ! -name .gitignore \
+    -prune -exec rm -rf {} +
+  ( cd "${CADPY_SRC}" && \
+    find . -name '__pycache__' -prune -o -name '*.pyc' -prune -o -type f -print0 \
+    | while IFS= read -r -d '' f; do
+        mkdir -p "${CADCODE_VENDOR}/$(dirname "$f")"
+        cp "$f" "${CADCODE_VENDOR}/$f"
+      done )
+fi
 
 echo "vendored cadpy → skills/cadcode/scripts/packages/cadpy"

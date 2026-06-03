@@ -481,6 +481,7 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
         message: `${STUB_TAG} install-claude only runs inside Tauri`,
       } as IpcError;
     case "catalog_read":
+    case "project_catalog_read":
       return {
         entries: [],
         rootPath: "/dev/panda-stub",
@@ -588,6 +589,8 @@ const transportBase = {
 
   // catalog
   catalog_read: () => invoke<Catalog>("catalog_read"),
+  project_catalog_read: (id: string) =>
+    invoke<Catalog>("project_catalog_read", { id }),
   generation_status_read: () => invoke<GenerationStatus>("generation_status_read"),
 
   // files

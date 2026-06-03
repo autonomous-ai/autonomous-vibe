@@ -263,6 +263,53 @@ pub async fn project_delete(id: String, state: State<'_, AppState>) -> IpcResult
     Ok(())
 }
 
+#[tauri::command]
+pub async fn project_rename(id: String, name: String) -> IpcResult<ProjectSummary> {
+    validate_id(&id)?;
+    rename_project_at(&project_dir(&id), &id, &name).await
+}
+
+/// Filesystem half of `project_rename`, factored out so tests can rename a
+/// project in a temp dir without the real app-data `projects_root`. Writes the
+/// new name to `project.json` (creating it if absent), preserves `created_at`,
+/// and bumps `updated_at`. A user-chosen name is never the placeholder, so the
+/// AI-title self-heal in `read_project_summary` leaves it untouched afterward.
+async fn rename_project_at(dir: &Path, id: &str, name: &str) -> IpcResult<ProjectSummary> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(IpcError::invalid_argument("project name is required"));
+    }
+    if !dir.exists() {
+        return Err(IpcError::new("PROJECT_NOT_FOUND", format!("no project {id}")));
+    }
+    let meta_path = dir.join("project.json");
+    // Preserve created_at when the metadata exists and parses; otherwise stamp
+    // a fresh one (a dir without project.json is otherwise summarized by mtime).
+    let created_at = match fs::read(&meta_path).await {
+        Ok(bytes) => serde_json::from_slice::<StoredProjectMeta>(&bytes)
+            .map(|m| m.created_at)
+            .unwrap_or_else(|_| Utc::now().timestamp_millis()),
+        Err(_) => Utc::now().timestamp_millis(),
+    };
+    let now = Utc::now().timestamp_millis();
+    let meta = StoredProjectMeta {
+        id: Some(id.to_string()),
+        name: name.to_string(),
+        created_at,
+        updated_at: now,
+    };
+    let bytes = serde_json::to_vec_pretty(&meta).map_err(IpcError::from)?;
+    fs::write(&meta_path, bytes).await.map_err(IpcError::from)?;
+    let has_model = dir.join("model.step").exists() || dir.join("model.stl").exists();
+    Ok(ProjectSummary {
+        id: id.to_string(),
+        name: name.to_string(),
+        created_at,
+        updated_at: now,
+        has_model,
+    })
+}
+
 fn project_dir(id: &str) -> PathBuf {
     paths::projects_root().join(id)
 }
@@ -305,6 +352,44 @@ mod tests {
         assert_eq!(summaries[0].name, "Hook");
         assert_eq!(summaries[0].id, "abc");
         assert!(!summaries[0].has_model);
+    }
+
+    #[tokio::test]
+    async fn rename_preserves_created_at_and_persists_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("p1");
+        fs::create_dir_all(&dir).await.unwrap();
+        write_meta(&dir, PLACEHOLDER_PROJECT_NAME).await; // created_at=1, updated_at=2
+
+        let summary = rename_project_at(&dir, "p1", "  Wall Hook  ").await.unwrap();
+        assert_eq!(summary.name, "Wall Hook", "name is trimmed");
+        assert_eq!(summary.id, "p1");
+        assert_eq!(summary.created_at, 1, "created_at preserved");
+        assert!(summary.updated_at >= 2, "updated_at bumped");
+
+        let bytes = fs::read(dir.join("project.json")).await.unwrap();
+        let meta: StoredProjectMeta = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(meta.name, "Wall Hook", "new name persisted to disk");
+        assert_eq!(meta.created_at, 1);
+    }
+
+    #[tokio::test]
+    async fn rename_rejects_empty_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("p1");
+        fs::create_dir_all(&dir).await.unwrap();
+        write_meta(&dir, "Original").await;
+
+        let err = rename_project_at(&dir, "p1", "   ").await.unwrap_err();
+        assert_eq!(err.code, "INVALID_ARGUMENT");
+    }
+
+    #[tokio::test]
+    async fn rename_missing_project_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("ghost"); // never created
+        let err = rename_project_at(&dir, "ghost", "New").await.unwrap_err();
+        assert_eq!(err.code, "PROJECT_NOT_FOUND");
     }
 
     #[test]

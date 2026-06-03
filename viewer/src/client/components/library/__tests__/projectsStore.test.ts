@@ -63,6 +63,21 @@ function createMockTransport(initial: ProjectFixture[] = []) {
         history.push({ method: "project_open", args: [id] });
         return Promise.resolve({ workspaceRoot: `/tmp/${id}` });
       },
+      project_rename: (id: string, name: string) => {
+        history.push({ method: "project_rename", args: [id, name] });
+        const target = projects.find((p) => p.id === id);
+        const summary: ProjectFixture = {
+          id,
+          name,
+          createdAt: target?.createdAt ?? 0,
+          updatedAt: Date.now(),
+          hasModel: target?.hasModel ?? false,
+        };
+        if (target) {
+          target.name = name;
+        }
+        return Promise.resolve({ ...summary });
+      },
       project_delete: (id: string) => {
         history.push({ method: "project_delete", args: [id] });
         const index = projects.findIndex((p) => p.id === id);
@@ -172,6 +187,37 @@ test("submitNewProjectName refuses duplicates before invoking transport", async 
   );
   assert.equal(
     mock.history.filter((entry) => entry.method === "project_create").length,
+    0,
+  );
+});
+
+test("rename trims the name, calls project_rename, and updates local state", async () => {
+  const mock = createMockTransport([
+    { id: "p1", name: "Old", createdAt: 1, updatedAt: 2, hasModel: false },
+  ]);
+  setTransport(mock.impl as any);
+  await useProjectsStore.getState().refresh();
+
+  const summary = await useProjectsStore.getState().rename("p1", "  Token Tray  ");
+  assert.equal(summary.name, "Token Tray");
+  const calls = mock.history.filter((entry) => entry.method === "project_rename");
+  assert.deepEqual(calls[0]?.args, ["p1", "Token Tray"]);
+  assert.equal(
+    useProjectsStore.getState().projects.find((p) => p.id === "p1")?.name,
+    "Token Tray",
+  );
+});
+
+test("rename rejects an empty name without hitting the transport", async () => {
+  const mock = createMockTransport([
+    { id: "p1", name: "Old", createdAt: 1, updatedAt: 2, hasModel: false },
+  ]);
+  setTransport(mock.impl as any);
+  await useProjectsStore.getState().refresh();
+
+  await assert.rejects(() => useProjectsStore.getState().rename("p1", "   "));
+  assert.equal(
+    mock.history.filter((entry) => entry.method === "project_rename").length,
     0,
   );
 });

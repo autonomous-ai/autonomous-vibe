@@ -372,17 +372,26 @@ function project_create(req: CreateProjectRequest): Promise<ProjectSummary>;
 
 function project_open(id: string): Promise<{ workspaceRoot: string }>;
 
+// project_rename — set a user-chosen display name. Writes `name` to the
+// project's `project.json`, preserving `createdAt` and bumping `updatedAt`;
+// returns the updated summary. Rejects an empty/whitespace name
+// (INVALID_ARGUMENT) and a missing project (PROJECT_NOT_FOUND). A user name is
+// never the placeholder, so the AI-title self-heal below no longer fires once a
+// project has been renamed.
+function project_rename(id: string, name: string): Promise<ProjectSummary>;
+
 function project_delete(id: string): Promise<void>;
 ```
 
-**Naming.** The UI never prompts for a project name. `project_create` is called
-with a placeholder (`"New project"`); there is no rename command by design.
-Instead `project_list` self-heals: while a project still carries the placeholder
-(or an empty name), `read_project_summary` reads the latest `ai-title` line Claude
-Code wrote to that project's session JSONL
+**Naming.** New projects are created with a placeholder (`"New project"`) and the
+UI does not prompt for a name up front. While a project still carries the
+placeholder (or an empty name), `project_list` self-heals: `read_project_summary`
+reads the latest `ai-title` line Claude Code wrote to that project's session JSONL
 (`~/.claude/projects/<encode_cwd>/<session_id>.jsonl`) and persists it back to
-`project.json`. So a project's display name upgrades from `"New project"` to
-Claude's AI-generated title on the first list refresh after a title exists.
+`project.json`, so the display name upgrades from `"New project"` to Claude's
+AI-generated title on the first list refresh after a title exists. The user can
+override this at any time via `project_rename` (sidebar inline edit); once a
+non-placeholder name is set, the self-heal stops touching it.
 
 #### App
 

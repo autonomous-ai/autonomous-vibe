@@ -412,6 +412,7 @@ export default function CadWorkspace({
   const currentProjectId = useProjectsStore((state) => state.currentProjectId);
   const openProject = useProjectsStore((state) => state.open);
   const deleteProject = useProjectsStore((state) => state.delete);
+  const renameProject = useProjectsStore((state) => state.rename);
   const [projectPendingDelete, setProjectPendingDelete] = useState(null);
   const [query, setQuery] = useState("");
   const initialFileViewerDirectoryStateRef = useRef(null);
@@ -5363,6 +5364,15 @@ export default function CadWorkspace({
     setProjectPendingDelete({ id: project.id, name: project.name || "" });
   }, []);
 
+  const handleRenameProject = useCallback((projectId, name) => {
+    if (!projectId) {
+      return;
+    }
+    renameProject(projectId, name).catch((err) => {
+      console.warn("Failed to rename project", err);
+    });
+  }, [renameProject]);
+
   const handleConfirmDeleteProject = useCallback(async () => {
     const target = projectPendingDelete;
     if (!target?.id) {
@@ -6031,6 +6041,7 @@ export default function CadWorkspace({
               onToggleDirectory={onToggleProjectDirectory}
               onSelectEntry={handleSidebarSelectEntry}
               onRequestDeleteProject={handleRequestDeleteProject}
+              onRenameProject={handleRenameProject}
               entrySourceFormat={entrySourceFormat}
               entryHasMesh={entryHasMesh}
               entryHasDxf={entryHasDxf}

@@ -35,9 +35,14 @@ jobs:
           - platform: macos-latest # Apple Silicon
             target: aarch64-apple-darwin
             bundles: app,dmg
-          # Intel builds app-only: the DMG step's Finder AppleScript hangs on
-          # the macos-13 runner. Intel users get the .app.tar.gz instead.
-          - platform: macos-13 # Intel
+          # Intel build, cross-compiled on the arm64 runner: GitHub retired the
+          # macos-13 (Intel) hosted-runner pool, so that label now queues
+          # forever (never assigned a runner). macos-latest (Apple Silicon)
+          # cross-builds x86_64 fine — Rust targets it natively and the Python
+          # sidecar's x86_64 pip/smoke-import runs under the Rosetta 2 that
+          # GitHub's arm64 runners ship pre-installed. App-only: skip the .dmg
+          # Finder AppleScript; Intel users get the .app.tar.gz.
+          - platform: macos-latest # Apple Silicon, cross-compiling Intel
             target: x86_64-apple-darwin
             bundles: app
           # Windows: x64 installer. `nsis` is the auto-updater target (Tauri's
@@ -52,8 +57,8 @@ jobs:
           # those are exercised.
 
     runs-on: ${{ matrix.platform }}
-    # Hard cap so a hung step (the Intel job has stalled for ~2h) fails fast
-    # instead of burning the 6h default. Step-level timeouts below localize it.
+    # Hard cap so a hung step fails fast instead of burning the 6h default.
+    # Step-level timeouts below localize it.
     timeout-minutes: 60
 
     steps:
@@ -86,7 +91,9 @@ jobs:
       - name: Build bundled sidecars
         shell: bash
         timeout-minutes: 30
-        run: scripts/build/build-all-sidecars.sh
+        # Pass the matrix target so a cross-build (x86_64 on the arm64 runner)
+        # fetches the right-arch sidecars instead of defaulting to host arch.
+        run: scripts/build/build-all-sidecars.sh --target ${{ matrix.target }}
 
       - name: Build, sign, and publish release
         uses: tauri-apps/tauri-action@v0

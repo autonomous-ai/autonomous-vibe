@@ -6,7 +6,9 @@ name: ci
 
 on:
   push:
-    branches: []
+    branches-ignore:
+      - main
+      - develop
   pull_request:
 
 concurrency:

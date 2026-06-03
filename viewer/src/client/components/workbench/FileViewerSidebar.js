@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import {
   ArrowUpFromLine,
   Bot,
@@ -369,6 +370,7 @@ function ProjectNode({
   onToggleDirectory,
   onSelectEntry,
   onRequestDeleteProject,
+  onRenameProject,
   selectedKey,
   treeProps,
   activeCatalogHydrated,
@@ -378,6 +380,43 @@ function ProjectNode({
   const expanded = node.expanded;
   const boundToggleDirectory = (dirId) => onToggleDirectory(node.id, dirId);
   const boundSelectEntry = (key) => onSelectEntry(key, node.id);
+
+  // Inline rename: clicking the already-active project's name swaps the label
+  // for a text input. The chevron stays a separate toggle so the active row can
+  // still expand/collapse. Non-active rows toggle on click as before.
+  const canRename = Boolean(onRenameProject);
+  const [editing, setEditing] = useState(false);
+  const [draftName, setDraftName] = useState(node.name || "");
+  useEffect(() => {
+    if (!editing) {
+      setDraftName(node.name || "");
+    }
+  }, [node.name, editing]);
+
+  const commitRename = () => {
+    setEditing(false);
+    const trimmed = draftName.trim();
+    if (trimmed && trimmed !== node.name) {
+      onRenameProject?.(node.id, trimmed);
+    }
+  };
+  const cancelRename = () => {
+    setEditing(false);
+    setDraftName(node.name || "");
+  };
+  const handleHeaderClick = () => {
+    if (node.isActive && canRename) {
+      setDraftName(node.name || "");
+      setEditing(true);
+    } else {
+      onToggleProject(node.id);
+    }
+  };
+  const handleChevronClick = (event) => {
+    // Active row: name-click renames, so the chevron owns expand/collapse.
+    event.stopPropagation();
+    onToggleProject(node.id);
+  };
   // Highlight the selected file only inside the active project — file keys are
   // project-relative, so the same key can exist in multiple projects.
   const effectiveSelectedKey = node.isActive ? selectedKey : "";
@@ -431,23 +470,56 @@ function ProjectNode({
   return (
     <Collapsible asChild open={expanded}>
       <SidebarMenuItem className="min-w-0 w-full max-w-full">
-        <CollapsibleTrigger asChild>
+        {editing ? (
+          <div className="flex h-7 items-center gap-2 rounded-md px-2 pr-7">
+            <ChevronRight
+              className={cn("size-4 shrink-0 transition-transform", expanded && "rotate-90")}
+              aria-hidden="true"
+            />
+            <Folder className="size-4 shrink-0" aria-hidden="true" />
+            <input
+              autoFocus
+              value={draftName}
+              onChange={(event) => setDraftName(event.target.value)}
+              onFocus={(event) => event.target.select()}
+              onBlur={commitRename}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  commitRename();
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  cancelRename();
+                }
+              }}
+              aria-label="Project name"
+              className="h-6 min-w-0 flex-1 rounded border border-sidebar-border bg-sidebar px-1 text-sm font-medium text-sidebar-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+          </div>
+        ) : (
           <SidebarMenuButton
             type="button"
             size="sm"
             isActive={node.isActive}
-            title={node.name}
+            title={node.isActive && canRename ? "Click again to rename" : node.name}
             className="group/project min-w-0 w-full justify-start font-medium"
-            onClick={() => onToggleProject(node.id)}
+            onClick={handleHeaderClick}
           >
-            <ChevronRight
-              className={cn("transition-transform", expanded && "rotate-90")}
-              aria-hidden="true"
-            />
+            <span
+              role={node.isActive && canRename ? "button" : undefined}
+              aria-label={node.isActive && canRename ? (expanded ? "Collapse project" : "Expand project") : undefined}
+              onClick={node.isActive && canRename ? handleChevronClick : undefined}
+              className="flex size-4 shrink-0 items-center justify-center"
+            >
+              <ChevronRight
+                className={cn("size-4 transition-transform", expanded && "rotate-90")}
+                aria-hidden="true"
+              />
+            </span>
             <Folder className="size-4 shrink-0" aria-hidden="true" />
             <span className="block min-w-0 flex-1 max-w-full overflow-hidden text-ellipsis whitespace-nowrap">{node.name || "Untitled project"}</span>
           </SidebarMenuButton>
-        </CollapsibleTrigger>
+        )}
         {onRequestDeleteProject ? (
           <SidebarMenuAction
             showOnHover
@@ -508,6 +580,7 @@ function FileViewerContents({
   onToggleDirectory,
   onSelectEntry,
   onRequestDeleteProject,
+  onRenameProject,
   entrySourceFormat,
   entryHasMesh,
   entryHasDxf,
@@ -586,6 +659,7 @@ function FileViewerContents({
                       onToggleDirectory={onToggleDirectory}
                       onSelectEntry={onSelectEntry}
                       onRequestDeleteProject={onRequestDeleteProject}
+                      onRenameProject={onRenameProject}
                       selectedKey={selectedKey}
                       treeProps={treeProps}
                       activeCatalogHydrated={catalogHydrated}
@@ -618,6 +692,7 @@ export default function FileViewerSidebar({
   onToggleDirectory,
   onSelectEntry,
   onRequestDeleteProject,
+  onRenameProject,
   entrySourceFormat,
   entryHasMesh,
   entryHasDxf,
@@ -656,6 +731,7 @@ export default function FileViewerSidebar({
       onToggleDirectory={onToggleDirectory}
       onSelectEntry={onSelectEntry}
       onRequestDeleteProject={onRequestDeleteProject}
+      onRenameProject={onRenameProject}
       entrySourceFormat={entrySourceFormat}
       entryHasMesh={entryHasMesh}
       entryHasDxf={entryHasDxf}

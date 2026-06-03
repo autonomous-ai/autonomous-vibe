@@ -16,6 +16,7 @@ export interface ProjectsState {
   refresh(): Promise<void>;
   create(name: string): Promise<ProjectSummary>;
   open(id: string): Promise<{ workspaceRoot: string }>;
+  rename(id: string, name: string): Promise<ProjectSummary>;
   delete(id: string): Promise<void>;
   setCurrent(id: string | null): void;
 }
@@ -79,6 +80,21 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
     const result = await transport.project_open(id);
     set({ currentProjectId: id });
     return result;
+  },
+
+  async rename(id, name) {
+    if (!id) {
+      throw new Error("Cannot rename project without an id");
+    }
+    const trimmed = String(name || "").trim();
+    if (!trimmed) {
+      throw new Error("Project name cannot be empty");
+    }
+    const summary = await transport.project_rename(id, trimmed);
+    set((state) => ({
+      projects: state.projects.map((p) => (p.id === summary.id ? summary : p)),
+    }));
+    return summary;
   },
 
   async delete(id) {

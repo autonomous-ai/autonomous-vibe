@@ -559,6 +559,14 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
     }
     case "project_open":
       return { workspaceRoot: `/dev/panda-stub/${String(args.id ?? "")}` } as unknown as T;
+    case "project_rename":
+      return {
+        id: String(args.id ?? "stub"),
+        name: String(args.name ?? "Untitled"),
+        createdAt: 0,
+        updatedAt: 0,
+        hasModel: false,
+      } as unknown as T;
     case "project_delete":
       return undefined as unknown as T;
     case "update_check":
@@ -641,6 +649,8 @@ const transportBase = {
     invoke<ProjectSummary>("project_create", { req }),
   project_open: (id: string) =>
     invoke<{ workspaceRoot: string }>("project_open", { id }),
+  project_rename: (id: string, name: string) =>
+    invoke<ProjectSummary>("project_rename", { id, name }),
   project_delete: (id: string) => invoke<void>("project_delete", { id }),
 
   // update — see desktop/src-tauri/src/commands/update.rs

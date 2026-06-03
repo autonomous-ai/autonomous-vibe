@@ -130,6 +130,7 @@ pub fn run() {
             project::project_list,
             project::project_create,
             project::project_open,
+            project::project_rename,
             project::project_delete,
             // update
             update::update_check,

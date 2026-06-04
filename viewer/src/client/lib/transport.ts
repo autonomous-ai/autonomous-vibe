@@ -231,7 +231,7 @@ export interface RestoreVersionRequest {
 
 export interface PrereqCheck {
   claudeCli: { found: boolean; version?: string };
-  python: { found: boolean };
+  python: { found: boolean; version?: string; healthy: boolean };
   slicer: { found: boolean; binaryPath: string };
 }
 
@@ -492,7 +492,7 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
     case "app_prereq_check":
       return {
         claudeCli: { found: false },
-        python: { found: false },
+        python: { found: false, healthy: false },
         slicer: { found: false, binaryPath: "" },
       } as unknown as T;
     case "app_settings_read":

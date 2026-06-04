@@ -422,6 +422,13 @@ fn home_dir() -> Option<PathBuf> {
 /// child process (claude → node, skill → python) resolve.
 pub fn augmented_path() -> std::ffi::OsString {
     let mut dirs: Vec<PathBuf> = Vec::new();
+    // First on PATH (so it wins over any system python): the bundled CPython
+    // sidecar's bin/. Without this, the cadcode skill's bare `python …/cad`
+    // resolves to a system python (wrong version, no cadpy) or nothing at all
+    // — the launch-PATH footgun, but for the skill's interpreter.
+    if let Some(py_bin) = bundled_python_bin_dir() {
+        dirs.push(py_bin);
+    }
     if let Some(home) = home_dir() {
         dirs.push(home.join(".local").join("bin"));
         dirs.push(home.join("bin"));
@@ -457,6 +464,23 @@ pub fn augmented_path() -> std::ffi::OsString {
         dirs.extend(std::env::split_paths(&existing));
     }
     std::env::join_paths(dirs).unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
+}
+
+/// The bundled CPython sidecar's `bin/` dir, if present. Packaged app: next to
+/// the executable (`resources/python/bin`, the externalBin layout from
+/// `tauri.conf.json`). Dev (`cargo run`): under the crate's `resources/` tree,
+/// since the exe lives in `target/<profile>/` instead. Returns `None` when
+/// neither exists (a dev machine with no built sidecar) so callers fall back to
+/// a system interpreter. Probes for `python3`, which the sidecar always ships.
+pub fn bundled_python_bin_dir() -> Option<PathBuf> {
+    let exe_relative = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.join("resources/python/bin")));
+    let dev = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/python/bin");
+    exe_relative
+        .into_iter()
+        .chain(std::iter::once(dev))
+        .find(|dir| dir.join("python3").exists())
 }
 
 /// Resolve the absolute path to the `claude` binary using the augmented

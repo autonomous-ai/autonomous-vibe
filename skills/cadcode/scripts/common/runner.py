@@ -394,6 +394,19 @@ def _build_success_payload(
             for p in src["parts"]
         ]
 
+    # Deterministic geometry warnings (floating bodies, slivers, invalid
+    # B-reps). Additive; absent/empty when the geometry is clean.
+    if src.get("warnings"):
+        payload["warnings"] = [
+            {
+                "part": str(w.get("part", "")),
+                "kind": str(w.get("kind", "")),
+                "detail": str(w.get("detail", "")),
+                "severity": str(w.get("severity", "warning")),
+            }
+            for w in src["warnings"]
+        ]
+
     # Echo the tolerance flags so callers can verify wiring (back-compat
     # with the old runner contract — kept additive).
     if "mesh_tolerance" in src:

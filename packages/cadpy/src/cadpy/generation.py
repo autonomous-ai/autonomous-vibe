@@ -2670,6 +2670,7 @@ def _write_metadata_sidecar(
     mesh_tolerance: float,
     mesh_angular_tolerance: float,
     parts: list[dict[str, str]] | None = None,
+    warnings: list[dict[str, str]] | None = None,
 ) -> None:
     """Write ``<stem>.step.json`` — source hash + generator info +
     validation summary, per contract §1.
@@ -2677,6 +2678,10 @@ def _write_metadata_sidecar(
     When ``parts`` is given (assemblies with per-part STLs), each entry is
     ``{"name", "stlPath"}`` with ``stlPath`` relative to this sidecar's
     directory; the viewer groups these under the integrated model.
+
+    ``warnings`` (when non-empty) lists deterministic geometry problems found
+    after generation (floating bodies, slivers, invalid B-reps), recorded under
+    ``validation.warnings``.
     """
     identity = python_source_hash(script_path)
     payload: dict[str, object] = {
@@ -2701,6 +2706,8 @@ def _write_metadata_sidecar(
             "bbox": bbox,
         },
     }
+    if warnings:
+        payload["validation"]["warnings"] = warnings
     if parts:
         payload["parts"] = parts
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2917,6 +2924,16 @@ def generate_step(
         for name, path in part_outputs
     ]
 
+    # Deterministic geometry sanity checks (floating bodies, slivers, invalid
+    # B-reps). Advisory — never fails generation; surfaced for the skill loop
+    # and harness Review phase to act on.
+    try:
+        from cadpy.checks import collect_scene_warnings
+
+        warnings = collect_scene_warnings(export_shape, scene)
+    except Exception:
+        warnings = []
+
     try:
         _write_metadata_sidecar(
             metadata_path=metadata_path,
@@ -2929,6 +2946,7 @@ def generate_step(
             mesh_tolerance=mesh_tolerance,
             mesh_angular_tolerance=mesh_angular_tolerance,
             parts=parts_meta,
+            warnings=warnings,
         )
     except Exception as exc:
         raise ExportError(
@@ -2956,6 +2974,7 @@ def generate_step(
         "parts": [
             {"name": name, "stl_path": str(path)} for name, path in part_outputs
         ],
+        "warnings": warnings,
     }
 
 

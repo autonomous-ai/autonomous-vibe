@@ -324,12 +324,42 @@ export function useViewerRuntime({
         }
       }
 
+      // Swap the full-detail model for its decimated LOD proxy while the camera
+      // is moving (huge meshes only — runtime.lodProxy is set by CadViewer when
+      // the worker produced one). Mirrors the interaction/idle pixel-ratio swap.
+      const applyLodVisibility = (active) => {
+        const rt = runtimeRef.current;
+        const proxy = rt?.lodProxy;
+        if (!proxy) {
+          return;
+        }
+        if (active) {
+          rt.lodPrevEdgesVisible = rt.edgesGroup ? rt.edgesGroup.visible : undefined;
+          proxy.visible = true;
+          if (rt.lodFullDetailGroup) {
+            rt.lodFullDetailGroup.visible = false;
+          }
+          if (rt.edgesGroup) {
+            rt.edgesGroup.visible = false;
+          }
+        } else {
+          proxy.visible = false;
+          if (rt.lodFullDetailGroup) {
+            rt.lodFullDetailGroup.visible = true;
+          }
+          if (rt.edgesGroup && rt.lodPrevEdgesVisible !== undefined) {
+            rt.edgesGroup.visible = rt.lodPrevEdgesVisible;
+          }
+        }
+      };
+
       const beginInteraction = () => {
         if (interactionState.restoreTimerId) {
           window.clearTimeout(interactionState.restoreTimerId);
           interactionState.restoreTimerId = 0;
         }
         interactionState.active = true;
+        applyLodVisibility(true);
         applyRenderQuality(resolveInteractionPixelRatioCap({
           idlePixelRatioCap: IDLE_PIXEL_RATIO_CAP,
           interactionPixelRatioCap: INTERACTION_PIXEL_RATIO_CAP,
@@ -346,6 +376,7 @@ export function useViewerRuntime({
         interactionState.restoreTimerId = window.setTimeout(() => {
           interactionState.restoreTimerId = 0;
           interactionState.active = false;
+          applyLodVisibility(false);
           controls.enableDamping = true;
           controls.dampingFactor = DEFAULT_DAMPING_FACTOR;
           controls.zoomSpeed = getDefaultZoomSpeed();

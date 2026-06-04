@@ -296,6 +296,42 @@ function meshNeedsPartRenderingForSourceColors(meshData) {
   return partColors.length !== parts.length || new Set(partColors).size > 1;
 }
 
+// Build the single coarse mesh shown while the camera is moving on huge models.
+// Geometry comes pre-decimated from the mesh worker (meshData.lod); this only
+// wraps it in a THREE.Mesh that mirrors the model's surface color so the swap is
+// visually unobtrusive during an orbit. Returns null when no usable LOD exists.
+function buildLodProxyMesh(THREE, lod, sourceMaterial) {
+  if (
+    !lod ||
+    !isNumericArray(lod.vertices, 3) ||
+    !isNumericArray(lod.indices, 3) ||
+    lod.indices.length < 3
+  ) {
+    return null;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(lod.vertices, 3));
+  if (isNumericArray(lod.normals, 3) && lod.normals.length === lod.vertices.length) {
+    geometry.setAttribute("normal", new THREE.BufferAttribute(lod.normals, 3));
+  }
+  geometry.setIndex(new THREE.BufferAttribute(lod.indices, 1));
+  if (!geometry.getAttribute("normal")) {
+    geometry.computeVertexNormals();
+  }
+  const baseMaterial = Array.isArray(sourceMaterial) ? sourceMaterial[0] : sourceMaterial;
+  const color = baseMaterial?.color?.clone?.() || new THREE.Color(0x9aa3ad);
+  const material = new THREE.MeshStandardMaterial({
+    color,
+    roughness: Number.isFinite(baseMaterial?.roughness) ? baseMaterial.roughness : 0.85,
+    metalness: Number.isFinite(baseMaterial?.metalness) ? baseMaterial.metalness : 0,
+    side: THREE.DoubleSide
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.visible = false;
+  mesh.userData.isLodProxy = true;
+  return mesh;
+}
+
 function getPixelRatioCap(cap) {
   if (typeof window === "undefined") {
     return 1;
@@ -2051,6 +2087,10 @@ const CadViewer = forwardRef(function CadViewer({
       runtime.topologyDisplayEdgeLine = null;
       runtime.topologyDisplayEdgeTransformByRecord = false;
       runtime.displayRecords = [];
+      // Drop stale LOD-proxy refs; the proxy mesh itself is a modelGroup child
+      // and is disposed by clearSceneGroup(modelGroup) above.
+      runtime.lodProxy = null;
+      runtime.lodFullDetailGroup = null;
       runtime.hasVisibleModel = false;
       runtime.activeModelKey = "";
       // Re-show the empty-viewport reference grid now that nothing is displayed.
@@ -2191,6 +2231,18 @@ const CadViewer = forwardRef(function CadViewer({
     });
     modelGroup.add(cadScene.modelGroup);
     edgesGroup.add(cadScene.edgesGroup);
+    // Orbit proxy: if the worker produced a decimated LOD for this (huge) mesh,
+    // mount it alongside the full-detail group so the runtime can swap to it
+    // during camera interaction and back to full detail at rest.
+    runtime.lodProxy = null;
+    runtime.lodFullDetailGroup = cadScene.modelGroup;
+    if (meshData.lod) {
+      const lodProxy = buildLodProxyMesh(THREE, meshData.lod, cadScene.displayRecords?.[0]?.mesh?.material);
+      if (lodProxy) {
+        modelGroup.add(lodProxy);
+        runtime.lodProxy = lodProxy;
+      }
+    }
     runtime.cadScene = cadScene;
     runtime.displayRecords = cadScene.displayRecords;
     runtime.hasVisibleModel = true;

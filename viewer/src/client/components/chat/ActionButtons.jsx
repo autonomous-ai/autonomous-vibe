@@ -1,32 +1,23 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Layers, Plus, Printer } from "lucide-react";
+import { Printer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/ui/utils";
 import { getTransport } from "@/lib/transport";
-import {
-  selectLatestGcode,
-  selectSliceTargetStl,
-  useChatStore,
-} from "@/store/chat";
+import { selectLatestGcode, useChatStore } from "@/store/chat";
 import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
 import PreflightModal from "./PreflightModal";
 import { basename, pickPrinterForSlice } from "./actionButtonsHelpers";
 
 export { pickPrinterForSlice };
 
-const DEFAULT_FILAMENT = "PLA";
-
 export default function ActionButtons({
   printerList = [],
-  defaultFilament = DEFAULT_FILAMENT,
   className,
   transport = getTransport(),
 }) {
-  const stlFile = useChatStore(selectSliceTargetStl);
   const gcodeFile = useChatStore(selectLatestGcode);
   const turnInProgress = useChatStore((state) => state.turnInProgress);
 
-  const [slicing, setSlicing] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [preflightOpen, setPreflightOpen] = useState(false);
   const [addPrinterOpen, setAddPrinterOpen] = useState(false);
@@ -52,34 +43,6 @@ export default function ActionButtons({
 
   const printers = loadedPrinters ?? printerList;
   const targetPrinter = useMemo(() => pickPrinterForSlice(printers), [printers]);
-
-  const handleSlice = useCallback(async () => {
-    if (!stlFile) return;
-    if (!targetPrinter) {
-      // No printer yet — drop the user straight into the setup flow.
-      setStatusMessage("");
-      setAddPrinterOpen(true);
-      return;
-    }
-    setSlicing(true);
-    // Surface which part is being sliced — with multiple STL parts the target
-    // follows the workspace selection, so make the active one explicit.
-    setStatusMessage(`Slicing ${basename(stlFile)}…`);
-    // eslint-disable-next-line no-console
-    console.info(`[slice] target part: ${stlFile}`);
-    try {
-      await transport.slice_run({
-        meshFile: stlFile,
-        printerId: targetPrinter.id,
-        filament: defaultFilament,
-      });
-      setStatusMessage(`Sliced ${basename(stlFile)}`);
-    } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setSlicing(false);
-    }
-  }, [defaultFilament, stlFile, targetPrinter, transport]);
 
   const handleRequestPrint = useCallback(() => {
     if (!gcodeFile) return;
@@ -116,43 +79,16 @@ export default function ActionButtons({
     }
   }, [gcodeFile, targetPrinter, transport]);
 
-  const showSlice = Boolean(stlFile);
   const showPrint = Boolean(gcodeFile);
 
-  if (!showSlice && !showPrint) return null;
+  if (!showPrint) return null;
 
   return (
     <div
       data-slot="chat-action-buttons"
-      data-has-stl={showSlice ? "true" : "false"}
       data-has-gcode={showPrint ? "true" : "false"}
       className={cn("flex flex-col gap-2 border-t border-border/60 bg-background/60 p-2.5", className)}
     >
-      {showSlice ? (
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={handleSlice}
-          disabled={slicing || turnInProgress}
-          data-slot="chat-slice-button"
-          title={`Slice ${basename(stlFile)}${targetPrinter ? ` for ${targetPrinter.model}` : ""}`}
-        >
-          <Layers aria-hidden />
-          {slicing ? "Slicing…" : `Slice for ${targetPrinter?.model || "Bambu"}`}
-        </Button>
-      ) : null}
-      {showSlice && !targetPrinter ? (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setAddPrinterOpen(true)}
-          data-slot="chat-add-printer-button"
-          className="justify-start text-muted-foreground"
-        >
-          <Plus aria-hidden />
-          Add a printer to slice
-        </Button>
-      ) : null}
       {showPrint ? (
         <Button
           variant="default"

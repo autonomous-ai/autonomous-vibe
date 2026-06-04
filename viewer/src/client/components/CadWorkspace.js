@@ -259,6 +259,8 @@ import {
   parseStepModuleParamsPasteText
 } from "@/workbench/stepModuleParameterControls";
 import { emitCadRefSelection } from "@/components/chat/cadRefEvents";
+import { basename, pickPrinterForSlice } from "@/components/chat/actionButtonsHelpers";
+import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
 import { setSelectedMeshFile, setProject as setChatProject, useChatStore } from "@/store/chat";
 import { useProjectsStore } from "@/store/projects.ts";
 import { sortProjects } from "@/components/library/projectListHelpers.js";
@@ -474,6 +476,12 @@ export default function CadWorkspace({
     error: ""
   });
   const [screenshotStatus, setScreenshotStatus] = useState("");
+  const [slicing, setSlicing] = useState(false);
+  const [addPrinterOpen, setAddPrinterOpen] = useState(false);
+  // When the user triggers Slice with no printer, we open the pairing dialog and
+  // remember to resume the slice once a printer is actually added (set on
+  // `onAdded`, consumed when the dialog closes — so cancelling doesn't re-slice).
+  const pendingSliceAfterAddRef = useRef(false);
   const [fileAccessBusyKey, setFileAccessBusyKey] = useState("");
   const [persistenceStatus, setPersistenceStatus] = useState("");
   const [motionErrorStatus, setMotionErrorStatus] = useState("");
@@ -5821,6 +5829,43 @@ export default function CadWorkspace({
     }
   }, [selectedEntry]);
 
+  const handleSliceForBambu = useCallback(async () => {
+    // Slice the STL the user is currently viewing. Non-STL selections don't
+    // reach this handler — the toolbar only renders the button for STL parts.
+    const stlFile =
+      selectedEntry && entrySourceFormat(selectedEntry) === RENDER_FORMAT.STL
+        ? fileKey(selectedEntry)
+        : "";
+    if (!stlFile) {
+      return;
+    }
+    setSlicing(true);
+    setCopyStatus("");
+    setScreenshotStatus(`Slicing ${basename(stlFile)}…`);
+    try {
+      const transport = getTransport();
+      const printers = await transport.printer_list();
+      const targetPrinter = pickPrinterForSlice(Array.isArray(printers) ? printers : []);
+      if (!targetPrinter) {
+        // No printer yet — drop the user into the pairing flow, then resume the
+        // slice automatically once they finish adding one.
+        setScreenshotStatus("");
+        setAddPrinterOpen(true);
+        return;
+      }
+      await transport.slice_run({
+        meshFile: stlFile,
+        printerId: targetPrinter.id,
+        filament: "PLA"
+      });
+      setScreenshotStatus(`Sliced for ${targetPrinter.model || "Bambu"}`);
+    } catch (sliceError) {
+      setScreenshotStatus(sliceError instanceof Error ? sliceError.message : "Slice failed");
+    } finally {
+      setSlicing(false);
+    }
+  }, [selectedEntry]);
+
   const handleEnterPreviewMode = useCallback(() => {
     if (effectiveRenderFormat === RENDER_FORMAT.DXF || viewerLoading || !selectedMeshData || previewMode) {
       return;
@@ -6177,6 +6222,9 @@ export default function CadWorkspace({
                 handleEnterPreviewMode={handleEnterPreviewMode}
                 handleScreenshotCopy={handleScreenshotCopy}
                 handleScreenshotDownload={handleScreenshotDownload}
+                canSlice={selectedEntrySourceFormat === RENDER_FORMAT.STL}
+                slicing={slicing}
+                handleSliceForBambu={handleSliceForBambu}
               />
 
               <ViewerLoadingOverlay
@@ -6446,6 +6494,22 @@ export default function CadWorkspace({
           projectName={projectPendingDelete?.name || ""}
           onCancel={() => setProjectPendingDelete(null)}
           onConfirm={handleConfirmDeleteProject}
+        />
+
+        <AddPrinterDialog
+          open={addPrinterOpen}
+          onOpenChange={(next) => {
+            setAddPrinterOpen(next);
+            // Resume the slice once the dialog closes, but only if a printer was
+            // actually added (cancelling leaves the flag false → no re-slice).
+            if (!next && pendingSliceAfterAddRef.current) {
+              pendingSliceAfterAddRef.current = false;
+              void handleSliceForBambu();
+            }
+          }}
+          onAdded={() => {
+            pendingSliceAfterAddRef.current = true;
+          }}
         />
       </SidebarInset>
     </SidebarProvider>

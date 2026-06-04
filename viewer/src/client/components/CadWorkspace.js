@@ -683,7 +683,8 @@ export default function CadWorkspace({
     matchingEntry: explicitFileEntry,
     selectedEntry: catalogSelectedEntry,
     catalogHydrated,
-    catalogRefreshing
+    catalogRefreshing,
+    catalogEntryCount: catalogEntries.length
   });
   const catalogSelectedEntrySourceFormat = entrySourceFormat(catalogSelectedEntry);
   const activeStepArtifactGenerationFiles = useMemo(() => {

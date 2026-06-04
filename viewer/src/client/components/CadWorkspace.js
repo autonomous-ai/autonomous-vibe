@@ -5395,12 +5395,18 @@ export default function CadWorkspace({
     if (!pending || pending.projectId !== currentProjectId) {
       return;
     }
-    if (!entryMap.has(pending.key)) {
+    const entry = entryMap.get(pending.key);
+    if (!entry) {
       return; // catalog for the newly-opened project hasn't loaded yet
     }
     pendingCrossProjectSelectionRef.current = null;
+    // Expand the new active project's tree to the selected file. Directory
+    // expansion is owned by `expandedDirectoryIds` (the non-active tree's own
+    // expansion state doesn't carry over), so without this the folder holding
+    // the clicked file renders collapsed after the project switch.
+    expandFileViewerTreeToEntry(entry);
     handleSelectEntry(pending.key);
-  }, [currentProjectId, entryMap, handleSelectEntry]);
+  }, [currentProjectId, entryMap, handleSelectEntry, expandFileViewerTreeToEntry]);
 
   // Per-project delete from the sidebar. Opens a confirm dialog; on confirm,
   // deletes the project. When the deleted project was active, fall back to the

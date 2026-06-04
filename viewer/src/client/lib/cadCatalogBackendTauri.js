@@ -51,7 +51,7 @@ function synthesizePartEntry(part, parentFile, revision) {
   };
 }
 
-function withRenderableMeshHashes(catalog) {
+export function withRenderableMeshHashes(catalog) {
   if (!catalog || !Array.isArray(catalog.entries)) {
     return catalog;
   }

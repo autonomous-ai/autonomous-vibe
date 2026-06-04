@@ -17,6 +17,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { transport } from "@/lib/transport";
+import { withRenderableMeshHashes } from "@/lib/cadCatalogBackendTauri.js";
 import { useProjectsStore } from "@/store/projects.ts";
 import { sortProjects } from "@/components/library/projectListHelpers.js";
 import { isPrintableModelEntry } from "@/workbench/isPrintableModelEntry.js";
@@ -59,13 +60,22 @@ export function useProjectsFileTree({
   // Per-project directory expansion for NON-active projects.
   const [dirsByProject, setDirsByProject] = useState(() => new Map());
 
-  // Keep the active project auto-expanded as it changes.
+  // Keep the active project auto-expanded as it changes, and drop any cached
+  // catalog for it: while active it renders from the live catalog, so evicting
+  // the snapshot guarantees a fresh reload (not stale data from a prior visit)
+  // when it is later demoted to non-active.
   useEffect(() => {
     if (!activeProjectId) return;
     setExpandedProjectIds((current) => {
       if (current.has(activeProjectId)) return current;
       const next = new Set(current);
       next.add(activeProjectId);
+      return next;
+    });
+    setCatalogs((current) => {
+      if (!current.has(activeProjectId)) return current;
+      const next = new Map(current);
+      next.delete(activeProjectId);
       return next;
     });
   }, [activeProjectId]);
@@ -82,7 +92,12 @@ export function useProjectsFileTree({
     });
     transport
       .project_catalog_read(projectId)
-      .then((catalog) => {
+      .then((rawCatalog) => {
+        // Synthesize the per-asset `hash` the Rust catalog omits — exactly as
+        // the active project's catalog does (cadCatalogBackendTauri.js). Without
+        // it `entryHasMesh` is false for every entry, so the sidebar paints each
+        // file with the "pending"/loading spinner even though its STL exists.
+        const catalog = withRenderableMeshHashes(rawCatalog);
         const entries = Array.isArray(catalog?.entries)
           ? catalog.entries.filter(isPrintableModelEntry)
           : [];
@@ -113,6 +128,21 @@ export function useProjectsFileTree({
         });
       });
   }, []);
+
+  // Lazy-load any expanded NON-active project that isn't cached yet. Besides the
+  // first-expand case (handled in `toggleProject`), this covers the project that
+  // was just demoted from active: it had been rendered from the live active
+  // catalog and never cached, so without this it would render empty ("No models
+  // yet") the moment another project becomes active. (Declared after
+  // `loadProjectCatalog` — referencing that const from an effect placed above
+  // its declaration throws a TDZ error when the deps array is read at render.)
+  useEffect(() => {
+    for (const projectId of expandedProjectIds) {
+      if (projectId !== activeProjectId && !catalogs.has(projectId)) {
+        loadProjectCatalog(projectId);
+      }
+    }
+  }, [expandedProjectIds, activeProjectId, catalogs, loadProjectCatalog]);
 
   const toggleProject = useCallback(
     (projectId) => {

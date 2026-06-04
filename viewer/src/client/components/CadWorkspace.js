@@ -16,7 +16,6 @@ import ViewerAlertDialog from "./workbench/ViewerAlertDialog";
 import ViewerLoadingOverlay from "./workbench/ViewerLoadingOverlay";
 import FloatingToolBar from "./workbench/FloatingToolBar";
 import CadWorkspaceTopBar from "./workbench/CadWorkspaceTopBar";
-import CadWorkspaceHome from "./workbench/CadWorkspaceHome";
 import { useCadAssets } from "./workbench/hooks/useCadAssets";
 import {
   resolveDesktopPanelWidths,
@@ -6148,16 +6147,6 @@ export default function CadWorkspace({
                 handleScreenshotCopy={handleScreenshotCopy}
                 handleScreenshotDownload={handleScreenshotDownload}
               />
-
-              {!previewMode && !selectedEntry && !missingFileRef && !fileParamSelectionPending ? (
-                <CadWorkspaceHome
-                  entries={catalogEntries}
-                  onSelectEntry={handleSelectEntry}
-                  catalogHydrated={catalogHydrated}
-                  catalogRefreshing={catalogRefreshing}
-                  catalogError={catalogError}
-                />
-              ) : null}
 
               <ViewerLoadingOverlay
                 viewerLoading={effectiveViewerLoading}

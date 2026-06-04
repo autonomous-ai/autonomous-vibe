@@ -64,14 +64,14 @@ def test_layout_intact():
         assert (SKILL_DIR / "references" / name).exists(), f"missing references/{name}"
     # The `render` script was removed when the canonical preview moved from
     # VTK PNGs to cadpy-produced GLBs (Workstream 2 / Track B).
-    for name in ("cad", "check"):
+    for name in ("cad", "check", "review"):
         assert (SCRIPTS / name / "__main__.py").exists(), f"missing scripts/{name}/__main__.py"
     assert not (SCRIPTS / "render").exists(), "scripts/render/ should be gone"
 
 
 def test_help_works():
-    """Both surviving CLI tools support ``--help``."""
-    for tool in ("cad", "check"):
+    """The CLI tools support ``--help``."""
+    for tool in ("cad", "check", "review"):
         proc = subprocess.run(
             [sys.executable, str(SCRIPTS / tool), "--help"],
             capture_output=True, text=True, timeout=20,
@@ -262,6 +262,7 @@ PATTERN_NAMES = [
     "magnet-pocket",
     "bearing-seat",
     "cable-channel",
+    "anchor-to-body",
 ]
 
 

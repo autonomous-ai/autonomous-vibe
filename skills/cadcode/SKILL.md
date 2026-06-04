@@ -113,7 +113,8 @@ What "fix" means in practice:
 
 - ``ok=false``: read the traceback, change the smallest responsible line, re-run.
 - ``is_solid=false`` or volume far off expected: load `references/repair-loop.md`, classify, fix, re-run.
-- Preview STL looks wrong (proportions off, hole misplaced, parts misaligned): edit the `.py` and re-run. **Always inspect the STL** in the viewer — geometry can be valid but wrong.
+- ``warnings`` non-empty (e.g. ``disconnected_bodies``, ``sliver``, ``invalid_brep``): these are deterministic geometry defects — **treat them as blocking**. A ``disconnected_bodies`` warning means a feature is floating off the body (placed outside its footprint, or never unioned). Anchor it to the body and re-run. Do not declare done while any warning remains.
+- Preview STL looks wrong (proportions off, hole misplaced, parts misaligned, a member poking through a plate): edit the `.py` and re-run. **Always inspect every part** — geometry can be valid (`is_solid=true`, no warnings) but still wrong.
 
 You have everything you need to close the loop on your own:
 
@@ -412,14 +413,26 @@ a JSON line.
 Don't skip this step. Even when `ok=true is_solid=true`, geometry can be
 visually wrong:
 
-- The STL at ``stl_path`` is the preview — in Panda the viewer pane renders
-  it automatically. When the viewer isn't available, use the ``cad-viewer``
-  skill (if installed) to spin one up against the workspace.
+- **Resolve `warnings` first.** The JSON's ``warnings`` array lists
+  deterministic defects cadpy already found — `disconnected_bodies` (a part is
+  several detached solids → something floats), `sliver`, `invalid_brep`. Any
+  warning is blocking; go to step 7.
+- **Look at every part, not just the assembly.** Run
+  ``python scripts/review <project_dir>`` — it renders the assembled model and
+  *each named part* to multi-view (iso + top) PNGs under ``<stem>_review/`` and
+  re-lists the warnings. `Read` each PNG. The top view exposes features that sit
+  outside the body footprint; the iso exposes members poking through plates.
+  A whole-assembly preview hides a floating standoff *inside* a tray or a small
+  spike on one part — per-part views do not.
+- **Justify each part.** For every part, state in one line what it is for and
+  what it connects to (which mounting interface / mating face). If you cannot
+  justify a part, or it does not connect to anything, it is a defect — fix it.
 - Compare against the user's prompt and any reference image.
 - Check the bbox in the JSON: does it match the intent (right order of
   magnitude, fits on a 200×200mm bed)?
 
-If anything is off — compile error, non-solid, wrong proportions,
+If anything is off — compile error, non-solid, a warning, a floating or
+purposeless part, a member protruding through a plate, wrong proportions,
 misplaced holes — go to step 7.
 
 ### 7. Fix
@@ -453,6 +466,9 @@ assumptions you made.
   throughout. CadQuery is the only modeling library available.
 - Run `scripts/cad` (or at minimum `scripts/check`) before declaring done.
   Never claim a model is printable from reading code alone.
+- Never declare done with a non-empty `warnings` array, a floating/disconnected
+  part, or a part you cannot justify. For assemblies, run `scripts/review` and
+  inspect **every** per-part render — not just the assembled preview.
 - When the prompt is ambiguous on a *geometry-changing* axis, ask **one**
   clarifying question. Otherwise, pick a default and proceed.
 - Use millimeters throughout. Do not convert; do not annotate inches.
@@ -576,6 +592,7 @@ language to the trigger column and `Read` the corresponding file.
 | magnet, magnetic closure, N42 / N52, neodymium | `references/patterns/magnet-pocket.md` |
 | bearing, 608 / 688 / 6800, skate bearing, pulley | `references/patterns/bearing-seat.md` |
 | cable channel, wire routing, strain relief, USB cable | `references/patterns/cable-channel.md` |
+| floating part, disconnected bodies, standoff on a curved wall, strut into a plate, "part not attached" | `references/patterns/anchor-to-body.md` |
 
 Each file has the same shape: **Trigger**, **Why (the mechanics)**, **CadQuery
 template**, parameter ranges, and pitfalls. The template is copy-pasteable

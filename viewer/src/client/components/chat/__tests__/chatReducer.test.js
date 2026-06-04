@@ -49,6 +49,112 @@ test("queue_user_message appends a user turn and marks turnInProgress", () => {
   assert.equal(next.history[0].userText, "make a 10mm cube");
 });
 
+test("queue_user_message slots the user turn before an already-arrived assistant turn", () => {
+  // Race: the backend's `turn_start` lands before `chat_start_turn` resolves
+  // and queues the user message. The user prompt must still render above
+  // Claude's response, not below it.
+  const withAssistant = applyEvents(
+    { ...INITIAL_CHAT_STATE, currentProjectId: "proj-1" },
+    [{ kind: "turn_start", turnId: "t-1", phase: "plan" }],
+  );
+  assert.equal(withAssistant.history.length, 1);
+  assert.equal(withAssistant.history[0].role, "assistant");
+
+  const next = chatReducer(
+    withAssistant,
+    { type: "queue_user_message", turnId: "t-1", text: "I need a hex tiles holder", at: FIXED_NOW },
+    FIXED_NOW,
+  );
+  assert.equal(next.history.length, 2);
+  assert.equal(next.history[0].role, "user", "user turn comes first");
+  assert.equal(next.history[0].id, "user-t-1");
+  assert.equal(next.history[1].role, "assistant", "assistant turn stays second");
+  assert.equal(next.history[1].id, "t-1");
+});
+
+test("a turn started in one project does not stream into another project's chat", () => {
+  // Start a turn in proj-1, then switch to proj-2 mid-turn.
+  let state = chatReducer(
+    { ...INITIAL_CHAT_STATE, currentProjectId: "proj-1" },
+    { type: "queue_user_message", turnId: "t-1", text: "make a tray", at: FIXED_NOW },
+    FIXED_NOW,
+  );
+  assert.equal(state.turnOwners["t-1"], "proj-1");
+
+  state = chatReducer(state, { type: "set_project", projectId: "proj-2" }, FIXED_NOW);
+  assert.equal(state.history.length, 0, "switching clears the visible history");
+  assert.equal(state.turnOwners["t-1"], "proj-1", "owner is preserved across the switch");
+
+  // proj-1's turn keeps streaming — none of it may land in proj-2's chat.
+  state = applyEvents(state, [
+    { kind: "turn_start", turnId: "t-1", phase: "implement" },
+    { kind: "text_delta", turnId: "t-1", text: "On it…" },
+    { kind: "artifact_changed", turnId: "t-1", file: "tray.stl", reason: "new" },
+  ]);
+  assert.equal(state.history.length, 0, "background turn does not pollute the active chat");
+
+  // turn_end for the backgrounded turn prunes its owner without touching history.
+  state = applyEvents(state, [{ kind: "turn_end", turnId: "t-1" }]);
+  assert.equal(state.history.length, 0);
+  assert.equal(state.turnOwners["t-1"], undefined, "owner pruned when the turn ends");
+});
+
+test("a streamed response is preserved (and keeps growing) across switch-away-and-back", () => {
+  // Stream part of proj-1's response.
+  let state = chatReducer(
+    { ...INITIAL_CHAT_STATE, currentProjectId: "proj-1" },
+    { type: "queue_user_message", turnId: "t-1", text: "make a tray", at: FIXED_NOW },
+    FIXED_NOW,
+  );
+  state = applyEvents(state, [
+    { kind: "turn_start", turnId: "t-1", phase: "implement" },
+    { kind: "text_delta", turnId: "t-1", text: "Part 1 " },
+  ]);
+
+  // Switch away mid-turn — proj-1 is retained because its turn is running.
+  state = chatReducer(state, { type: "set_project", projectId: "proj-2" }, FIXED_NOW);
+  assert.equal(state.history.length, 0, "the new project's chat is empty");
+
+  // More of proj-1's response streams in while it's backgrounded.
+  state = applyEvents(state, [{ kind: "text_delta", turnId: "t-1", text: "Part 2 " }]);
+
+  // Return to proj-1: everything streamed before AND during the away period is
+  // restored, and the turn is still in progress (not lost / reset).
+  state = chatReducer(state, { type: "set_project", projectId: "proj-1" }, FIXED_NOW);
+  let assistant = state.history.find((t) => t.id === "t-1" && t.role === "assistant");
+  assert.ok(assistant, "assistant turn restored");
+  assert.equal(assistant.blocks[0].text, "Part 1 Part 2 ");
+  assert.equal(state.turnInProgress, true, "still streaming after return");
+
+  // Live deltas after returning keep appending to the same turn.
+  state = applyEvents(state, [
+    { kind: "text_delta", turnId: "t-1", text: "Part 3" },
+    { kind: "turn_end", turnId: "t-1" },
+  ]);
+  assistant = state.history.find((t) => t.id === "t-1" && t.role === "assistant");
+  assert.equal(assistant.blocks[0].text, "Part 1 Part 2 Part 3");
+  assert.equal(state.turnInProgress, false, "turn completed");
+  assert.equal(state.turnOwners["t-1"], undefined, "owner pruned on end");
+});
+
+test("returning to the owning project lets its turn's events apply again", () => {
+  let state = chatReducer(
+    { ...INITIAL_CHAT_STATE, currentProjectId: "proj-1" },
+    { type: "queue_user_message", turnId: "t-1", text: "make a tray", at: FIXED_NOW },
+    FIXED_NOW,
+  );
+  state = chatReducer(state, { type: "set_project", projectId: "proj-2" }, FIXED_NOW);
+  // Switch back to the project that owns t-1.
+  state = chatReducer(state, { type: "set_project", projectId: "proj-1" }, FIXED_NOW);
+  state = applyEvents(state, [
+    { kind: "turn_start", turnId: "t-1", phase: "implement" },
+    { kind: "text_delta", turnId: "t-1", text: "On it…" },
+  ]);
+  const assistant = state.history.find((t) => t.id === "t-1" && t.role === "assistant");
+  assert.ok(assistant, "owner project shows its own turn's response");
+  assert.equal(assistant.blocks[0].text, "On it…");
+});
+
 test("checkpoint_created tags the assistant turn with its checkpoint id", () => {
   const events = [
     { kind: "turn_start", turnId: "t-1", phase: "implement" },

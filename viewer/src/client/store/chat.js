@@ -90,6 +90,20 @@ export const INITIAL_CHAT_STATE = Object.freeze({
   // mirrored onto its assistant turn (`turn.checkpointId`) so the chat can
   // offer "Start from here".
   checkpoints: [],
+  // Maps an in-flight turnId → the project that started it. Chat events carry
+  // only a turnId, so this is how the reducer routes a streaming response back
+  // to the chat it belongs to: events for a turn owned by a project other than
+  // the one currently on screen are dropped from the visible history (the owner
+  // project's session is persisted by the backend and reloaded on return),
+  // instead of polluting whichever chat is active. Preserved across project
+  // switches; entries are pruned when a turn ends.
+  turnOwners: {},
+  // Retained chat slices for NON-active projects that had a turn running when
+  // we navigated away from them (keyed by projectId). Background turn events
+  // keep these current, so returning to such a project restores its full
+  // streamed conversation instead of losing what arrived before/while away. The
+  // active project's slice lives at the top level; this only holds others.
+  sessions: {},
 });
 
 // ---------------------------------------------------------------------------
@@ -214,15 +228,156 @@ function dedupe(values) {
  * @param {number=} now
  * @returns {ChatState}
  */
+// The per-project chat fields a `chat_event` can mutate. The active project's
+// slice lives at the top level of state; backgrounded projects keep theirs in
+// `state.sessions`. Both are advanced by `applyChatEventToSession` so a turn
+// that keeps streaming after you switch away updates the right conversation.
+function sessionSlice(state) {
+  return {
+    history: state.history,
+    currentTurnId: state.currentTurnId,
+    turnInProgress: state.turnInProgress,
+    awaitingApproval: state.awaitingApproval,
+    activePlanTurnId: state.activePlanTurnId,
+    lastError: state.lastError,
+    checkpoints: state.checkpoints,
+  };
+}
+
+// Pure: apply one chat event to a session slice and return the next slice.
+// Owner/turn-tracking (`turnOwners`) is handled by the caller — this only
+// evolves the conversation itself, so it works identically for the active
+// project and for a backgrounded project's retained slice.
+function applyChatEventToSession(session, event, now) {
+  const turnId = event.turnId;
+  switch (event.kind) {
+    case "turn_start":
+      return {
+        ...session,
+        history: ensureAssistantTurn(session.history, turnId, now, event.phase),
+        currentTurnId: turnId,
+        turnInProgress: true,
+      };
+    case "plan_proposed":
+      return {
+        ...session,
+        awaitingApproval: true,
+        activePlanTurnId: turnId,
+        history: updateAssistantTurn(
+          ensureAssistantTurn(session.history, turnId, now, "plan"),
+          turnId,
+          (turn) => appendPlan(turn, event.plan),
+        ),
+      };
+    case "text_delta":
+      return {
+        ...session,
+        history: updateAssistantTurn(
+          ensureAssistantTurn(session.history, turnId, now),
+          turnId,
+          (turn) => appendTextDelta(turn, event.text),
+        ),
+      };
+    case "thinking_delta":
+      return {
+        ...session,
+        history: updateAssistantTurn(
+          ensureAssistantTurn(session.history, turnId, now),
+          turnId,
+          (turn) => appendThinkingDelta(turn, event.text),
+        ),
+      };
+    case "tool_use_start":
+      return {
+        ...session,
+        history: updateAssistantTurn(
+          ensureAssistantTurn(session.history, turnId, now),
+          turnId,
+          (turn) => appendToolUseStart(turn, event.tool, event.input),
+        ),
+      };
+    case "tool_use_end":
+      return {
+        ...session,
+        history: updateAssistantTurn(
+          ensureAssistantTurn(session.history, turnId, now),
+          turnId,
+          (turn) => markToolUseEnd(turn, event.tool, event.ok),
+        ),
+      };
+    case "artifact_changed":
+      return {
+        ...session,
+        history: updateAssistantTurn(
+          ensureAssistantTurn(session.history, turnId, now),
+          turnId,
+          (turn) => appendArtifact(turn, event.file, event.reason),
+        ),
+      };
+    case "checkpoint_created":
+      // Tag the assistant turn with the checkpoint it produced so the UI can
+      // offer "Start from here" for this exact version.
+      return {
+        ...session,
+        history: updateAssistantTurn(
+          ensureAssistantTurn(session.history, turnId, now),
+          turnId,
+          (turn) => ({ ...turn, checkpointId: event.checkpointId }),
+        ),
+      };
+    case "turn_end":
+      return {
+        ...session,
+        currentTurnId: session.currentTurnId === turnId ? "" : session.currentTurnId,
+        turnInProgress: false,
+        history: updateAssistantTurn(session.history, turnId, (turn) => ({
+          ...turn,
+          status: turn.status === "error" ? "error" : "complete",
+          endedAt: now,
+        })),
+      };
+    case "error":
+      return {
+        ...session,
+        currentTurnId: session.currentTurnId === turnId ? "" : session.currentTurnId,
+        turnInProgress: false,
+        lastError: event.message,
+        history: updateAssistantTurn(
+          ensureAssistantTurn(session.history, turnId, now),
+          turnId,
+          (turn) => ({ ...appendError(turn, event.message), endedAt: now }),
+        ),
+      };
+    default:
+      return session;
+  }
+}
+
 export function chatReducer(state, action, now = Date.now()) {
   switch (action.type) {
     case "set_project": {
       if (state.currentProjectId === action.projectId) return state;
-      return {
+      // Stash the project we're leaving if a turn is still running there, so its
+      // streamed-so-far chat survives the switch and background events keep it
+      // current. (Completed projects reload cheaply from the backend on return.)
+      let sessions = state.sessions;
+      if (state.currentProjectId && state.turnInProgress) {
+        sessions = { ...sessions, [state.currentProjectId]: sessionSlice(state) };
+      }
+      // Restore a retained session for the project we're entering (consuming it
+      // from the map); otherwise start blank and let hydrateSession fill it in.
+      const retained = sessions[action.projectId];
+      const { [action.projectId]: _consumed, ...remaining } = sessions;
+      const next = {
         ...INITIAL_CHAT_STATE,
         currentProjectId: action.projectId,
         pendingTokens: state.pendingTokens,
+        // Keep tracking any turn still running elsewhere so its events keep
+        // routing to its own (retained) session, not this project's chat.
+        turnOwners: state.turnOwners,
+        sessions: remaining,
       };
+      return retained ? { ...next, ...retained } : next;
     }
     case "set_selected_mesh_file": {
       const file = String(action.file || "").trim();
@@ -256,118 +411,75 @@ export function chatReducer(state, action, now = Date.now()) {
         endedAt: action.at,
         userText: action.text,
       };
+      // The backend's `turn_start` (assistant turn) can race ahead of this
+      // dispatch — it rides a separate event channel and may land while
+      // `chat_start_turn` is still awaiting. If the matching assistant turn is
+      // already present, slot the user turn immediately before it so the prompt
+      // always renders above Claude's response; otherwise append.
+      const assistantIdx = state.history.findIndex(
+        (turn) => turn.id === action.turnId && turn.role === "assistant",
+      );
+      const history =
+        assistantIdx === -1
+          ? [...state.history, userTurn]
+          : [
+              ...state.history.slice(0, assistantIdx),
+              userTurn,
+              ...state.history.slice(assistantIdx),
+            ];
       return {
         ...state,
-        history: [...state.history, userTurn],
+        history,
         currentTurnId: action.turnId,
         turnInProgress: true,
         lastError: "",
+        turnOwners: { ...state.turnOwners, [action.turnId]: state.currentProjectId },
       };
     }
     case "chat_event": {
       const event = action.event;
       const turnId = event.turnId;
-      switch (event.kind) {
-        case "turn_start":
-          return {
-            ...state,
-            history: ensureAssistantTurn(state.history, turnId, now, event.phase),
-            currentTurnId: turnId,
-            turnInProgress: true,
-          };
-        case "plan_proposed":
-          return {
-            ...state,
-            awaitingApproval: true,
-            activePlanTurnId: turnId,
-            history: updateAssistantTurn(
-              ensureAssistantTurn(state.history, turnId, now, "plan"),
-              turnId,
-              (turn) => appendPlan(turn, event.plan),
-            ),
-          };
-        case "text_delta":
-          return {
-            ...state,
-            history: updateAssistantTurn(
-              ensureAssistantTurn(state.history, turnId, now),
-              turnId,
-              (turn) => appendTextDelta(turn, event.text),
-            ),
-          };
-        case "thinking_delta":
-          return {
-            ...state,
-            history: updateAssistantTurn(
-              ensureAssistantTurn(state.history, turnId, now),
-              turnId,
-              (turn) => appendThinkingDelta(turn, event.text),
-            ),
-          };
-        case "tool_use_start":
-          return {
-            ...state,
-            history: updateAssistantTurn(
-              ensureAssistantTurn(state.history, turnId, now),
-              turnId,
-              (turn) => appendToolUseStart(turn, event.tool, event.input),
-            ),
-          };
-        case "tool_use_end":
-          return {
-            ...state,
-            history: updateAssistantTurn(
-              ensureAssistantTurn(state.history, turnId, now),
-              turnId,
-              (turn) => markToolUseEnd(turn, event.tool, event.ok),
-            ),
-          };
-        case "artifact_changed":
-          return {
-            ...state,
-            history: updateAssistantTurn(
-              ensureAssistantTurn(state.history, turnId, now),
-              turnId,
-              (turn) => appendArtifact(turn, event.file, event.reason),
-            ),
-          };
-        case "checkpoint_created":
-          // Tag the assistant turn with the checkpoint it produced so the UI
-          // can offer "Start from here" for this exact version.
-          return {
-            ...state,
-            history: updateAssistantTurn(
-              ensureAssistantTurn(state.history, turnId, now),
-              turnId,
-              (turn) => ({ ...turn, checkpointId: event.checkpointId }),
-            ),
-          };
-        case "turn_end":
-          return {
-            ...state,
-            currentTurnId: state.currentTurnId === turnId ? "" : state.currentTurnId,
-            turnInProgress: false,
-            history: updateAssistantTurn(state.history, turnId, (turn) => ({
-              ...turn,
-              status: turn.status === "error" ? "error" : "complete",
-              endedAt: now,
-            })),
-          };
-        case "error":
-          return {
-            ...state,
-            currentTurnId: state.currentTurnId === turnId ? "" : state.currentTurnId,
-            turnInProgress: false,
-            lastError: event.message,
-            history: updateAssistantTurn(
-              ensureAssistantTurn(state.history, turnId, now),
-              turnId,
-              (turn) => ({ ...appendError(turn, event.message), endedAt: now }),
-            ),
-          };
-        default:
-          return state;
+      const knownOwner = state.turnOwners[turnId];
+      // A turn with no recorded owner is adopted by the current project (it was
+      // just started here, possibly before `queue_user_message` ran).
+      const ownerProject =
+        knownOwner || (event.kind === "turn_start" ? state.currentProjectId : undefined);
+
+      // Maintain the global turn→project map: register on start, prune on end.
+      let turnOwners = state.turnOwners;
+      if (event.kind === "turn_start" && !knownOwner && ownerProject) {
+        turnOwners = { ...turnOwners, [turnId]: ownerProject };
+      } else if (event.kind === "turn_end" || event.kind === "error") {
+        const { [turnId]: _drop, ...rest } = turnOwners;
+        turnOwners = rest;
       }
+
+      // Owned by (or just started in) the project on screen → advance the
+      // visible session.
+      if (!ownerProject || ownerProject === state.currentProjectId) {
+        return {
+          ...state,
+          ...applyChatEventToSession(sessionSlice(state), event, now),
+          turnOwners,
+        };
+      }
+
+      // Backgrounded project: advance its retained session so returning shows
+      // the full streamed response, not just what arrived after returning. If
+      // it wasn't retained (no turn was running when we left it), drop the
+      // event — its result is persisted and reloaded on return.
+      const stash = state.sessions[ownerProject];
+      if (!stash) {
+        return { ...state, turnOwners };
+      }
+      return {
+        ...state,
+        turnOwners,
+        sessions: {
+          ...state.sessions,
+          [ownerProject]: applyChatEventToSession(stash, event, now),
+        },
+      };
     }
     case "set_pending_tokens":
       return { ...state, pendingTokens: dedupe(action.tokens) };
@@ -644,12 +756,16 @@ export async function cancelTurn(transport = getTransport()) {
 
 export function setProject(projectId) {
   const previous = getChatState().currentProjectId;
+  // A retained session (a project we left mid-turn) is restored by the reducer
+  // with its live history; re-hydrating would clobber the still-streaming turn
+  // with the backend's not-yet-persisted snapshot, so skip the fetch for it.
+  const hadRetained = Boolean(getChatState().sessions?.[projectId]);
   dispatch({ type: "set_project", projectId });
   // Switching into a real project pulls its persisted transcript back in so
   // chat history survives restarts and project switches. Same-project calls
   // (the reducer no-ops them) and clearing to "" skip the fetch.
   if (projectId && projectId !== previous) {
-    hydrateSession(projectId);
+    if (!hadRetained) hydrateSession(projectId);
     listVersions();
   }
 }

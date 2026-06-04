@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { StrictMode, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import CadWorkspace from "./components/CadWorkspace";
 import ChatSidebar, { readStoredChatSidebarWidth } from "./components/chat/ChatSidebar";
@@ -86,7 +86,10 @@ function useOnboardingGate() {
     };
   }, []);
 
-  return [needsOnboarding, () => setNeedsOnboarding(false)];
+  // Stable callbacks so consumers' effects don't re-subscribe every render.
+  const complete = useCallback(() => setNeedsOnboarding(false), []);
+  const restart = useCallback(() => setNeedsOnboarding(true), []);
+  return [needsOnboarding, complete, restart];
 }
 
 function AppRoot() {
@@ -95,8 +98,24 @@ function AppRoot() {
     getCadManifestSnapshot,
     getCadManifestSnapshot,
   );
-  const [needsOnboarding, completeOnboarding] = useOnboardingGate();
+  const [needsOnboarding, completeOnboarding, restartOnboarding] = useOnboardingGate();
   const onboarded = needsOnboarding === false;
+
+  // Native "Panda → Run Setup Again…" menu item (see src-tauri/src/menu.rs)
+  // emits `run_setup_again`. Clear the persisted flag so the wizard sticks even
+  // if the user quits mid-setup, then re-show it in place.
+  useEffect(() => {
+    const unsubscribe = transport.events.subscribe("run_setup_again", () => {
+      transport
+        .app_settings_read()
+        .then((settings) =>
+          transport.app_settings_write({ ...settings, hasOnboarded: false }),
+        )
+        .catch((err) => console.warn("Failed to reset onboarding flag", err))
+        .finally(() => restartOnboarding());
+    });
+    return () => unsubscribe();
+  }, [restartOnboarding]);
 
   // Live width of the resizable chat panel. Lifted here because it drives both
   // the panel itself and the workspace's right padding so neither overlaps.

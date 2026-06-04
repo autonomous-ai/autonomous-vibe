@@ -1,13 +1,14 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { ChevronDown, FolderPlus, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ChevronDown, FolderPlus, Printer, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useProjectsStore } from "@/store/projects.ts";
@@ -15,6 +16,8 @@ import { setProject as setChatProject } from "@/store/chat.js";
 import { sortProjects } from "@/components/library/projectListHelpers.js";
 import { PLACEHOLDER_PROJECT_NAME } from "@/components/chat/chatInputHelpers";
 import DeleteConfirmDialog from "@/components/library/DeleteConfirmDialog.jsx";
+import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
+import { transport } from "@/lib/transport.ts";
 
 /**
  * Top-bar project menu. Project switching now lives in the workspace sidebar's
@@ -34,6 +37,16 @@ export default function ProjectMenu() {
   const create = useProjectsStore((state) => state.create);
   const deleteProject = useProjectsStore((state) => state.delete);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [addPrinterOpen, setAddPrinterOpen] = useState(false);
+
+  // The native "Printer → Add Printer…" menu item (see src-tauri/src/menu.rs)
+  // can't render the dialog itself, so it emits `open_add_printer`; open it here.
+  useEffect(() => {
+    const unsubscribe = transport.events.subscribe("open_add_printer", () => {
+      setAddPrinterOpen(true);
+    });
+    return () => unsubscribe();
+  }, []);
 
   const sorted = useMemo(() => sortProjects(projects), [projects]);
   const current = sorted.find((project) => project.id === currentProjectId) || null;
@@ -102,6 +115,12 @@ export default function ProjectMenu() {
             <Trash2 className="size-4" aria-hidden />
             Delete project
           </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuLabel>Printer</DropdownMenuLabel>
+          <DropdownMenuItem onSelect={() => setAddPrinterOpen(true)}>
+            <Printer className="size-4" aria-hidden />
+            Add printer
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
 
@@ -114,6 +133,8 @@ export default function ProjectMenu() {
           setDeleteOpen(false);
         }}
       />
+
+      <AddPrinterDialog open={addPrinterOpen} onOpenChange={setAddPrinterOpen} />
     </>
   );
 }

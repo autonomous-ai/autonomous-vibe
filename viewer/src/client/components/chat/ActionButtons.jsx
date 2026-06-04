@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useState } from "react";
-import { Layers, Printer } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Layers, Plus, Printer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/ui/utils";
 import { getTransport } from "@/lib/transport";
@@ -8,6 +8,7 @@ import {
   selectSliceTargetStl,
   useChatStore,
 } from "@/store/chat";
+import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
 import PreflightModal from "./PreflightModal";
 import { basename, pickPrinterForSlice } from "./actionButtonsHelpers";
 
@@ -28,14 +29,36 @@ export default function ActionButtons({
   const [slicing, setSlicing] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [preflightOpen, setPreflightOpen] = useState(false);
+  const [addPrinterOpen, setAddPrinterOpen] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
 
-  const targetPrinter = useMemo(() => pickPrinterForSlice(printerList), [printerList]);
+  // The app does not yet thread a live printer list down as a prop, so read it
+  // ourselves from the backend (and re-read after a printer is added). Fall back
+  // to the `printerList` prop when the transport isn't wired (browser dev mode).
+  const [loadedPrinters, setLoadedPrinters] = useState(null);
+
+  const refreshPrinters = useCallback(async () => {
+    try {
+      const list = await transport.printer_list();
+      setLoadedPrinters(Array.isArray(list) ? list : []);
+    } catch {
+      // Transport unavailable — keep using the prop.
+    }
+  }, [transport]);
+
+  useEffect(() => {
+    void refreshPrinters();
+  }, [refreshPrinters]);
+
+  const printers = loadedPrinters ?? printerList;
+  const targetPrinter = useMemo(() => pickPrinterForSlice(printers), [printers]);
 
   const handleSlice = useCallback(async () => {
     if (!stlFile) return;
     if (!targetPrinter) {
-      setStatusMessage("Add a printer before slicing.");
+      // No printer yet — drop the user straight into the setup flow.
+      setStatusMessage("");
+      setAddPrinterOpen(true);
       return;
     }
     setSlicing(true);
@@ -61,7 +84,9 @@ export default function ActionButtons({
   const handleRequestPrint = useCallback(() => {
     if (!gcodeFile) return;
     if (!targetPrinter) {
-      setStatusMessage("Add a printer before printing.");
+      // No printer yet — drop the user straight into the setup flow.
+      setStatusMessage("");
+      setAddPrinterOpen(true);
       return;
     }
     setStatusMessage("");
@@ -116,6 +141,18 @@ export default function ActionButtons({
           {slicing ? "Slicing…" : `Slice for ${targetPrinter?.model || "Bambu"}`}
         </Button>
       ) : null}
+      {showSlice && !targetPrinter ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setAddPrinterOpen(true)}
+          data-slot="chat-add-printer-button"
+          className="justify-start text-muted-foreground"
+        >
+          <Plus aria-hidden />
+          Add a printer to slice
+        </Button>
+      ) : null}
       {showPrint ? (
         <Button
           variant="default"
@@ -141,6 +178,14 @@ export default function ActionButtons({
         gcodeFile={gcodeFile ? basename(gcodeFile) : ""}
         onConfirm={handleConfirmPrint}
         busy={printing}
+      />
+      <AddPrinterDialog
+        open={addPrinterOpen}
+        onOpenChange={setAddPrinterOpen}
+        onAdded={() => {
+          void refreshPrinters();
+          setStatusMessage("Printer added — ready to slice.");
+        }}
       />
     </div>
   );

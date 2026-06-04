@@ -174,11 +174,19 @@ pub fn scan_workspace(root: &Path) -> IpcResult<Vec<CatalogEntry>> {
         };
         let source_kind = classify_source_kind(kind, absolute, &path_index);
         let artifact = sidecar_artifact(kind, absolute, root);
+        // Renderable meshes (`.stl`) get a cache-bust token so the viewer
+        // refetches a regenerated, same-path mesh instead of serving stale
+        // bytes from cadjs's URL-keyed cache (see `versioned_asset_uri`).
+        let url = if matches!(kind, CatalogKind::Stl) {
+            versioned_asset_uri(&rel, absolute)
+        } else {
+            tauri_asset_uri(&rel)
+        };
         entries.push(CatalogEntry {
             file: rel.clone(),
             kind,
             source_kind,
-            url: tauri_asset_uri(&rel),
+            url,
             artifact,
             relations: None,
         });
@@ -250,17 +258,24 @@ fn sidecar_artifact(
     }
     let stem = absolute.file_stem()?.to_string_lossy().into_owned();
     let parent = absolute.parent()?;
-    let make_url = |suffix: &str| {
+    // `versioned` mirrors the standalone `.stl` entry: the preview mesh URL
+    // carries a cache-bust token so a regenerated sibling re-renders; the
+    // metadata sidecar URL stays plain (it isn't a rendered mesh).
+    let make_url = |suffix: &str, versioned: bool| {
         let candidate = parent.join(format!("{stem}{suffix}"));
         if candidate.exists() {
             let rel = paths::to_workspace_relative(&candidate, root)?;
-            Some(tauri_asset_uri(&rel))
+            Some(if versioned {
+                versioned_asset_uri(&rel, &candidate)
+            } else {
+                tauri_asset_uri(&rel)
+            })
         } else {
             None
         }
     };
-    let stl_url = make_url(".stl");
-    let metadata_url = make_url(".step.json");
+    let stl_url = make_url(".stl", true);
+    let metadata_url = make_url(".step.json", false);
     if stl_url.is_none() && metadata_url.is_none() {
         return None;
     }
@@ -276,6 +291,39 @@ fn tauri_asset_uri(workspace_relative: &str) -> String {
     // open project's dir. (The `file_read_bytes` command remains for
     // reveal-in-finder and other byte reads.)
     crate::asset_protocol::asset_url(workspace_relative)
+}
+
+/// Asset URL for a renderable mesh, with an opaque `?v=<mtime>-<size>` cache-bust
+/// token appended.
+///
+/// cadjs caches loaded mesh bytes keyed by the asset URL
+/// (`renderAssetClient.js` `stlCache`), and the viewer's reload trigger keys off
+/// a hash synthesized from that URL. A regenerated artifact keeps the same
+/// `pandaasset://` path, so without a changing token the viewer serves the stale
+/// model (the holes-still-there bug). Deriving the token from the file's mtime +
+/// size makes the URL change exactly when the file does — busting both the byte
+/// cache and the reload trigger. The `pandaasset://` handler resolves by path and
+/// ignores the query (`asset_protocol::handle`), so the token is inert on the
+/// wire.
+fn versioned_asset_uri(workspace_relative: &str, absolute: &Path) -> String {
+    let base = tauri_asset_uri(workspace_relative);
+    match version_token(absolute) {
+        Some(token) => format!("{base}?v={token}"),
+        None => base,
+    }
+}
+
+/// `<mtime_nanos>-<len>` for a file, or `None` if it can't be `stat`ed. Cheap
+/// (one metadata syscall) and changes on every regeneration.
+fn version_token(absolute: &Path) -> Option<String> {
+    let meta = std::fs::metadata(absolute).ok()?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    Some(format!("{mtime}-{}", meta.len()))
 }
 
 // ---------------------------------------------------------------------------
@@ -370,7 +418,11 @@ mod tests {
             .find(|e| e.file == "model.step")
             .expect("model.step entry present");
         let artifact = step.artifact.clone().expect("artifact attached");
-        assert!(artifact.stl_url.unwrap().ends_with("model.stl"));
+        // The preview-mesh URL carries a `?v=` cache-bust token; the metadata
+        // sidecar URL stays plain.
+        let stl_url = artifact.stl_url.unwrap();
+        assert!(stl_url.contains("model.stl"), "stl_url was {stl_url}");
+        assert!(stl_url.contains("?v="), "stl_url should be versioned: {stl_url}");
         assert!(artifact.metadata_url.unwrap().ends_with("model.step.json"));
     }
 
@@ -403,8 +455,26 @@ mod tests {
         let step = entries.iter().find(|e| e.file == "model.step").unwrap();
         assert_eq!(step.source_kind, Some(SourceKind::Python));
         let artifact = step.artifact.clone().expect("sidecars attached to .step");
-        assert!(artifact.stl_url.unwrap().ends_with("model.stl"));
+        assert!(artifact.stl_url.unwrap().contains("model.stl"));
         assert!(artifact.metadata_url.unwrap().ends_with("model.step.json"));
+    }
+
+    #[test]
+    fn standalone_stl_entry_url_is_versioned() {
+        // The rendered mesh URL must carry a cache-bust token so a regenerated,
+        // same-path `.stl` re-renders instead of serving cadjs's stale bytes.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("model.stl"), b"solid\n").unwrap();
+        fs::write(root.join("model.step"), b"").unwrap(); // non-mesh stays plain
+
+        let entries = scan_workspace(root).unwrap();
+        let stl = entries.iter().find(|e| e.file == "model.stl").unwrap();
+        assert!(stl.url.contains("model.stl"), "url was {}", stl.url);
+        assert!(stl.url.contains("?v="), "stl url should be versioned: {}", stl.url);
+
+        let step = entries.iter().find(|e| e.file == "model.step").unwrap();
+        assert!(!step.url.contains("?v="), "non-mesh url stays plain: {}", step.url);
     }
 
     #[test]

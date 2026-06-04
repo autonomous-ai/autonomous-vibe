@@ -2,7 +2,13 @@ import { useEffect, useRef } from "react";
 import { cn } from "@/ui/utils";
 import ChatTurn from "./ChatTurn";
 
-export default function ChatHistory({ history, onOpenArtifact, className }) {
+export default function ChatHistory({
+  history,
+  onOpenArtifact,
+  onRestoreVersion,
+  restoreDisabled,
+  className,
+}) {
   const ref = useRef(null);
   useEffect(() => {
     const node = ref.current;
@@ -33,7 +39,13 @@ export default function ChatHistory({ history, onOpenArtifact, className }) {
       className={cn("flex h-full flex-col gap-3 overflow-y-auto px-3.5 py-3", className)}
     >
       {history.map((turn) => (
-        <ChatTurn key={turn.id} turn={turn} onOpenArtifact={onOpenArtifact} />
+        <ChatTurn
+          key={turn.id}
+          turn={turn}
+          onOpenArtifact={onOpenArtifact}
+          onRestoreVersion={onRestoreVersion}
+          restoreDisabled={restoreDisabled}
+        />
       ))}
     </div>
   );

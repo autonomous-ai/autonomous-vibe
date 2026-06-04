@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { MessageSquare } from "lucide-react";
 import { cn } from "@/ui/utils";
-import { attachChatEventStream, useChatStore } from "@/store/chat";
+import { attachChatEventStream, restoreVersion, useChatStore } from "@/store/chat";
 import ChatHistory from "./ChatHistory";
 import ChatInput from "./ChatInput";
 import ActionButtons from "./ActionButtons";
@@ -61,6 +61,11 @@ export default function ChatSidebar({
   const lastError = useChatStore((state) => state.lastError);
   const history = useChatStore((state) => state.history);
   const projectId = useChatStore((state) => state.currentProjectId);
+  const turnInProgress = useChatStore((state) => state.turnInProgress);
+
+  const handleRestoreVersion = useCallback((checkpointId) => {
+    void restoreVersion(checkpointId);
+  }, []);
 
   const resizeStateRef = useRef(null);
 
@@ -157,7 +162,12 @@ export default function ChatSidebar({
       </header>
 
       <div className="min-h-0 flex-1">
-        <ChatHistory history={history} onOpenArtifact={onOpenArtifact} />
+        <ChatHistory
+          history={history}
+          onOpenArtifact={onOpenArtifact}
+          onRestoreVersion={handleRestoreVersion}
+          restoreDisabled={turnInProgress}
+        />
       </div>
 
       {lastError ? (

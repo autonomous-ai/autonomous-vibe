@@ -51,6 +51,7 @@ import { __setTransportForTesting, getTransport } from "../lib/transport.ts";
  * @property {number=} endedAt
  * @property {string=} userText
  * @property {"plan"|"implement"=} phase
+ * @property {string=} checkpointId
  *
  * @typedef {Object} ChatState
  * @property {string} currentProjectId
@@ -62,6 +63,7 @@ import { __setTransportForTesting, getTransport } from "../lib/transport.ts";
  * @property {string} selectedMeshFile
  * @property {boolean} awaitingApproval
  * @property {string} activePlanTurnId
+ * @property {CheckpointInfo[]} checkpoints
  */
 
 /** @type {ChatState} */
@@ -83,6 +85,11 @@ export const INITIAL_CHAT_STATE = Object.freeze({
   // block, so the approve/request thunks can mark it.
   awaitingApproval: false,
   activePlanTurnId: "",
+  // Version checkpoints for the open project (newest last), loaded by
+  // `listVersions()` and updated live on `checkpoint_created`. Each is also
+  // mirrored onto its assistant turn (`turn.checkpointId`) so the chat can
+  // offer "Start from here".
+  checkpoints: [],
 });
 
 // ---------------------------------------------------------------------------
@@ -324,6 +331,17 @@ export function chatReducer(state, action, now = Date.now()) {
               (turn) => appendArtifact(turn, event.file, event.reason),
             ),
           };
+        case "checkpoint_created":
+          // Tag the assistant turn with the checkpoint it produced so the UI
+          // can offer "Start from here" for this exact version.
+          return {
+            ...state,
+            history: updateAssistantTurn(
+              ensureAssistantTurn(state.history, turnId, now),
+              turnId,
+              (turn) => ({ ...turn, checkpointId: event.checkpointId }),
+            ),
+          };
         case "turn_end":
           return {
             ...state,
@@ -377,6 +395,11 @@ export function chatReducer(state, action, now = Date.now()) {
         })),
       };
     }
+    case "set_checkpoints":
+      return {
+        ...state,
+        checkpoints: Array.isArray(action.checkpoints) ? action.checkpoints : [],
+      };
     case "set_error":
       return { ...state, lastError: action.message };
     case "reset":
@@ -487,6 +510,11 @@ export function attachChatEventStream(transport = getTransport()) {
   }
   eventUnsubscribe = transport.events.subscribe("chat_event", (event) => {
     dispatch({ type: "chat_event", event });
+    if (event?.kind === "checkpoint_created") {
+      // A new version was just saved — pull the refreshed list so any
+      // version UI (and post-restart matching) stays current.
+      listVersions(transport).catch(() => {});
+    }
     if (event?.kind === "turn_end") {
       // A finished turn may have produced Claude Code's AI title for the
       // session; refresh the project list so the placeholder name upgrades in
@@ -622,6 +650,52 @@ export function setProject(projectId) {
   // (the reducer no-ops them) and clearing to "" skip the fetch.
   if (projectId && projectId !== previous) {
     hydrateSession(projectId);
+    listVersions();
+  }
+}
+
+/**
+ * Load the open project's version checkpoints into state. Best-effort: no
+ * transport (browser tests) or read error leaves the list untouched.
+ */
+export async function listVersions(transport = getTransport()) {
+  const projectId = getChatState().currentProjectId;
+  if (!projectId) return;
+  try {
+    const checkpoints = await transport.versions_list(projectId);
+    // Ignore a stale response that landed after the user switched projects.
+    if (getChatState().currentProjectId !== projectId) return;
+    dispatch({ type: "set_checkpoints", checkpoints });
+  } catch {
+    /* no transport / unreadable history — nothing to load */
+  }
+}
+
+/**
+ * "Start from here": restore the working model + conversation to `checkpointId`.
+ * The backend reverts the project files and forks the Claude session from that
+ * checkpoint's transcript; we then re-hydrate the chat from the forked session
+ * (so the conversation reflects the restored point) and refresh the version
+ * list. The viewer reloads the reverted mesh on its own (the restored files
+ * carry fresh mtimes → fresh asset URLs).
+ */
+export async function restoreVersion(checkpointId, transport = getTransport()) {
+  const id = String(checkpointId || "").trim();
+  const state = getChatState();
+  if (!id || !state.currentProjectId) return null;
+  if (state.turnInProgress) {
+    dispatch({ type: "set_error", message: "Finish the current turn before restoring a version" });
+    return null;
+  }
+  try {
+    await transport.version_restore({ projectId: state.currentProjectId, checkpointId: id });
+    await hydrateSession(state.currentProjectId, transport);
+    await listVersions(transport);
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    dispatch({ type: "set_error", message });
+    return null;
   }
 }
 

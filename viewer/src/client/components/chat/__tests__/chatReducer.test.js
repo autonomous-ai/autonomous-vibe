@@ -49,6 +49,28 @@ test("queue_user_message appends a user turn and marks turnInProgress", () => {
   assert.equal(next.history[0].userText, "make a 10mm cube");
 });
 
+test("checkpoint_created tags the assistant turn with its checkpoint id", () => {
+  const events = [
+    { kind: "turn_start", turnId: "t-1", phase: "implement" },
+    { kind: "artifact_changed", turnId: "t-1", file: "model.stl", reason: "modified" },
+    { kind: "checkpoint_created", turnId: "t-1", checkpointId: "cp-abc" },
+    { kind: "turn_end", turnId: "t-1" },
+  ];
+  const state = applyEvents(INITIAL_CHAT_STATE, events);
+  const turn = state.history.find((t) => t.id === "t-1" && t.role === "assistant");
+  assert.ok(turn, "assistant turn exists");
+  assert.equal(turn.checkpointId, "cp-abc");
+});
+
+test("set_checkpoints replaces the checkpoint list", () => {
+  const checkpoints = [{ id: "cp-1", turnId: "t-1", parentId: null }];
+  const next = chatReducer(INITIAL_CHAT_STATE, { type: "set_checkpoints", checkpoints }, FIXED_NOW);
+  assert.deepEqual(next.checkpoints, checkpoints);
+  // Non-array payloads degrade to an empty list rather than corrupting state.
+  const cleared = chatReducer(next, { type: "set_checkpoints", checkpoints: null }, FIXED_NOW);
+  assert.deepEqual(cleared.checkpoints, []);
+});
+
 test("chat_event stream renders a single assistant turn with merged text deltas", () => {
   const events = [
     { kind: "turn_start", turnId: "t-1" },

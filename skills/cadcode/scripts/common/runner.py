@@ -93,14 +93,27 @@ ALLOWED_ROOT_MODULES = frozenset({
 WALL_CLOCK_TIMEOUT_S = 30      # bumped from 15 — complex parts need more
 CPU_TIMEOUT_S = 20
 MEMORY_LIMIT_BYTES = 1024 * 1024 * 1024  # 1 GiB
-OUTPUT_FILE_LIMIT_BYTES = 100 * 1024 * 1024  # 100 MiB
+OUTPUT_FILE_LIMIT_BYTES = 256 * 1024 * 1024  # 256 MiB — fine multi-solid meshes
+# (e.g. a 57-link chain ~1.8M triangles) legitimately exceed 100 MiB; the
+# wall-clock + CPU caps remain the real runaway guards, and an over-cap write is
+# turned into a clean "raise --mesh-tolerance" error (see in_subprocess_main).
 
 
 # -- Subprocess (in-process) entrypoint -------------------------------------
 
 
-def _enforce_rlimits() -> None:
-    resource.setrlimit(resource.RLIMIT_CPU, (CPU_TIMEOUT_S, CPU_TIMEOUT_S))
+def _enforce_rlimits(wall_clock_s: float = WALL_CLOCK_TIMEOUT_S) -> None:
+    # RLIMIT_CPU counts CPU-seconds summed across ALL threads. OCCT meshing
+    # (STL/GLB tessellation) runs parallel across every core, so a legitimate
+    # multi-solid export burns ~ncores CPU-seconds per wall-second — a 57-solid
+    # necklace spent ~16 CPU-s on STL alone in ~3s wall. A flat 20s CPU cap
+    # therefore SIGXCPU-kills honest parts in a handful of wall-seconds, and
+    # raising --wall-clock-s can't help because it never reached this limit.
+    # Budget the CPU cap as the wall deadline × cores so the parent's
+    # wall-clock timeout is the real deadline; this stays a runaway backstop.
+    ncores = os.cpu_count() or 1
+    cpu_limit = max(CPU_TIMEOUT_S, int(wall_clock_s * ncores))
+    resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
     try:
         resource.setrlimit(resource.RLIMIT_AS, (MEMORY_LIMIT_BYTES,) * 2)
     except (ValueError, OSError):
@@ -193,12 +206,35 @@ def _discover_project_modules(project_dir: Path) -> frozenset[str]:
     return frozenset(roots)
 
 
+def _drain_oversized_outputs(out_dir: Path) -> list[str]:
+    """Remove and name any artifact pinned at the RLIMIT_FSIZE cap.
+
+    A write killed by RLIMIT_FSIZE leaves a truncated file at exactly the cap
+    (the kernel refuses to grow it further). A successful export is strictly
+    smaller, so ``size >= cap`` uniquely flags the corrupt partials we must
+    discard rather than hand back as a valid mesh.
+    """
+    removed: list[str] = []
+    try:
+        for p in out_dir.iterdir():
+            try:
+                if p.is_file() and p.stat().st_size >= OUTPUT_FILE_LIMIT_BYTES:
+                    p.unlink()
+                    removed.append(p.name)
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return removed
+
+
 def in_subprocess_main(
     project_dir: str,
     out_dir: str,
     stem: str,
     mesh_tolerance: float = 0.05,
     angular_tolerance: float = 3.0,
+    wall_clock_s: float = WALL_CLOCK_TIMEOUT_S,
 ) -> int:
     """Entry point invoked inside the subprocess.
 
@@ -278,7 +314,7 @@ def in_subprocess_main(
 
     # 6. Lock down the sandbox. After this, fresh imports outside the
     #    allow-list (plus project-local modules) will fail.
-    _enforce_rlimits()
+    _enforce_rlimits(wall_clock_s)
     _restrict_imports(extra)
 
     # 7. Hand off to cadpy. cadpy reads main.py, calls gen_step()/picks up
@@ -320,11 +356,26 @@ def in_subprocess_main(
             code = "EXPORT_ERROR"
         elif isinstance(e, (TypeError, ValueError)):
             code = "VALIDATION_FAILED"
+        # RLIMIT_FSIZE aborts an STL/GLB write mid-stream, leaving a truncated
+        # file at the cap and a cryptic low-level "failed to write" message.
+        # Discard the partial and surface an actionable error instead.
+        oversized = _drain_oversized_outputs(out_dir_p)
+        if oversized:
+            cap_mib = OUTPUT_FILE_LIMIT_BYTES // (1024 * 1024)
+            message = (
+                f"mesh too large: output ({', '.join(sorted(oversized))}) hit "
+                f"the {cap_mib} MiB sandbox file cap and was discarded. The part "
+                f"tessellates too finely — raise --mesh-tolerance (current "
+                f"{mesh_tolerance} mm) and/or --angular-tolerance to cut the "
+                f"triangle count."
+            )
+        else:
+            message = f"{type(e).__name__}: {e}"
         _emit({
             "ok": False,
             "error": {
                 "code": code,
-                "message": f"{type(e).__name__}: {e}",
+                "message": message,
                 "traceback": traceback.format_exc(limit=6),
             },
         })
@@ -465,13 +516,14 @@ def run_sandboxed_sync(
             "_p and sys.path.insert(0, _p); "
             "from common.runner import in_subprocess_main; "
             "sys.exit(in_subprocess_main(sys.argv[1], sys.argv[2], sys.argv[3], "
-            "float(sys.argv[4]), float(sys.argv[5])))"
+            "float(sys.argv[4]), float(sys.argv[5]), float(sys.argv[6])))"
         ),
         str(project_dir),
         str(out_dir),
         stem,
         str(mesh_tolerance),
         str(angular_tolerance),
+        str(wall_clock_s),
     ]
 
     try:

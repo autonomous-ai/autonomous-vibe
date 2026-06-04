@@ -84,24 +84,89 @@ fn claude_version(path: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-fn detect_python() -> PythonStatus {
-    PythonStatus {
-        found: python_available_for_status(),
+/// The pinned sidecar build, embedded at compile time so the runtime version
+/// check can never drift from what we actually ship. Looks like
+/// `3.11.15+20260510` (CPython semver `+` python-build-standalone tag).
+const PYTHON_VERSION_PIN: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/build/PYTHON_VERSION.txt"));
+
+/// Smoke import that proves the interpreter can actually drive the cadpy
+/// pipeline — mirrors the gate in `scripts/build/build-python-sidecar.sh`, so
+/// "healthy" here means the same thing the build verified.
+const PYTHON_SMOKE_IMPORT: &str = "import cadpy, cadquery, numpy, PIL, trimesh, vtk";
+
+/// Resolve the interpreter we'd actually run, matching how the cadcode skill's
+/// `python …/cad` resolves at turn time: the bundled CPython sidecar's `bin/`
+/// (prepended to the driver's child PATH by `claude_driver::augmented_path`),
+/// else a system `python3` so prereq UX is non-empty before the sidecar exists.
+fn resolve_python() -> Option<PathBuf> {
+    crate::commands::claude_driver::bundled_python_bin_dir()
+        .map(|dir| dir.join("python3"))
+        .filter(|p| p.exists())
+        .or_else(|| which::which("python3").ok())
+}
+
+/// `major.minor` from the embedded pin: `3.11.15+20260510` -> `3.11`.
+fn expected_py_minor() -> String {
+    let semver = PYTHON_VERSION_PIN.trim().split('+').next().unwrap_or("");
+    let mut parts = semver.split('.');
+    match (parts.next(), parts.next()) {
+        (Some(major), Some(minor)) => format!("{major}.{minor}"),
+        _ => semver.to_string(),
     }
 }
 
-/// Shared between `app_prereq_check` and `generation_status_read` so
-/// React sees a consistent answer.
-pub fn python_available_for_status() -> bool {
-    // Track C ships a bundled CPython at `resources/python/bin/python3` per
-    // the Tauri externalBin config. Until the sidecar is wired up, fall back
-    // to a system python3 probe so prereq UX is non-empty.
-    let bundled = std::env::current_exe()
+/// `<py> -c "print version"` → trimmed `major.minor.patch`, or `None` if the
+/// probe can't run. Version is informational, so a failed probe just leaves it
+/// blank rather than blocking onboarding.
+fn python_version(py: &Path) -> Option<String> {
+    Command::new(py)
+        .args(["-c", "import sys;print('%d.%d.%d' % sys.version_info[:3])"])
+        .output()
         .ok()
-        .and_then(|exe| exe.parent().map(|p| p.join("resources/python/bin/python3")))
-        .map(|p| p.exists())
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Does the interpreter import the full cadpy stack? This is the authoritative
+/// "usable" check — version alone doesn't prove the vendored deps are intact.
+fn python_smoke_ok(py: &Path) -> bool {
+    Command::new(py)
+        .args(["-c", PYTHON_SMOKE_IMPORT])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+fn detect_python() -> PythonStatus {
+    let Some(py) = resolve_python() else {
+        return PythonStatus {
+            found: false,
+            version: None,
+            healthy: false,
+        };
+    };
+    let version = python_version(&py);
+    // Pin to major.minor: patch releases of the same line are drop-in, and the
+    // smoke import catches anything the version tolerance lets through.
+    let version_ok = version
+        .as_deref()
+        .map(|v| v == expected_py_minor() || v.starts_with(&format!("{}.", expected_py_minor())))
         .unwrap_or(false);
-    bundled || which::which("python3").is_ok()
+    let healthy = version_ok && python_smoke_ok(&py);
+    PythonStatus {
+        found: true,
+        version,
+        healthy,
+    }
+}
+
+/// Cheap existence probe shared with `generation_status_read`, which polls it
+/// often — it deliberately skips the version/smoke checks in `detect_python`
+/// (those spawn the interpreter). Use `detect_python` for the full health view.
+pub fn python_available_for_status() -> bool {
+    resolve_python().is_some()
 }
 
 fn detect_slicer() -> SlicerStatus {
@@ -640,5 +705,15 @@ mod tests {
     fn progress_unknown_line_returns_none() {
         assert!(parse_progress_line("hello, world").is_none());
         assert!(parse_progress_line("").is_none());
+    }
+
+    #[test]
+    fn expected_py_minor_strips_patch_and_pbs_tag() {
+        // Derived from the embedded pin; whatever PYTHON_VERSION.txt holds, the
+        // result must be a bare `major.minor` with no patch and no `+tag`.
+        let minor = expected_py_minor();
+        assert!(!minor.contains('+'), "pbs tag leaked: {minor}");
+        assert_eq!(minor.split('.').count(), 2, "not major.minor: {minor}");
+        assert!(minor.split('.').all(|p| p.parse::<u32>().is_ok()), "non-numeric: {minor}");
     }
 }

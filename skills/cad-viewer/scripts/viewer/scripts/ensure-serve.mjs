@@ -600,14 +600,25 @@ function buildViewerProcessEnv({
   shutdownAfterMs = DEFAULT_SERVER_LIFETIME_MS,
   env = process.env
 } = {}) {
+  // `rootDir` is an absolute path to the project being viewed (Panda projects
+  // live under ~/Library/Application Support/…, outside this skill's tree). The
+  // server treats VIEWER_LOCAL_ROOT_DIR as relative to the workspace root and
+  // crashes on startup ("must stay inside the workspace") for any path that
+  // escapes it. Make the project dir itself the workspace root and scan it
+  // directly with an empty relative root-dir.
+  const workspaceRoot = rootDir ? path3.resolve(rootDir) : "";
   const nextEnv = {
     ...env,
     VIEWER_ASSET_BACKEND: "local-fs",
-    VIEWER_LOCAL_ROOT_DIR: rootDir || "",
+    VIEWER_LOCAL_ROOT_DIR: "",
     VIEWER_PORT: String(port),
     VIEWER_SERVER_LIFETIME_MS: String(shutdownAfterMs)
   };
-  delete nextEnv.VIEWER_LOCAL_WORKSPACE_ROOT;
+  if (workspaceRoot) {
+    nextEnv.VIEWER_LOCAL_WORKSPACE_ROOT = workspaceRoot;
+  } else {
+    delete nextEnv.VIEWER_LOCAL_WORKSPACE_ROOT;
+  }
   return nextEnv;
 }
 function buildProductionSpawnOptions({

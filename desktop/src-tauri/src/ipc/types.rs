@@ -518,7 +518,15 @@ pub struct ClaudeCliStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PythonStatus {
+    /// A usable interpreter exists (bundled sidecar, else system `python3`).
     pub found: bool,
+    /// `major.minor.patch` reported by the resolved interpreter, when probed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// The resolved interpreter both matches the pinned `major.minor` and can
+    /// import the full cadpy stack. `found && !healthy` means present but
+    /// unusable (wrong version, missing deps) — onboarding can say *why*.
+    pub healthy: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

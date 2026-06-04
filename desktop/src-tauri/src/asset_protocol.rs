@@ -31,10 +31,20 @@ const PATH_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b'{')
     .add(b'}');
 
-/// Build a `pandaasset://` URL for a project-relative path.
+/// Build the webview URL for a project-relative path. Tauri serves custom
+/// URI schemes at `scheme://localhost/...` on macOS/Linux but at
+/// `http://scheme.localhost/...` on Windows (WebView2) — mirror that here or
+/// `fetch()` fails with a bare "Failed to fetch" on Windows.
 pub fn asset_url(workspace_relative: &str) -> String {
     let encoded = utf8_percent_encode(workspace_relative, PATH_ENCODE_SET);
-    format!("{SCHEME}://localhost/{encoded}")
+    #[cfg(target_os = "windows")]
+    {
+        format!("http://{SCHEME}.localhost/{encoded}")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        format!("{SCHEME}://localhost/{encoded}")
+    }
 }
 
 /// `register_uri_scheme_protocol` handler.
@@ -98,11 +108,18 @@ mod tests {
 
     #[test]
     fn asset_url_encodes_spaces_but_keeps_slashes() {
-        assert_eq!(asset_url("model.stl"), "pandaasset://localhost/model.stl");
-        assert_eq!(
-            asset_url("parts/base plate.stl"),
-            "pandaasset://localhost/parts/base%20plate.stl"
+        #[cfg(target_os = "windows")]
+        let (base, nested) = (
+            "http://pandaasset.localhost/model.stl",
+            "http://pandaasset.localhost/parts/base%20plate.stl",
         );
+        #[cfg(not(target_os = "windows"))]
+        let (base, nested) = (
+            "pandaasset://localhost/model.stl",
+            "pandaasset://localhost/parts/base%20plate.stl",
+        );
+        assert_eq!(asset_url("model.stl"), base);
+        assert_eq!(asset_url("parts/base plate.stl"), nested);
     }
 
     #[test]

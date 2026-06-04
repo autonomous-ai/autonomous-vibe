@@ -214,11 +214,13 @@ interface CatalogEntry {
   file: string;                 // project-relative path (bare)
   kind: "step" | "stl" | "gcode" | "py" | "json" | "png";
   sourceKind: "python" | "static" | null;
-  url: string;                  // pandaasset:// URI for fetching bytes. Renderable
-                                // mesh URLs (the `.stl` entry + `stlUrl` below)
-                                // carry an opaque `?v=<mtime>-<size>` cache-bust
-                                // token so a regenerated, same-path mesh re-renders
-                                // (the protocol resolves by path, ignoring the query).
+  url: string;                  // pandaasset:// URI for fetching bytes (served as
+                                // `http://pandaasset.localhost/...` on Windows — Tauri's
+                                // per-platform custom-scheme form). Renderable mesh URLs
+                                // (the `.stl` entry + `stlUrl` below) carry an opaque
+                                // `?v=<mtime>-<size>` cache-bust token so a regenerated,
+                                // same-path mesh re-renders (the protocol resolves by
+                                // path, ignoring the query).
   artifact?: {
     stlUrl?: string;            // sibling .stl the viewer renders for a .step entry
     metadataUrl?: string;

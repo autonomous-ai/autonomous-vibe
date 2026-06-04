@@ -17,12 +17,15 @@ import { transport } from "./transport.ts";
 
 // The Rust catalog (Track C, simplified) omits the per-asset `hash` that
 // cadjs's `entryHasMesh` requires before it treats a mesh as renderable —
-// without it, no STL ever renders. Synthesize one from the asset URL +
-// catalog revision: stable within a revision and cache-busting when
-// artifacts change (the revision bumps on `artifact_changed`). Scoped to
-// the directly-renderable `.stl` mesh so STEP entries stay "no mesh" (their
-// archival B-rep is not rendered; the sibling `.stl` is the preview). The
-// bytes are served by the pandaasset:// scheme.
+// without it, no STL ever renders. Synthesize one from the asset URL (plus the
+// catalog revision as a belt-and-suspenders suffix). The real cache-bust lives
+// in the URL: Rust's `scan_workspace` appends a `?v=<mtime>-<size>` token to
+// renderable mesh URLs (`commands/catalog.rs`), so a regenerated, same-path
+// `.stl` gets a new URL — which busts both cadjs's URL-keyed byte cache
+// (`renderAssetClient.js` `stlCache`) and this synthesized hash, so the viewer
+// re-renders. Scoped to the directly-renderable `.stl` mesh so STEP entries
+// stay "no mesh" (their archival B-rep is not rendered; the sibling `.stl` is
+// the preview). The bytes are served by the pandaasset:// scheme.
 const RENDERABLE_MESH_KINDS = new Set(["stl"]);
 
 function withRenderableMeshHashes(catalog) {

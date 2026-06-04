@@ -241,6 +241,13 @@ pub enum ChatEvent {
         file: String,
         reason: ArtifactReason,
     },
+    /// Emitted after a successful build turn auto-saves a version checkpoint
+    /// (model + conversation snapshot). The UI uses it to attach a "Start from
+    /// here" affordance to the turn and refresh its version list.
+    CheckpointCreated {
+        turn_id: String,
+        checkpoint_id: String,
+    },
     TurnEnd {
         turn_id: String,
     },
@@ -414,6 +421,37 @@ pub struct ProjectSummary {
 #[serde(rename_all = "camelCase")]
 pub struct CreateProjectRequest {
     pub name: String,
+}
+
+// ---------------------------------------------------------------------------
+// Versions (checkpoints / branching)
+// ---------------------------------------------------------------------------
+
+/// One node in a project's checkpoint tree. Auto-created after each successful
+/// build turn; also the persisted record in `.panda/history.json`. `parent_id`
+/// makes the history a tree (restoring an older checkpoint and building again
+/// forks it), and `session_id` is the Claude session whose transcript snapshot
+/// this checkpoint carries, so "Start from here" can branch the conversation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointInfo {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub turn_id: String,
+    pub session_id: String,
+    pub created_at: i64,
+    /// Short human label (derived from the user's prompt).
+    pub title: String,
+    pub prompt: String,
+    /// Workspace-relative artifact paths captured in this checkpoint.
+    pub artifacts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreVersionRequest {
+    pub project_id: String,
+    pub checkpoint_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

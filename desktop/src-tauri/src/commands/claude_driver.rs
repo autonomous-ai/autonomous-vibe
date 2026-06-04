@@ -1065,8 +1065,30 @@ where
     // new or with bumped mtime. We do this even when cancelled — the
     // user still wants to see any artifacts produced before cancel.
     let post_snapshot = snapshot_workspace(workspace_dir);
-    for ev in diff_snapshots(&pre_snapshot, &post_snapshot, turn_id) {
+    let diff_events = diff_snapshots(&pre_snapshot, &post_snapshot, turn_id);
+    let artifacts_changed = !diff_events.is_empty();
+    for ev in diff_events {
         on_event(ev);
+    }
+
+    // Auto-save a version checkpoint after a successful build that actually
+    // produced/changed artifacts (plan turns write nothing; cancelled or
+    // empty turns aren't worth a snapshot). Best-effort: a checkpoint failure
+    // must never fail the turn. See `commands::versions`.
+    if matches!(phase, TurnPhase::Implement) && !cancelled && saw_output && artifacts_changed {
+        match crate::commands::versions::create_checkpoint(
+            workspace_dir,
+            &session_id.to_string(),
+            turn_id,
+            user_message,
+        ) {
+            Ok(Some(checkpoint_id)) => on_event(ChatEvent::CheckpointCreated {
+                turn_id: turn_id.to_string(),
+                checkpoint_id,
+            }),
+            Ok(None) => {}
+            Err(e) => eprintln!("checkpoint creation failed: {e}"),
+        }
     }
 
     // Land the auto-generated project name (if any) before TurnEnd so the

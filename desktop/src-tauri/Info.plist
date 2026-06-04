@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the generated macOS bundle Info.plist by Tauri 2.
+
+  macOS (Sequoia+) gates all multicast/broadcast LAN traffic behind the
+  "Local Network" privacy permission. Without NSLocalNetworkUsageDescription
+  the OS silently drops SSDP/mDNS packets and `printer_discover` returns an
+  empty list with no error. NSBonjourServices declares the mDNS service types
+  we browse so Bonjour discovery is permitted too.
+-->
+<plist version="1.0">
+<dict>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Panda discovers your Bambu Lab printer on your local Wi-Fi network.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_bambu._tcp</string>
+    <string>_bambulab._tcp</string>
+  </array>
+</dict>
+</plist>

@@ -50,7 +50,12 @@ open = "5"
 percent-encoding = "2"
 
 # Track G: real slicer + printer wiring.
-# mDNS discovery for Bambu printers on the LAN.
+# SSDP (UDP multicast) discovery — the path Bambu Studio/OrcaSlicer use and
+# the one real printers actually answer on the LAN. `socket2` gives us the
+# SO_REUSEADDR/SO_REUSEPORT + multicast-join control std `UdpSocket` lacks.
+socket2 = "0.5"
+# mDNS discovery for Bambu printers on the LAN — kept as a best-effort
+# secondary path; most firmware does not advertise over Bonjour.
 mdns-sd = "0.11"
 # FTPS upload to the printer's `/cache/` directory (implicit TLS, port 990).
 # Bambu printers use self-signed certs; the impl injects a rustls

@@ -21,13 +21,14 @@ tools Claude Code already gives you:
 | **inspect** | `Glob` / `Bash ls` on the workspace, `Read` on prior `.py` files |
 | **plan** | reasoning (no extended thinking needed if the prompt is concrete) |
 | **write** | `Write` — always an absolute path |
-| **render** | `Bash` → ``python ~/.claude/skills/cadcode/scripts/cad <abs.py>`` |
-| **read failure** | `Read` the resulting `.png`; parse the JSON line from stdout |
+| **render** | `Bash` → ``python ~/.claude/skills/cadcode/scripts/cad <abs.py | project_dir>`` |
+| **read failure** | parse the JSON line from stdout — check `ok`, `is_solid`, **`warnings`** |
+| **review** | `Bash` → ``python ~/.claude/skills/cadcode/scripts/review <project_dir>``; `Read` each PNG it writes |
 | **fix** | `Edit` (or `Write`) — same `.py`, smallest change |
 | **repeat** | back to *render* |
 
-If you stop before the PNG looks right, you are leaving the loop
-half-run. Don't.
+If you stop before every part render looks right and `warnings` is empty,
+you are leaving the loop half-run. Don't.
 
 ## Thinking budget
 
@@ -54,14 +55,21 @@ have different cwds.
 
 ## Reading the render
 
-After running ``scripts/cad``, immediately ``Read`` the produced
-``<stem>.png``. Claude Code's Read tool returns images as
-multimodal content, so you'll actually see the rendered model. **This
-read is mandatory** — compile-success says the geometry is *valid*; only
-the PNG tells you it's *right*.
+``scripts/cad`` does not write a PNG — it returns the JSON facts
+(`ok`, `is_solid`, `volume_mm3`, `bbox`, `warnings`). To *see* the model,
+run ``scripts/review <project_dir>``: it renders the assembled model **and
+every named part** to multi-view PNGs under ``<stem>_review/`` and re-lists
+the warnings. Then ``Read`` each PNG. Claude Code's Read tool returns images
+as multimodal content, so you actually see them. **This is mandatory** —
+compile-success says the geometry is *valid*; only the per-part renders tell
+you it's *right*, and only the per-part views expose a standoff floating
+inside a tray or a strut poking through a plate that the assembled preview
+hides.
 
-If the PNG looks correct, declare done. If it looks wrong, edit the
-``.py`` and re-run — that's the loop. Do not skip the visual check.
+Before declaring done: `warnings` must be empty, every part render must look
+correct, and you must be able to say in one line what each part is for and
+what it connects to. If any of those fail, edit the ``.py`` and re-run — that's
+the loop. Do not skip the visual check.
 
 ## Tool budget
 

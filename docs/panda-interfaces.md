@@ -605,6 +605,14 @@ interface CadcodeResult {
   // origin. Absent/empty for single-solid projects. See contract §1.
   parts?: { name: string; stl_path: string }[];
 
+  // Deterministic geometry sanity checks (additive). Absent/empty when the
+  // geometry is clean. `ok` stays true — these are advisory, not failures;
+  // the skill loop and the harness Review phase use them as a fix gate.
+  // `kind` ∈ { "disconnected_bodies", "sliver", "invalid_brep", "empty",
+  // "check_failed" }; `part` is the part name (or "model" for single-part
+  // projects). Also mirrored into `.step.json` under `validation.warnings`.
+  warnings?: { part: string; kind: string; detail: string; severity: string }[];
+
   // On failure:
   error?: {
     code: string;               // "VALIDATION_FAILED", "SANDBOX_TIMEOUT", "EXPORT_ERROR", "SYNTAX_ERROR", "RUNTIME_ERROR"

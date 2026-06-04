@@ -67,6 +67,13 @@ pub type MtimeSnapshot = HashMap<String, MtimeEntry>;
 pub enum TurnPhase {
     Plan,
     Implement,
+    /// Automatic post-build geometry review. Runs *inside* a build turn (it is
+    /// never started from the chat layer): after the Implement child exits, the
+    /// driver reads the deterministic geometry `warnings` cadpy wrote into the
+    /// `.step.json` sidecars and, while any remain, resumes the same session in
+    /// this phase to silently render-inspect-and-fix the parts. Same
+    /// `bypassPermissions` as Implement (it writes source + regenerates).
+    Review,
 }
 
 impl TurnPhase {
@@ -74,7 +81,7 @@ impl TurnPhase {
     pub fn permission_mode(self) -> &'static str {
         match self {
             TurnPhase::Plan => "plan",
-            TurnPhase::Implement => "bypassPermissions",
+            TurnPhase::Implement | TurnPhase::Review => "bypassPermissions",
         }
     }
 
@@ -83,14 +90,17 @@ impl TurnPhase {
         match self {
             TurnPhase::Plan => PLAN_SYSTEM_PROMPT,
             TurnPhase::Implement => IMPLEMENT_SYSTEM_PROMPT,
+            TurnPhase::Review => REVIEW_SYSTEM_PROMPT,
         }
     }
 
     /// The serializable wire tag for this phase (carried on `TurnStart`).
+    /// Review turns run silently inside a build turn and never emit their own
+    /// `TurnStart`, so they ride under the `Implement` tag.
     pub fn tag(self) -> TurnPhaseTag {
         match self {
             TurnPhase::Plan => TurnPhaseTag::Plan,
-            TurnPhase::Implement => TurnPhaseTag::Implement,
+            TurnPhase::Implement | TurnPhase::Review => TurnPhaseTag::Implement,
         }
     }
 }
@@ -178,6 +188,28 @@ pub const IMPLEMENT_SYSTEM_PROMPT: &str = concat!(
     "produce the STL/STEP artifacts for each part described in the ",
     "plan. Follow the cadcode protocol. Do not re-plan or ask further ",
     "questions unless a blocking ambiguity remains.",
+);
+
+/// Review-phase system prompt. Runs automatically after a build when the
+/// deterministic geometry check flagged problems. The model fixes them
+/// silently — it must not chat, ask questions, or re-plan; it just renders,
+/// inspects, and corrects the source until the geometry is clean.
+pub const REVIEW_SYSTEM_PROMPT: &str = concat!(
+    "You are running inside Panda, the consumer 3D printing desktop app. The ",
+    "parts you just built FAILED an automatic geometry check — the issues are ",
+    "listed in this message. Fix them now, working SILENTLY: do not greet, ",
+    "explain, summarize, ask questions, or re-plan. Just repair the geometry ",
+    "and regenerate.\n\n",
+    "Use the `cadcode` skill. For the project, run ",
+    "`python ~/.claude/skills/cadcode/scripts/review <project_dir>` to render ",
+    "the assembled model AND every named part to per-part PNGs, then `Read` ",
+    "each PNG and look. A `disconnected_bodies` warning means a feature is ",
+    "floating — placed outside the body's footprint or never fused to it; ",
+    "anchor it (see `references/patterns/anchor-to-body.md`). Also fix any part ",
+    "a render shows poking through a plate, malformed, or serving no purpose. ",
+    "Edit the Python source (never the STEP/STL), re-run ",
+    "`scripts/cad <project_dir>`, and repeat until its `warnings` array is ",
+    "empty and every part render looks right. Then stop.",
 );
 
 /// Retained for back-compat / reference; superseded by the phase-specific
@@ -1110,6 +1142,24 @@ where
         on_event(ev);
     }
 
+    // Automatic post-build geometry review (silent auto-fix). While cadpy's
+    // deterministic check still reports warnings in the `.step.json` sidecars,
+    // resume the same session and let the model render-inspect-fix. Runs inside
+    // this build turn (no separate user-visible turn). Best-effort: it never
+    // fails the turn, and it settles before the checkpoint so the saved version
+    // captures the corrected geometry.
+    if matches!(phase, TurnPhase::Implement) && !cancelled && saw_output && artifacts_changed {
+        run_review_fix_loop(
+            &claude_path,
+            workspace_dir,
+            session_id,
+            turn_id,
+            &on_event,
+            &cancel,
+        )
+        .await;
+    }
+
     // Auto-save a version checkpoint after a successful build that actually
     // produced/changed artifacts (plan turns write nothing; cancelled or
     // empty turns aren't worth a snapshot). Best-effort: a checkpoint failure
@@ -1155,6 +1205,221 @@ where
     Ok(())
 }
 
+/// Max automatic review→fix rounds after a build. Each round is a full claude
+/// turn, so this is also the cost ceiling: two rounds catch the common case
+/// (fix, then verify) without risking a long unattended loop.
+pub const MAX_REVIEW_ROUNDS: usize = 2;
+
+/// A deterministic geometry problem cadpy recorded under `validation.warnings`
+/// in a `.step.json` sidecar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeometryWarning {
+    pub part: String,
+    pub kind: String,
+    pub detail: String,
+    pub severity: String,
+}
+
+/// Read every `.step.json` sidecar under `dir` and collect the
+/// `validation.warnings` cadpy wrote. Pure + best-effort: unreadable or
+/// malformed sidecars are skipped, never fatal.
+pub fn collect_workspace_warnings(dir: &Path) -> Vec<GeometryWarning> {
+    let mut out = Vec::new();
+    for entry in WalkDir::new(dir).follow_links(false).into_iter().flatten() {
+        let path = entry.path();
+        if !path.is_file() || !path.to_string_lossy().ends_with(".step.json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let Some(warnings) = json
+            .get("validation")
+            .and_then(|v| v.get("warnings"))
+            .and_then(|w| w.as_array())
+        else {
+            continue;
+        };
+        let s = |w: &serde_json::Value, k: &str, d: &str| {
+            w.get(k).and_then(|v| v.as_str()).unwrap_or(d).to_string()
+        };
+        for w in warnings {
+            out.push(GeometryWarning {
+                part: s(w, "part", ""),
+                kind: s(w, "kind", ""),
+                detail: s(w, "detail", ""),
+                severity: s(w, "severity", "warning"),
+            });
+        }
+    }
+    out
+}
+
+/// Build the silent review-turn prompt from the outstanding warnings. Returns
+/// `None` when there is nothing to fix (the loop then stops). The
+/// `REVIEW_SYSTEM_PROMPT` carries the how; this message carries the what.
+pub fn build_review_prompt(warnings: &[GeometryWarning]) -> Option<String> {
+    if warnings.is_empty() {
+        return None;
+    }
+    let mut body = String::from(
+        "An automatic geometry check found these problems in the parts you just \
+         built. Fix every one, then regenerate until the check is clean:\n\n",
+    );
+    for w in warnings {
+        body.push_str(&format!("- [{}] {}: {}\n", w.part, w.kind, w.detail));
+    }
+    Some(body)
+}
+
+/// After a build, while the deterministic geometry check still reports warnings
+/// in the sidecars, resume the same session in [`TurnPhase::Review`] and let the
+/// model render-inspect-fix silently. Best-effort throughout — any failure here
+/// must never fail the build turn. Returns whether any artifacts changed.
+async fn run_review_fix_loop<F>(
+    claude_path: &Path,
+    workspace_dir: &Path,
+    session_id: uuid::Uuid,
+    turn_id: &str,
+    on_event: &F,
+    cancel: &CancellationToken,
+) -> bool
+where
+    F: Fn(ChatEvent),
+{
+    let mut changed = false;
+    for _ in 0..MAX_REVIEW_ROUNDS {
+        if cancel.is_cancelled() {
+            return changed;
+        }
+        let warnings = collect_workspace_warnings(workspace_dir);
+        let Some(prompt) = build_review_prompt(&warnings) else {
+            return changed; // sidecars are clean
+        };
+
+        let cfg = ClaudeRunConfig {
+            prompt,
+            workspace: workspace_dir.to_path_buf(),
+            claude_session_id: Some(session_id.to_string()),
+            model: Some("opus".into()),
+            use_panda_cloud: false,
+            panda_token: None,
+            phase: TurnPhase::Review,
+        };
+
+        let pre = snapshot_workspace(workspace_dir);
+        drain_review_child(claude_path, workspace_dir, &cfg, cancel).await;
+        let post = snapshot_workspace(workspace_dir);
+        let diff = diff_snapshots(&pre, &post, turn_id);
+        if !diff.is_empty() {
+            changed = true;
+            for ev in diff {
+                on_event(ev); // surface fixed parts as they land
+            }
+        }
+    }
+
+    // Couldn't converge within the cap. The user opted into silent auto-fix, so
+    // stay quiet unless something is still wrong — then leave one concise note.
+    let remaining = collect_workspace_warnings(workspace_dir);
+    if !remaining.is_empty() {
+        let mut parts: Vec<String> = remaining
+            .iter()
+            .map(|w| w.part.clone())
+            .filter(|p| !p.is_empty())
+            .collect();
+        parts.sort();
+        parts.dedup();
+        on_event(ChatEvent::TextDelta {
+            turn_id: turn_id.to_string(),
+            text: format!(
+                "\n\n_Note: automatic geometry review left {} issue(s) unresolved \
+                 (parts: {}). You may want to inspect those parts._",
+                remaining.len(),
+                if parts.is_empty() {
+                    "model".to_string()
+                } else {
+                    parts.join(", ")
+                },
+            ),
+        });
+    }
+    changed
+}
+
+/// Spawn one silent Review-phase `claude` child and drain it to EOF. Mirrors
+/// the main turn's spawn setup (augmented PATH, drained stderr) but discards the
+/// stream — review chatter is not surfaced; only the post-round workspace diff
+/// (done by the caller) reaches the user.
+async fn drain_review_child(
+    claude_path: &Path,
+    workspace_dir: &Path,
+    cfg: &ClaudeRunConfig,
+    cancel: &CancellationToken,
+) {
+    let argv = build_command(cfg);
+    let env = build_env(cfg);
+    let mut command = Command::new(claude_path);
+    command
+        .args(&argv[1..])
+        .current_dir(workspace_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    command.env("PATH", augmented_path());
+    for (k, v) in &env {
+        command.env(k, v);
+    }
+
+    let mut child: Child = match command.spawn() {
+        Ok(c) => c,
+        Err(_) => return, // best-effort; a build that can't be reviewed just ends
+    };
+
+    // Drain stderr so a full pipe can't deadlock the child.
+    if let Some(cerr) = child.stderr.take() {
+        tokio::spawn(async move {
+            let mut r = BufReader::new(cerr);
+            let mut l = String::new();
+            loop {
+                l.clear();
+                match r.read_line(&mut l).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+        });
+    }
+
+    // Drain stdout to EOF without parsing — the review runs silent.
+    if let Some(cout) = child.stdout.take() {
+        let mut reader = BufReader::with_capacity(STDOUT_BUFFER_BYTES, cout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    let _ = child.start_kill();
+                    break;
+                }
+                read = reader.read_line(&mut line) => {
+                    match read {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = child.wait().await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1167,6 +1432,64 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, b"").unwrap();
+    }
+
+    #[test]
+    fn review_phase_runs_bypass_and_rides_implement_tag() {
+        assert_eq!(TurnPhase::Review.permission_mode(), "bypassPermissions");
+        assert_eq!(TurnPhase::Review.tag(), TurnPhaseTag::Implement);
+        assert_eq!(TurnPhase::Review.system_prompt(), REVIEW_SYSTEM_PROMPT);
+        assert!(TurnPhase::Review.system_prompt().contains("scripts/review"));
+    }
+
+    #[test]
+    fn collect_workspace_warnings_reads_sidecars_recursively() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // A clean part: validation present, no warnings.
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::write(
+            root.join("a").join("clean.step.json"),
+            r#"{"validation":{"isSolid":true}}"#,
+        )
+        .unwrap();
+        // A flagged assembly nested deeper.
+        fs::create_dir_all(root.join("b").join("nested")).unwrap();
+        fs::write(
+            root.join("b").join("nested").join("robot.step.json"),
+            r#"{"validation":{"warnings":[
+                {"part":"chassis","kind":"disconnected_bodies","detail":"3 solids","severity":"error"},
+                {"part":"arm","kind":"sliver","detail":"tiny","severity":"warning"}
+            ]}}"#,
+        )
+        .unwrap();
+        // A malformed sidecar must be skipped, not fatal.
+        fs::write(root.join("broken.step.json"), "{not json").unwrap();
+
+        let mut warnings = collect_workspace_warnings(root);
+        warnings.sort_by(|x, y| x.part.cmp(&y.part));
+        assert_eq!(warnings.len(), 2);
+        assert_eq!(warnings[0].part, "arm");
+        assert_eq!(warnings[0].kind, "sliver");
+        assert_eq!(warnings[1].part, "chassis");
+        assert_eq!(warnings[1].kind, "disconnected_bodies");
+        assert_eq!(warnings[1].severity, "error");
+    }
+
+    #[test]
+    fn build_review_prompt_gates_on_warnings() {
+        assert!(build_review_prompt(&[]).is_none());
+
+        let warnings = vec![GeometryWarning {
+            part: "chassis".into(),
+            kind: "disconnected_bodies".into(),
+            detail: "part is 3 separate solids".into(),
+            severity: "error".into(),
+        }];
+        let prompt = build_review_prompt(&warnings).expect("warnings -> prompt");
+        assert!(prompt.contains("chassis"));
+        assert!(prompt.contains("disconnected_bodies"));
+        assert!(prompt.contains("part is 3 separate solids"));
     }
 
     #[test]

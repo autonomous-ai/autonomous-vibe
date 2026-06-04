@@ -40,9 +40,18 @@ const FTPS_PORT: u16 = 990;
 const MQTT_PORT: u16 = 8883;
 const REMOTE_DIR: &str = "cache";
 
-// mDNS service types Bambu printers have been observed advertising on
-// hobbyist setups. The skill's protocol doc is silent on the exact type,
-// so we scan both candidates and dedupe.
+// SSDP discovery — this is what Bambu printers actually answer on. They
+// periodically broadcast `NOTIFY` to the SSDP multicast group on ports 1990
+// and 2021 (the ports Bambu Studio/OrcaSlicer listen on) and also reply to
+// an `M-SEARCH`. We bind both ports, join the group, prompt with an
+// M-SEARCH, and parse whatever lands during the scan window.
+const SSDP_MULTICAST: std::net::Ipv4Addr = std::net::Ipv4Addr::new(239, 255, 255, 250);
+const SSDP_PORTS: &[u16] = &[1990, 2021];
+const SSDP_ST: &str = "urn:bambulab-com:device:3dprinter:1";
+
+// mDNS service types Bambu printers have been observed advertising on some
+// hobbyist setups. Most firmware does NOT advertise over Bonjour, so this is
+// a best-effort secondary path behind SSDP. We scan both candidates and dedupe.
 const MDNS_SERVICE_TYPES: &[&str] = &["_bambu._tcp.local.", "_bambulab._tcp.local."];
 
 // ---------------------------------------------------------------------------
@@ -89,11 +98,23 @@ pub(crate) struct PrintersFile {
 
 #[tauri::command]
 pub async fn printer_discover() -> IpcResult<Vec<PrinterCard>> {
-    // untested against real printer — verify in field test before v1 ship
-    let scan = tokio::task::spawn_blocking(|| discover_blocking(Duration::from_secs(3)))
-        .await
-        .map_err(|e| IpcError::internal(format!("mDNS scan join error: {e}")))?;
-    Ok(scan.unwrap_or_default())
+    let timeout = Duration::from_secs(3);
+    // SSDP is the path real Bambu printers answer on; mDNS is best-effort.
+    // Run both on a blocking thread and merge, preferring SSDP (it carries
+    // the serial, so its `id` is stable across scans).
+    let scan = tokio::task::spawn_blocking(move || {
+        let mut merged: HashMap<String, PrinterCard> = HashMap::new();
+        for card in discover_ssdp_blocking(timeout).unwrap_or_default() {
+            merged.entry(card.id.clone()).or_insert(card);
+        }
+        for card in discover_blocking(timeout).unwrap_or_default() {
+            merged.entry(card.id.clone()).or_insert(card);
+        }
+        merged.into_values().collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|e| IpcError::internal(format!("printer scan join error: {e}")))?;
+    Ok(scan)
 }
 
 #[tauri::command]
@@ -301,7 +322,148 @@ fn upsert_record(file: &mut PrintersFile, record: PrinterRecord) {
 }
 
 // ---------------------------------------------------------------------------
-// mDNS discovery
+// SSDP discovery (primary)
+// ---------------------------------------------------------------------------
+
+fn discover_ssdp_blocking(timeout: Duration) -> Result<Vec<PrinterCard>, IpcError> {
+    use std::net::{SocketAddr, SocketAddrV4};
+
+    // Bind one socket per SSDP port. A failure on one port (e.g. already in
+    // use, or no route) must not abort the whole scan, so we collect the live
+    // ones and bail only if none came up.
+    let mut sockets = Vec::new();
+    for &port in SSDP_PORTS {
+        match bind_ssdp_socket(port) {
+            Ok(sock) => sockets.push(sock),
+            Err(_e) => continue,
+        }
+    }
+    if sockets.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Prompt any printers that answer M-SEARCH; passive NOTIFY broadcasts are
+    // caught by the same read loop regardless of whether this elicits a reply.
+    let msearch = ssdp_msearch_payload();
+    for (sock, &port) in sockets.iter().zip(SSDP_PORTS.iter()) {
+        let target = SocketAddr::V4(SocketAddrV4::new(SSDP_MULTICAST, port));
+        let _ = sock.send_to(msearch.as_bytes(), target);
+    }
+
+    let mut seen: HashMap<String, PrinterCard> = HashMap::new();
+    let deadline = std::time::Instant::now() + timeout;
+    let mut buf = [0u8; 2048];
+    while std::time::Instant::now() < deadline {
+        for sock in &sockets {
+            match sock.recv_from(&mut buf) {
+                Ok((n, _src)) if n > 0 => {
+                    let text = String::from_utf8_lossy(&buf[..n]);
+                    if let Some(card) = card_from_ssdp_payload(&text) {
+                        seen.entry(card.id.clone()).or_insert(card);
+                    }
+                }
+                // WouldBlock/timeout is the common case; just move on.
+                Ok(_) | Err(_) => {}
+            }
+        }
+    }
+    Ok(seen.into_values().collect())
+}
+
+fn bind_ssdp_socket(port: u16) -> std::io::Result<std::net::UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    // Several apps (and our two sockets) share these well-known ports, and a
+    // printer's NOTIFY is a broadcast — so reuse is required to bind at all.
+    sock.set_reuse_address(true)?;
+    #[cfg(unix)]
+    sock.set_reuse_port(true)?;
+    let bind_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port);
+    sock.bind(&bind_addr.into())?;
+    sock.join_multicast_v4(&SSDP_MULTICAST, &Ipv4Addr::UNSPECIFIED)?;
+    // Short read timeout so the poll loop sips each socket in turn and honors
+    // the overall scan deadline instead of blocking on a quiet port.
+    sock.set_read_timeout(Some(Duration::from_millis(200)))?;
+    Ok(sock.into())
+}
+
+fn ssdp_msearch_payload() -> String {
+    format!(
+        "M-SEARCH * HTTP/1.1\r\n\
+         HOST: {SSDP_MULTICAST}:1990\r\n\
+         MAN: \"ssdp:discover\"\r\n\
+         MX: 1\r\n\
+         ST: {SSDP_ST}\r\n\r\n"
+    )
+}
+
+/// Parse a Bambu SSDP datagram (`NOTIFY` broadcast or `M-SEARCH` 200 OK).
+/// Headers of interest: `Location` (IP), `USN` (serial), `DevModel.bambu.com`
+/// (model code), `DevName.bambu.com` (user-given name).
+fn card_from_ssdp_payload(text: &str) -> Option<PrinterCard> {
+    let mut headers: HashMap<String, String> = HashMap::new();
+    for line in text.lines() {
+        if let Some((k, v)) = line.split_once(':') {
+            headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
+        }
+    }
+    // Only accept Bambu devices — skip generic UPnP/SSDP chatter on the LAN.
+    let is_bambu = headers
+        .get("nt")
+        .or_else(|| headers.get("st"))
+        .map(|v| v.contains("bambulab"))
+        .unwrap_or(false)
+        || headers.keys().any(|k| k.ends_with(".bambu.com"));
+    if !is_bambu {
+        return None;
+    }
+
+    let ip = headers
+        .get("location")
+        .map(|s| s.trim_start_matches("http://").trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())?;
+    let serial = headers
+        .get("usn")
+        .cloned()
+        .filter(|s| !s.is_empty());
+    let name = headers.get("devname.bambu.com").cloned().filter(|s| !s.is_empty());
+    let model = headers
+        .get("devmodel.bambu.com")
+        .map(|code| model_from_dev_model(code, serial.as_deref()))
+        .unwrap_or_else(|| infer_model_from_serial(serial.as_deref()).to_string());
+    let id = serial
+        .clone()
+        .unwrap_or_else(|| format!("bambu-{}", ip.replace('.', "-")));
+    Some(PrinterCard {
+        id,
+        model,
+        ip_address: ip.clone(),
+        host_name: name.unwrap_or(ip),
+    })
+}
+
+/// Map a `DevModel.bambu.com` code to a friendly name, falling back to the
+/// serial-prefix heuristic. The label is cosmetic.
+fn model_from_dev_model(code: &str, serial: Option<&str>) -> String {
+    let upper = code.to_ascii_uppercase();
+    let friendly = match upper.as_str() {
+        "3DPRINTER-X1-CARBON" | "BL-P001" => Some("X1C"),
+        "3DPRINTER-X1" | "BL-P002" => Some("X1"),
+        "C11" => Some("P1P"),
+        "C12" | "C13" => Some("P1S"),
+        "N1" => Some("A1 Mini"),
+        "N2S" => Some("A1"),
+        _ => None,
+    };
+    friendly
+        .map(str::to_string)
+        .unwrap_or_else(|| infer_model_from_serial(serial).to_string())
+}
+
+// ---------------------------------------------------------------------------
+// mDNS discovery (best-effort secondary)
 // ---------------------------------------------------------------------------
 
 fn discover_blocking(timeout: Duration) -> Result<Vec<PrinterCard>, IpcError> {
@@ -881,6 +1043,48 @@ impl SocketAddrFirst for String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssdp_notify_parses_into_card() {
+        let notify = "NOTIFY * HTTP/1.1\r\n\
+            HOST: 239.255.255.250:1990\r\n\
+            Server: UPnP/1.0\r\n\
+            Location: 192.168.1.42\r\n\
+            NT: urn:bambulab-com:device:3dprinter:1\r\n\
+            USN: 0309CA4C0901107\r\n\
+            DevModel.bambu.com: N1\r\n\
+            DevName.bambu.com: Kitchen A1 Mini\r\n\
+            DevConnect.bambu.com: lan\r\n\r\n";
+        let card = card_from_ssdp_payload(notify).expect("should parse a Bambu NOTIFY");
+        assert_eq!(card.id, "0309CA4C0901107");
+        assert_eq!(card.ip_address, "192.168.1.42");
+        assert_eq!(card.model, "A1 Mini");
+        assert_eq!(card.host_name, "Kitchen A1 Mini");
+    }
+
+    #[test]
+    fn ssdp_strips_http_scheme_and_falls_back_to_serial_model() {
+        let notify = "NOTIFY * HTTP/1.1\r\n\
+            Location: http://192.168.0.7/\r\n\
+            NT: urn:bambulab-com:device:3dprinter:1\r\n\
+            USN: 00M00A000000000\r\n\r\n";
+        let card = card_from_ssdp_payload(notify).expect("should parse");
+        assert_eq!(card.ip_address, "192.168.0.7");
+        // No DevModel header -> serial-prefix heuristic (00M = A1 Mini).
+        assert_eq!(card.model, "A1 Mini");
+        // No DevName -> host_name falls back to the IP.
+        assert_eq!(card.host_name, "192.168.0.7");
+    }
+
+    #[test]
+    fn ssdp_ignores_non_bambu_devices() {
+        // A generic UPnP root device must not be treated as a printer.
+        let other = "NOTIFY * HTTP/1.1\r\n\
+            Location: http://192.168.1.5:80/desc.xml\r\n\
+            NT: urn:schemas-upnp-org:device:MediaServer:1\r\n\
+            USN: uuid:abcd::urn:schemas-upnp-org:device:MediaServer:1\r\n\r\n";
+        assert!(card_from_ssdp_payload(other).is_none());
+    }
 
     #[test]
     fn start_print_payload_targets_cache_remote_path() {

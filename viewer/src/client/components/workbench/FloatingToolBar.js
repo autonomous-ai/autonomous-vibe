@@ -1,9 +1,7 @@
 import {
-  Camera,
-  Copy,
   Crosshair,
+  Layers,
   MousePointer2,
-  Play,
   PenTool
 } from "lucide-react";
 import { RENDER_FORMAT } from "@/workbench/constants";
@@ -43,9 +41,9 @@ function DesktopFloatingToolBar({
   canUndoDrawing,
   canRedoDrawing,
   drawingStrokes,
-  handleEnterPreviewMode,
-  handleScreenshotCopy,
-  handleScreenshotDownload
+  canSlice = false,
+  slicing = false,
+  handleSliceForBambu
 }) {
   const dxfMode = renderFormat === RENDER_FORMAT.DXF;
   const urdfMode = renderFormat === RENDER_FORMAT.URDF;
@@ -103,35 +101,19 @@ function DesktopFloatingToolBar({
             </ToolbarButton>
           ) : null}
 
-          {!dxfMode ? (
+          {canSlice ? (
             <ToolbarButton
-              label="Open orbit preview"
-              onClick={handleEnterPreviewMode}
-              disabled={viewerLoading || !selectedMeshData}
+              label={slicing ? "Slicing…" : "Slice for Bambu"}
+              onClick={() => {
+                void handleSliceForBambu?.();
+              }}
+              disabled={captureDisabled || slicing}
+              className="h-9 w-auto gap-1.5 px-3 text-sm font-medium"
             >
-              <Play className="size-3.5" strokeWidth={2} aria-hidden="true" />
+              <Layers className="size-4" strokeWidth={2} aria-hidden="true" />
+              {slicing ? "Slicing…" : "Slice for Bambu"}
             </ToolbarButton>
           ) : null}
-
-          <ToolbarButton
-            label="Copy screenshot to clipboard"
-            onClick={() => {
-              void handleScreenshotCopy();
-            }}
-            disabled={captureDisabled}
-          >
-            <Copy className="size-3.5" strokeWidth={2} aria-hidden="true" />
-          </ToolbarButton>
-
-          <ToolbarButton
-            label="Download screenshot"
-            onClick={() => {
-              void handleScreenshotDownload();
-            }}
-            disabled={captureDisabled}
-          >
-            <Camera className="size-3.5" strokeWidth={2} aria-hidden="true" />
-          </ToolbarButton>
         </div>
       </TooltipProvider>
 

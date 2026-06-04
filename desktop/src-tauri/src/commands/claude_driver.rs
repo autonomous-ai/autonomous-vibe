@@ -47,12 +47,17 @@ pub struct MtimeEntry {
 pub type MtimeSnapshot = HashMap<String, MtimeEntry>;
 
 /// Which phase of the chat workflow a turn runs in. Maps directly onto
-/// Claude Code's native `--permission-mode` so the model itself enforces
-/// the read-only-while-planning / writes-while-building split.
+/// Claude Code's native `--permission-mode`.
 ///
-/// - `Plan`: `--permission-mode plan` — the model explores read-only,
-///   designs the part, and ends by calling the built-in `ExitPlanMode`
-///   tool. File writes are blocked by the CLI, so no geometry is produced.
+/// - `Plan`: `--permission-mode bypassPermissions` — the model designs the
+///   part and ends by calling the built-in `ExitPlanMode` tool. It runs with
+///   full permission so it can perform read-only analysis to back its plan
+///   with real numbers (e.g. import an existing project's `.step`/`.stl` with
+///   the cadcode venv Python to compute mass properties / center of mass for
+///   the Physics check). The plan turn is bounded by `PLAN_SYSTEM_PROMPT`, not
+///   the CLI, to NOT write part source or generate final artifacts — the
+///   committed build still happens only after the user approves, so the
+///   viewer, version checkpoints, and approve→build flow are unchanged.
 /// - `Implement`: `--permission-mode bypassPermissions` — runs unattended.
 ///   `acceptEdits` is NOT enough: it auto-applies Edit/Write but still
 ///   prompts for Bash, and the cadcode generator is a Bash command
@@ -80,8 +85,7 @@ impl TurnPhase {
     /// The `--permission-mode` value passed to `claude -p`.
     pub fn permission_mode(self) -> &'static str {
         match self {
-            TurnPhase::Plan => "plan",
-            TurnPhase::Implement | TurnPhase::Review => "bypassPermissions",
+            TurnPhase::Plan | TurnPhase::Implement | TurnPhase::Review => "bypassPermissions",
         }
     }
 
@@ -120,15 +124,23 @@ pub struct ClaudeRunConfig {
 }
 
 /// Planning-phase system prompt. The model designs the part using the
-/// `cadcode` skill's knowledge but produces NO geometry; it writes a precise,
+/// `cadcode` skill's knowledge; it may run read-only analysis to back its
+/// numbers but produces no final geometry. It writes a precise,
 /// physically-correct plan (scaled to the request), asks the user about
 /// genuine preference forks via a `panda-questions` fenced block, and
 /// finishes by calling `ExitPlanMode` with the full plan.
 pub const PLAN_SYSTEM_PROMPT: &str = concat!(
     "You are running inside Panda, the consumer 3D printing desktop app. ",
     "Every user message is a request for a 3D-printable model. You are in ",
-    "PLANNING mode. Do NOT generate geometry, write .py, or produce ",
-    "STL/STEP yet. Design the part using the `cadcode` skill's design ",
+    "PLANNING mode. You MAY run read-only analysis to back your plan with real ",
+    "numbers — for example, import an existing project's `.step`/`.stl` with the ",
+    "cadcode venv Python to compute exact per-part volumes, centroids, mass ",
+    "properties, and center of mass vs the support footprint for the Physics ",
+    "check. Run such read-only commands freely, without asking. But do NOT write ",
+    "or edit the part's `.py` source, and do NOT run the cadcode generator or ",
+    "otherwise produce or update the final STL/STEP artifacts yet — the build ",
+    "happens only after the user approves the plan. Design the part using the ",
+    "`cadcode` skill's design ",
     "knowledge — see its **Plan-phase design discipline** section (tolerances, ",
     "wall thickness, hardware tables, part decomposition, print orientation, ",
     "assembly base+lid) — and write a precise, physically-correct plan the ",
@@ -260,13 +272,11 @@ pub fn build_command(cfg: &ClaudeRunConfig) -> Vec<String> {
     // Grant read access to the installed skills tree (`~/.claude/skills`).
     // The cadcode skill loads its own reference docs by absolute path
     // (`~/.claude/skills/cadcode/references/...`), which live OUTSIDE the
-    // project workspace. In the Plan phase (`--permission-mode plan`) a read
-    // outside the granted roots triggers an interactive permission prompt;
-    // headless `-p` cannot answer it, so the read fails and the model plans
-    // without its design-rule references. A second `--add-dir` puts the skill
-    // tree inside the allowed roots. (Build phase is `bypassPermissions`, so
-    // this is a no-op there, but adding it unconditionally is simpler and
-    // harmless.)
+    // project workspace. A second `--add-dir` puts the skill tree inside the
+    // allowed roots so those reads resolve. All phases now run with
+    // `bypassPermissions`, so this is strictly a no-op, but adding it
+    // unconditionally is simpler and harmless — and keeps the workspace
+    // explicit if a future phase tightens its permission mode.
     if let Some(skills_dir) = home_dir().map(|h| h.join(".claude").join("skills")) {
         cmd.push("--add-dir".into());
         cmd.push(skills_dir.display().to_string());
@@ -1096,9 +1106,10 @@ where
                     on_event(ev);
                 }
                 // `ExitPlanMode` ends the plan turn deterministically: kill
-                // the child rather than relying on headless `-p` plan mode
-                // exiting on its own after the tool call. The post-turn
-                // diff finds nothing new (plan mode wrote no files).
+                // the child rather than relying on headless `-p` exiting on its
+                // own after the tool call. The post-turn diff finds nothing new:
+                // the plan turn may run read-only analysis but produces no final
+                // artifacts (the prompt bars writing source / generating parts).
                 if saw_plan {
                     let _ = child.start_kill();
                     break;
@@ -1559,8 +1570,8 @@ mod tests {
     #[test]
     fn build_command_grants_read_access_to_skills_tree() {
         // The cadcode skill reads its reference docs by absolute path under
-        // `~/.claude/skills`, outside the workspace. Without a second
-        // `--add-dir` those reads are denied in the headless Plan phase.
+        // `~/.claude/skills`, outside the workspace. A second `--add-dir`
+        // keeps that tree inside the allowed roots for every phase.
         let cfg = ClaudeRunConfig {
             prompt: "make me a hook".into(),
             workspace: PathBuf::from("/tmp/proj"),
@@ -1586,7 +1597,7 @@ mod tests {
     }
 
     #[test]
-    fn build_command_plan_phase_uses_plan_mode_and_prompt() {
+    fn build_command_plan_phase_uses_bypass_mode_and_prompt() {
         let cfg = ClaudeRunConfig {
             prompt: "an esp32 enclosure".into(),
             workspace: PathBuf::from("/tmp/proj"),
@@ -1597,9 +1608,11 @@ mod tests {
             phase: TurnPhase::Plan,
         };
         let cmd = build_command(&cfg);
-        // --permission-mode plan
+        // Plan now runs with full permission so it can perform read-only
+        // analysis (e.g. compute CoM from an existing STEP) to back the plan;
+        // the prompt — not the CLI — bars writing source / generating parts.
         let pm = cmd.iter().position(|a| a == "--permission-mode").unwrap();
-        assert_eq!(cmd[pm + 1], "plan");
+        assert_eq!(cmd[pm + 1], "bypassPermissions");
         // append-system-prompt is the planning prompt
         let sp = cmd.iter().position(|a| a == "--append-system-prompt").unwrap();
         assert_eq!(cmd[sp + 1], PLAN_SYSTEM_PROMPT);

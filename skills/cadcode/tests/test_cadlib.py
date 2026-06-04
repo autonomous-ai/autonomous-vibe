@@ -131,6 +131,23 @@ from cadlib.layout import grid_points
 pts = grid_points(n_x=3, n_y=2, pitch_x=10)
 result = cq.Workplane("XY").pushPoints(pts).circle(2).extrude(5)
 """,
+    "kinematics.four_bar_loop": """
+import cadquery as cq
+from cadlib.kinematics import solve_fourbar, place_two_point
+COUPLER, ROCKER = 20.0, 20.0
+B, D = (8.0, -13.0), (-16.0, -13.0)           # crank pin, ground pivot (X-Z)
+C = solve_fourbar(crank_pin=B, ground_pivot=D, coupler=COUPLER, rocker=ROCKER, branch="right")
+w = lambda p: (p[0], 0.0, p[1])               # X-Z plane at one Y station -> 3D
+def bar(length):
+    b = cq.Workplane("XY").center(length/2, 0).box(length, 6, 4, centered=(True, True, False))
+    b = b.union(cq.Workplane("XY").circle(4).extrude(4))
+    b = b.union(cq.Workplane("XY").center(length, 0).circle(4).extrude(4))
+    return b
+leg = place_two_point(bar(COUPLER), p0_local=(0,0,0), p1_local=(COUPLER,0,0), p0_world=w(B), p1_world=w(C))
+rk  = place_two_point(bar(ROCKER),  p0_local=(0,0,0), p1_local=(ROCKER,0,0),  p0_world=w(D), p1_world=w(C))
+result = leg.union(rk)
+assert len(result.solids().vals()) == 1, "linkage did not close into one solid"
+""",
 }
 
 
@@ -190,6 +207,53 @@ def test_heat_set_pocket_cuts_rim_relief():
     assert with_relief.val().Volume() < plain.val().Volume(), (
         "heat-set pocket did not cut the rim relief"
     )
+
+
+def test_solve_fourbar_closes_the_loop():
+    """solve_fourbar returns the one joint both links reach: |C-B| == coupler
+    and |C-D| == rocker. The two branches are distinct elbows, and link lengths
+    that can't span the pivots raise ValueError (the spec is wrong, not OCCT)."""
+    import math
+    from cadlib.kinematics import circle_intersections, solve_fourbar
+
+    B, D = (8.0, -13.0), (-16.0, -13.0)
+    coupler = rocker = 20.0
+    C = solve_fourbar(
+        crank_pin=B, ground_pivot=D, coupler=coupler, rocker=rocker, branch="right"
+    )
+    assert math.dist(C, B) == pytest.approx(coupler, abs=1e-6)
+    assert math.dist(C, D) == pytest.approx(rocker, abs=1e-6)
+
+    other = solve_fourbar(
+        crank_pin=B, ground_pivot=D, coupler=coupler, rocker=rocker, branch="left"
+    )
+    assert math.dist(other, C) > 1.0, "left/right branches must be distinct elbows"
+
+    a, b = circle_intersections(c0=B, r0=coupler, c1=D, r1=rocker)
+    for pt in (a, b):
+        assert math.dist(pt, B) == pytest.approx(coupler, abs=1e-6)
+        assert math.dist(pt, D) == pytest.approx(rocker, abs=1e-6)
+
+    with pytest.raises(ValueError):  # links too short to span the pivots
+        solve_fourbar(
+            crank_pin=(0.0, 0.0), ground_pivot=(100.0, 0.0), coupler=10.0, rocker=10.0
+        )
+
+
+def test_place_two_point_rejects_rigid_mismatch():
+    """A printed link is rigid: if its local pin spacing != the solved world
+    span, place_two_point raises rather than silently leaving the far pin off
+    its joint."""
+    import cadquery as cq
+    from cadlib.kinematics import place_two_point
+
+    bar = cq.Workplane("XY").box(20, 6, 4)
+    with pytest.raises(ValueError):
+        place_two_point(
+            bar,
+            p0_local=(0, 0, 0), p1_local=(20, 0, 0),
+            p0_world=(0, 0, 0), p1_world=(30, 0, 0),   # 30 != 20
+        )
 
 
 # -- Sandbox still blocks third-party imports ---------------------------------

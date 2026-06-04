@@ -113,7 +113,7 @@ What "fix" means in practice:
 
 - ``ok=false``: read the traceback, change the smallest responsible line, re-run.
 - ``is_solid=false`` or volume far off expected: load `references/repair-loop.md`, classify, fix, re-run.
-- ``warnings`` non-empty (e.g. ``disconnected_bodies``, ``sliver``, ``invalid_brep``): these are deterministic geometry defects — **treat them as blocking**. A ``disconnected_bodies`` warning means a feature is floating off the body (placed outside its footprint, or never unioned). Anchor it to the body and re-run. Do not declare done while any warning remains.
+- ``warnings`` non-empty (e.g. ``disconnected_bodies``, ``sliver``, ``invalid_brep``): these are deterministic geometry defects — **treat them as blocking**. A ``disconnected_bodies`` warning means a feature is floating off the body (placed outside its footprint, or never unioned) — or, for a **mechanism**, two pinned links whose shared joint was posed by eyeballed angles instead of solved, so they never meet. Anchor it to the body (`references/patterns/anchor-to-body.md`) or solve the loop so the joint coincides (`references/kinematic-placement.md`), and re-run. Do not declare done while any warning remains.
 - Preview STL looks wrong (proportions off, hole misplaced, parts misaligned, a member poking through a plate): edit the `.py` and re-run. **Always inspect every part** — geometry can be valid (`is_solid=true`, no warnings) but still wrong.
 
 You have everything you need to close the loop on your own:
@@ -513,6 +513,12 @@ Load these only when their trigger applies (saves the host agent's context):
   chassis + wheels). **Load before designing anything the user prints as
   multiple pieces and assembles** — using `.union()` for these instead of
   Assembly loses clearances, fits, and per-part STL export.
+- `references/kinematic-placement.md` — **mechanism** placement: parts that
+  share a *moving* joint or form a closed loop (four-bar / Hoeken walking legs,
+  crank + coupler + rocker, scissor lift, pantograph, steering linkage). Solve
+  the joint so the shared pin coincides instead of eyeballing each link's angle.
+  **Load before placing any linkage** — guessed angles leave joints apart and
+  trip `disconnected_bodies`. The four-bar helper lives in `cadlib.kinematics`.
 
 ## Helper library (`cadlib`)
 
@@ -529,6 +535,7 @@ from cadlib.cutouts   import (
     add_press_fit_pocket, add_magnet_pocket, add_bearing_seat, add_cable_channel,
 )
 from cadlib.mechanical import add_dovetail_slot, add_rib_stiffener
+from cadlib.kinematics import solve_fourbar, place_two_point, circle_intersections
 from cadlib.layout    import four_corner_points, grid_points, circle_points
 from cadlib.tables    import (
     SCREW_TABLE, NUT_TABLE, HEATSET_TABLE, BEARING_TABLE, MAGNET_TABLE, CABLE_TABLE,
@@ -593,6 +600,7 @@ language to the trigger column and `Read` the corresponding file.
 | bearing, 608 / 688 / 6800, skate bearing, pulley | `references/patterns/bearing-seat.md` |
 | cable channel, wire routing, strain relief, USB cable | `references/patterns/cable-channel.md` |
 | floating part, disconnected bodies, standoff on a curved wall, strut into a plate, "part not attached" | `references/patterns/anchor-to-body.md` |
+| four-bar / 4-bar linkage, crank + coupler + rocker, Hoeken / Klann / Jansen walking leg, scissor lift, pantograph, "joints must meet", legs hanging disconnected | `references/patterns/four-bar-linkage.md` |
 
 Each file has the same shape: **Trigger**, **Why (the mechanics)**, **CadQuery
 template**, parameter ranges, and pitfalls. The template is copy-pasteable

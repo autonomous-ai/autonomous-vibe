@@ -1942,6 +1942,30 @@ test("file query waits for live catalog hydration before surfacing missing file 
   );
 });
 
+test("an empty catalog suppresses the missing-file error (new project, no model yet)", () => {
+  // A freshly created project has no model files, so a `?file=` param left over
+  // from the previously-viewed project must not surface "File does not exist".
+  assert.equal(
+    missingFileRefForCatalog({
+      explicitFileParam: "examples/leftover.step",
+      catalogHydrated: true,
+      catalogRefreshing: false,
+      catalogEntryCount: 0
+    }),
+    ""
+  );
+  // A populated catalog still reports a genuinely missing file.
+  assert.equal(
+    missingFileRefForCatalog({
+      explicitFileParam: "examples/missing.step",
+      catalogHydrated: true,
+      catalogRefreshing: false,
+      catalogEntryCount: 3
+    }),
+    "examples/missing.step"
+  );
+});
+
 test("file query stays pending while a matched catalog entry is being activated", () => {
   const entry = {
     file: "examples/complex_assembly.step",

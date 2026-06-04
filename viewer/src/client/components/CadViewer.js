@@ -1830,13 +1830,19 @@ const CadViewer = forwardRef(function CadViewer({
     }
 
     runtime.gridConfig = null;
+    // When the viewport is empty (no model loaded), show a reference grid so it
+    // reads as a 3D stage instead of an empty void; a loaded model uses the
+    // theme's own floor (e.g. the reflective stage plane) instead.
+    const emptyAwareFloorMode = runtime.hasVisibleModel
+      ? resolvedFloorMode
+      : THEME_FLOOR_MODES.GRID;
     updateActiveGridHelper(
       runtime,
       viewerTheme,
       runtime.gridRadius ?? defaultGridRadius,
       runtime.gridFloorZ ?? 0,
       normalizedSceneScaleMode,
-      resolvedFloorMode
+      emptyAwareFloorMode
     );
     updateSpotLightTarget(runtime);
     if (runtime.hasVisibleModel) {
@@ -2047,6 +2053,18 @@ const CadViewer = forwardRef(function CadViewer({
       runtime.displayRecords = [];
       runtime.hasVisibleModel = false;
       runtime.activeModelKey = "";
+      // Re-show the empty-viewport reference grid now that nothing is displayed.
+      runtime.gridConfig = null;
+      runtime.gridRadius = defaultGridRadius;
+      runtime.gridFloorZ = 0;
+      updateActiveGridHelper(
+        runtime,
+        viewerTheme,
+        defaultGridRadius,
+        0,
+        normalizedSceneScaleMode,
+        THEME_FLOOR_MODES.GRID
+      );
       runtime.requestRender();
     };
 

@@ -148,7 +148,8 @@ export function missingFileRefForCatalog({
   matchingEntry = null,
   selectedEntry = null,
   catalogHydrated = false,
-  catalogRefreshing = false
+  catalogRefreshing = false,
+  catalogEntryCount = null
 } = {}) {
   const normalizedFileParam = normalizeCadFileQueryParam(explicitFileParam);
   if (
@@ -156,7 +157,13 @@ export function missingFileRefForCatalog({
     selectedEntry ||
     matchingEntry ||
     !catalogHydrated ||
-    catalogRefreshing
+    catalogRefreshing ||
+    // An empty catalog (e.g. a freshly created project with no model yet) has
+    // no file for the param to be "missing" from — show the empty state, not a
+    // spurious "File does not exist" error left over from the previous project's
+    // `?file=` param. `null` means the count was not supplied; preserve legacy
+    // behavior and only suppress when we explicitly know the catalog is empty.
+    catalogEntryCount === 0
   ) {
     return "";
   }

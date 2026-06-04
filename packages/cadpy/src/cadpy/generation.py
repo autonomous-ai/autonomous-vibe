@@ -61,7 +61,7 @@ from cadpy.render import (
     relative_to_repo,
 )
 from cadpy.source_hash import PythonSourceHash, python_source_hash
-from cadpy.stl import export_part_stl_from_scene
+from cadpy.stl import export_part_stl_from_scene, export_part_stls_from_scene
 from cadpy.step_metadata import read_text_to_cad_step_metadata
 from cadpy.threemf import export_part_3mf_from_scene
 from cadpy.step_scene import (
@@ -2669,9 +2669,14 @@ def _write_metadata_sidecar(
     bbox: dict[str, list[float]],
     mesh_tolerance: float,
     mesh_angular_tolerance: float,
+    parts: list[dict[str, str]] | None = None,
 ) -> None:
     """Write ``<stem>.step.json`` — source hash + generator info +
     validation summary, per contract §1.
+
+    When ``parts`` is given (assemblies with per-part STLs), each entry is
+    ``{"name", "stlPath"}`` with ``stlPath`` relative to this sidecar's
+    directory; the viewer groups these under the integrated model.
     """
     identity = python_source_hash(script_path)
     payload: dict[str, object] = {
@@ -2696,6 +2701,8 @@ def _write_metadata_sidecar(
             "bbox": bbox,
         },
     }
+    if parts:
+        payload["parts"] = parts
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path.write_text(
         json.dumps(payload, sort_keys=True, separators=(",", ":")),
@@ -2890,6 +2897,26 @@ def generate_step(
             f"{type(exc).__name__}: {exc}"
         ) from exc
 
+    # Assemblies (more than one leaf occurrence) also get one STL per named
+    # part — each at its own build origin, ready to review/print individually
+    # alongside the assembled <stem>.stl. Single-solid projects skip this.
+    parts_dir = parent / f"{stem}_parts"
+    part_outputs: list[tuple[str, Path]] = []
+    try:
+        if len(scene_leaf_occurrences(scene)) > 1:
+            part_outputs = export_part_stls_from_scene(scene, parts_dir)
+    except Exception as exc:
+        raise ExportError(
+            f"failed to write per-part STLs for {output_path_p.name}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    # Paths in metadata/payload are relative to the sidecar directory so the
+    # catalog can resolve them regardless of where the workspace lives.
+    parts_meta = [
+        {"name": name, "stlPath": f"{parts_dir.name}/{path.name}"}
+        for name, path in part_outputs
+    ]
+
     try:
         _write_metadata_sidecar(
             metadata_path=metadata_path,
@@ -2901,6 +2928,7 @@ def generate_step(
             bbox=bbox,
             mesh_tolerance=mesh_tolerance,
             mesh_angular_tolerance=mesh_angular_tolerance,
+            parts=parts_meta,
         )
     except Exception as exc:
         raise ExportError(
@@ -2925,6 +2953,9 @@ def generate_step(
         "bbox": bbox,
         "mesh_tolerance": float(mesh_tolerance),
         "mesh_angular_tolerance": float(mesh_angular_tolerance),
+        "parts": [
+            {"name": name, "stl_path": str(path)} for name, path in part_outputs
+        ],
     }
 
 

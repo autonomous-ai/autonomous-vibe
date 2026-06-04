@@ -170,7 +170,7 @@ function FileEntryButton({
     </SidebarMenuButton>
   );
 
-  return (
+  const buttonWithMenu = (
     <FileAccessContextMenu
       entry={entry}
       canRevealFileAssets={canRevealFileAssets}
@@ -184,6 +184,80 @@ function FileEntryButton({
     >
       {button}
     </FileAccessContextMenu>
+  );
+
+  // Assemblies carry per-part STLs (`entry.parts`); render them grouped under
+  // the integrated model so a user can review/slice each part individually.
+  const parts = Array.isArray(entry?.parts) ? entry.parts : [];
+  if (parts.length === 0) {
+    return buttonWithMenu;
+  }
+
+  return (
+    <>
+      {buttonWithMenu}
+      <PartsGroup
+        parts={parts}
+        depth={depth}
+        selectedKey={selectedKey}
+        onSelectEntry={onSelectEntry}
+        entrySourceFormat={entrySourceFormat}
+        entryHasMesh={entryHasMesh}
+        entryHasDxf={entryHasDxf}
+        entryHasGcode={entryHasGcode}
+        entryHasUrdf={entryHasUrdf}
+        activeGenerationFiles={activeGenerationFiles}
+        activeStepArtifactGenerationFile={activeStepArtifactGenerationFile}
+        stepArtifactGenerationAvailable={stepArtifactGenerationAvailable}
+        canRevealFileAssets={canRevealFileAssets}
+        canCopyFileAssetLinks={canCopyFileAssetLinks}
+        canCopyFileAssetPaths={canCopyFileAssetPaths}
+        fileAccessBusyKey={fileAccessBusyKey}
+        onDownloadFileAsset={onDownloadFileAsset}
+        onRevealFileAsset={onRevealFileAsset}
+        onRevealInExplorerView={onRevealInExplorerView}
+        onCopyFileAssetReference={onCopyFileAssetReference}
+      />
+    </>
+  );
+}
+
+// Collapsible "Parts" subsection nested under an integrated model row. Each part
+// is a normal `FileEntryButton`, so selecting one renders/slices it through the
+// existing single-model path.
+function PartsGroup({ parts, depth, ...childProps }) {
+  const [expanded, setExpanded] = useState(true);
+  return (
+    <Collapsible asChild open={expanded} onOpenChange={setExpanded}>
+      <SidebarMenuSubItem className="min-w-0 w-full max-w-full">
+        <CollapsibleTrigger asChild>
+          <SidebarMenuButton
+            type="button"
+            size="sm"
+            title="Parts"
+            className="min-w-0 w-full justify-start text-muted-foreground"
+          >
+            <ChevronRight
+              className={cn("transition-transform", expanded && "rotate-90")}
+              aria-hidden="true"
+            />
+            <Boxes className="size-4 shrink-0" aria-hidden="true" />
+            <span className="block min-w-0 flex-1 max-w-full overflow-hidden text-ellipsis whitespace-nowrap">
+              Parts
+            </span>
+          </SidebarMenuButton>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="min-w-0 w-full max-w-full">
+          <SidebarMenuSub className="min-w-0 w-full max-w-full">
+            {parts.map((partEntry) => (
+              <SidebarMenuSubItem key={fileKey(partEntry)} className="min-w-0 w-full max-w-full">
+                <FileEntryButton entry={partEntry} depth={depth + 1} nested {...childProps} />
+              </SidebarMenuSubItem>
+            ))}
+          </SidebarMenuSub>
+        </CollapsibleContent>
+      </SidebarMenuSubItem>
+    </Collapsible>
   );
 }
 

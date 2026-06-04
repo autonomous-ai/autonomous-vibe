@@ -561,6 +561,11 @@ export default function CadWorkspace({
     const map = new Map();
     for (const entry of catalogEntries) {
       map.set(fileKey(entry), entry);
+      // Per-part STLs ride on their integrated model as `entry.parts` (kept out
+      // of the rail); register them so selecting one resolves + renders.
+      for (const part of entry.parts || []) {
+        map.set(fileKey(part), part);
+      }
     }
     return map;
   }, [catalogEntries]);

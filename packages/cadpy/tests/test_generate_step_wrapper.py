@@ -213,6 +213,113 @@ class GenerateStepWrapperTests(unittest.TestCase):
             self.assertGreater(stl_path.stat().st_size, 100)
             self.assertEqual(str(stl_path.resolve()), result["stl_path"])
 
+    @staticmethod
+    def _stl_z_range(stl_path: Path) -> tuple[float, float]:
+        """Min/max Z over all vertices of a binary STL — used to assert a part
+        is exported in its own build frame (near origin), not in assembled
+        position."""
+        data = stl_path.read_bytes()
+        count = struct.unpack_from("<I", data, 80)[0]
+        zs: list[float] = []
+        offset = 84
+        for _ in range(count):
+            offset += 12  # skip the facet normal
+            for _vertex in range(3):
+                _x, _y, z = struct.unpack_from("<fff", data, offset)
+                offset += 12
+                zs.append(z)
+            offset += 2  # attribute byte count
+        return min(zs), max(zs)
+
+    def test_assembly_writes_per_part_stls_at_origin(self) -> None:
+        """An assembly result also emits one STL per named part, each in its
+        own build frame, plus a ``parts`` array in metadata and the return
+        dict (contract §1/§3 additive)."""
+        with tempfile.TemporaryDirectory(prefix="cadpy-parts-") as tempdir:
+            tempdir_p = Path(tempdir)
+            project_dir = tempdir_p / "project"
+            out_dir = tempdir_p / "out"
+            project_dir.mkdir()
+            out_dir.mkdir()
+
+            # Two named parts. The lid is *placed* 50mm up in the assembly, but
+            # its per-part STL must come back at its build origin (z≈0..2), not
+            # at the assembled z≈50.
+            self._write_project(
+                project_dir,
+                """
+                import cadquery as cq
+
+                def gen_step():
+                    base = cq.Workplane().box(20, 20, 4)
+                    lid = cq.Workplane().box(20, 20, 2)
+                    assy = cq.Assembly()
+                    assy.add(base, name="base")
+                    assy.add(lid, name="lid", loc=cq.Location(cq.Vector(0, 0, 50)))
+                    return assy
+                """,
+            )
+
+            output_path = out_dir / "widget.step"
+            result = generation.generate_step(
+                project_dir=project_dir,
+                output_path=output_path,
+            )
+
+            parts_dir = out_dir / "widget_parts"
+            base_stl = parts_dir / "base.stl"
+            lid_stl = parts_dir / "lid.stl"
+            self.assertTrue(base_stl.is_file(), "base part STL missing")
+            self.assertTrue(lid_stl.is_file(), "lid part STL missing")
+            # Integrated STL still written.
+            self.assertTrue((out_dir / "widget.stl").is_file())
+
+            # Return dict carries the per-part list (contract §3 additive).
+            returned = {p["name"]: p["stl_path"] for p in result["parts"]}
+            self.assertEqual({"base", "lid"}, set(returned))
+            self.assertEqual(str(base_stl.resolve()), returned["base"])
+
+            # Metadata sidecar lists parts with sidecar-relative paths.
+            metadata = json.loads((out_dir / "widget.step.json").read_text(encoding="utf-8"))
+            meta_parts = {p["name"]: p["stlPath"] for p in metadata["parts"]}
+            self.assertEqual(meta_parts["base"], "widget_parts/base.stl")
+            self.assertEqual(meta_parts["lid"], "widget_parts/lid.stl")
+
+            # The lid part is exported at its build origin (centered ~0), not at
+            # the assembled z≈50.
+            lid_lo, lid_hi = self._stl_z_range(lid_stl)
+            self.assertLess(lid_hi, 10.0, f"lid not at origin: z=[{lid_lo}, {lid_hi}]")
+            self.assertGreater(lid_lo, -10.0, f"lid not at origin: z=[{lid_lo}, {lid_hi}]")
+
+    def test_single_solid_writes_no_parts(self) -> None:
+        """A single-solid project produces no ``_parts`` dir and an empty/absent
+        parts list — per-part export is assembly-only."""
+        with tempfile.TemporaryDirectory(prefix="cadpy-parts-") as tempdir:
+            tempdir_p = Path(tempdir)
+            project_dir = tempdir_p / "project"
+            out_dir = tempdir_p / "out"
+            project_dir.mkdir()
+            out_dir.mkdir()
+
+            self._write_project(
+                project_dir,
+                """
+                import cadquery as cq
+
+                def gen_step():
+                    return cq.Workplane().box(10, 10, 10)
+                """,
+            )
+
+            result = generation.generate_step(
+                project_dir=project_dir,
+                output_path=out_dir / "solid.step",
+            )
+            self.assertFalse((out_dir / "solid_parts").exists(), "no _parts dir expected")
+            self.assertEqual([], result["parts"])
+            metadata = json.loads((out_dir / "solid.step.json").read_text(encoding="utf-8"))
+            self.assertNotIn("parts", metadata)
+
     def test_missing_main_py_raises_generation_error(self) -> None:
         """Contract §1: every error must subclass GenerationError."""
         with tempfile.TemporaryDirectory(prefix="cadpy-wrap-") as tempdir:

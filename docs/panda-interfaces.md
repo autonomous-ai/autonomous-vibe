@@ -133,11 +133,22 @@ shown relative to `output_path`'s parent.
 | File | Always written? | Purpose |
 |---|---|---|
 | `<stem>.step` | yes | B-rep archival, labels + colors via XCAF |
-| `<stem>.stl` | yes | Printable mesh + the viewer's preview mesh |
+| `<stem>.stl` | yes | Printable mesh + the viewer's preview mesh (assembled scene) |
 | `<stem>.step.json` | yes | Source hash, generator metadata, validation summary |
+| `<stem>_parts/<part>.stl` | assemblies only | One STL per named part, at its own build origin (review/print individually) |
 
 `<stem>` is the basename of `output_path`. The driver's mtime snapshotter
 (contract §3) watches all three extensions.
+
+**Per-part STLs (additive).** When `gen_step()` returns an assembly with more
+than one leaf part, the wrapper also writes one STL per named part under
+`<stem>_parts/`, each in its own build frame (not assembled position) so it can
+be reviewed and printed individually. The `<stem>.step.json` gains a `parts`
+array — `[{ "name": str, "stlPath": "<stem>_parts/<part>.stl" }]`, with
+`stlPath` relative to the sidecar's directory — and `generate_step()`'s return
+dict gains `parts: [{ "name", "stl_path" }]`. Single-solid projects omit both
+(no `_parts/` dir). The Tauri catalog surfaces these on the integrated `.stl`
+entry's `artifact.parts` (contract §2); the viewer groups them under the model.
 
 ### Error contract
 
@@ -211,6 +222,11 @@ interface CatalogEntry {
   artifact?: {
     stlUrl?: string;            // sibling .stl the viewer renders for a .step entry
     metadataUrl?: string;
+    parts?: {                   // assemblies only: per-part STLs (contract §1),
+      name: string;             //   attached to the integrated .stl entry. The
+      file: string;             //   per-part files themselves are hidden from the
+      url: string;              //   flat list; the viewer nests them under the model.
+    }[];
   };
   relations?: Record<string, string>;
 }
@@ -585,6 +601,10 @@ interface CadcodeResult {
   volume_mm3?: number;
   bbox?: { min: [number, number, number]; max: [number, number, number] };
 
+  // Assemblies only (additive): one printable STL per named part, at build
+  // origin. Absent/empty for single-solid projects. See contract §1.
+  parts?: { name: string; stl_path: string }[];
+
   // On failure:
   error?: {
     code: string;               // "VALIDATION_FAILED", "SANDBOX_TIMEOUT", "EXPORT_ERROR", "SYNTAX_ERROR", "RUNTIME_ERROR"
@@ -647,8 +667,11 @@ For each artifact event, the driver emits a `chat_event`:
 ├── features/                ← optional
 ├── assemblies/              ← optional
 ├── model.step               ← cadpy STEP
-├── model.step.json          ← cadpy metadata
+├── model.step.json          ← cadpy metadata (+ parts[] for assemblies)
 ├── model.stl                ← cadpy mesh (slice-input + viewer preview)
+├── model_parts/             ← assemblies only: one STL per named part
+│   ├── base.stl
+│   └── lid.stl
 ├── model.gcode              ← OrcaSlicer output
 └── chat.jsonl               ← Panda-managed chat history (one event per line)
 ```

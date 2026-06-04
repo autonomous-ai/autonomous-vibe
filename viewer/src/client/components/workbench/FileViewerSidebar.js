@@ -443,10 +443,12 @@ function ProjectNode({
   onToggleProject,
   onToggleDirectory,
   onSelectEntry,
+  onSelectProject,
   onRequestDeleteProject,
   onRenameProject,
   selectedKey,
   treeProps,
+  isGenerating = false,
   activeCatalogHydrated,
   activeCatalogRefreshing,
   activeCatalogError
@@ -479,15 +481,27 @@ function ProjectNode({
     setDraftName(node.name || "");
   };
   const handleHeaderClick = () => {
-    if (node.isActive && canRename) {
-      setDraftName(node.name || "");
-      setEditing(true);
-    } else {
-      onToggleProject(node.id);
+    if (node.isActive) {
+      // Active row: the name doubles as the rename affordance (chevron toggles).
+      if (canRename) {
+        setDraftName(node.name || "");
+        setEditing(true);
+      } else {
+        onToggleProject(node.id);
+      }
+      return;
     }
+    // Non-active row: activate the project so its chat + workspace come forward.
+    // Selecting a file used to be the only way to activate a project, which left
+    // a project with no files (e.g. a new one mid-conversation) unreachable.
+    // Expand it too so its subtree is visible; the chevron still owns collapse.
+    onSelectProject?.(node.id);
+    if (!expanded) onToggleProject(node.id);
   };
   const handleChevronClick = (event) => {
-    // Active row: name-click renames, so the chevron owns expand/collapse.
+    // The chevron always owns expand/collapse so it never activates the project
+    // (header-click does that) — letting you peek at a project without leaving
+    // the one you're in.
     event.stopPropagation();
     onToggleProject(node.id);
   };
@@ -580,9 +594,9 @@ function ProjectNode({
             onClick={handleHeaderClick}
           >
             <span
-              role={node.isActive && canRename ? "button" : undefined}
-              aria-label={node.isActive && canRename ? (expanded ? "Collapse project" : "Expand project") : undefined}
-              onClick={node.isActive && canRename ? handleChevronClick : undefined}
+              role="button"
+              aria-label={expanded ? "Collapse project" : "Expand project"}
+              onClick={handleChevronClick}
               className="flex size-4 shrink-0 items-center justify-center"
             >
               <ChevronRight
@@ -592,6 +606,13 @@ function ProjectNode({
             </span>
             <Folder className="size-4 shrink-0" aria-hidden="true" />
             <span className="block min-w-0 flex-1 max-w-full overflow-hidden text-ellipsis whitespace-nowrap">{node.name || "Untitled project"}</span>
+            {isGenerating ? (
+              <LoaderCircle
+                className="size-3.5 shrink-0 animate-spin text-muted-foreground"
+                aria-label="Generating"
+                title="Working…"
+              />
+            ) : null}
           </SidebarMenuButton>
         )}
         {onRequestDeleteProject ? (
@@ -653,8 +674,10 @@ function FileViewerContents({
   onToggleProject,
   onToggleDirectory,
   onSelectEntry,
+  onSelectProject,
   onRequestDeleteProject,
   onRenameProject,
+  generatingProjectIds,
   entrySourceFormat,
   entryHasMesh,
   entryHasDxf,
@@ -732,10 +755,12 @@ function FileViewerContents({
                       onToggleProject={onToggleProject}
                       onToggleDirectory={onToggleDirectory}
                       onSelectEntry={onSelectEntry}
+                      onSelectProject={onSelectProject}
                       onRequestDeleteProject={onRequestDeleteProject}
                       onRenameProject={onRenameProject}
                       selectedKey={selectedKey}
                       treeProps={treeProps}
+                      isGenerating={Boolean(generatingProjectIds?.has(node.id))}
                       activeCatalogHydrated={catalogHydrated}
                       activeCatalogRefreshing={catalogRefreshing}
                       activeCatalogError={catalogError}
@@ -765,8 +790,10 @@ export default function FileViewerSidebar({
   onToggleProject,
   onToggleDirectory,
   onSelectEntry,
+  onSelectProject,
   onRequestDeleteProject,
   onRenameProject,
+  generatingProjectIds,
   entrySourceFormat,
   entryHasMesh,
   entryHasDxf,
@@ -804,8 +831,10 @@ export default function FileViewerSidebar({
       onToggleProject={onToggleProject}
       onToggleDirectory={onToggleDirectory}
       onSelectEntry={onSelectEntry}
+      onSelectProject={onSelectProject}
       onRequestDeleteProject={onRequestDeleteProject}
       onRenameProject={onRenameProject}
+      generatingProjectIds={generatingProjectIds}
       entrySourceFormat={entrySourceFormat}
       entryHasMesh={entryHasMesh}
       entryHasDxf={entryHasDxf}

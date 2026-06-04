@@ -1,10 +1,16 @@
-import { Loader2, History } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Loader2, History, ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "@/ui/utils";
 import ToolUseBlock from "./ToolUseBlock";
 import ArtifactBadge from "./ArtifactBadge";
 import PlanBlock from "./PlanBlock";
 import Markdown from "./Markdown";
 import { phaseLabel, toolLabel } from "./activityLabels";
+import { useStuck } from "./useStuck";
+
+// Height (px) the pinned user prompt collapses to (~2 lines of text-sm). Above
+// this the prompt is considered overflowing and gets a "Show more" toggle.
+const CONDENSED_MAX_PX = 44;
 
 function TextBlock({ text }) {
   return (
@@ -71,8 +77,35 @@ function StatusLine({ turn }) {
   return null;
 }
 
-export default function ChatTurn({ turn, onOpenArtifact, onRestoreVersion, restoreDisabled }) {
+export default function ChatTurn({ turn, onOpenArtifact, onRestoreVersion, restoreDisabled, scrollRootRef }) {
   const isUser = turn.role === "user";
+  // User prompts stick to the top of the scroll container; once pinned (a
+  // response has scrolled underneath) they collapse to a couple of lines with a
+  // "Show more" toggle. Assistant turns scroll normally and never stick.
+  const articleRef = useRef(null);
+  const contentRef = useRef(null);
+  const stuck = useStuck(isUser ? articleRef : null, scrollRootRef);
+  const [expanded, setExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const condensed = isUser && stuck && !expanded;
+
+  // Re-collapse once the prompt unsticks so the next pin starts condensed.
+  useEffect(() => {
+    if (!stuck) setExpanded(false);
+  }, [stuck]);
+
+  // Measure the full prompt height (contentRef is never clamped — the clamp
+  // lives on its wrapper) to decide whether a "Show more" toggle is warranted.
+  useEffect(() => {
+    if (!isUser) {
+      setOverflowing(false);
+      return;
+    }
+    const el = contentRef.current;
+    if (!el) return;
+    setOverflowing(el.scrollHeight > CONDENSED_MAX_PX + 1);
+  }, [isUser, turn, stuck]);
+
   const showModifyHint =
     !isUser &&
     turn.phase === "implement" &&
@@ -85,14 +118,25 @@ export default function ChatTurn({ turn, onOpenArtifact, onRestoreVersion, resto
     !isUser && turn.status === "complete" && !!turn.checkpointId && !!onRestoreVersion;
   return (
     <article
+      ref={articleRef}
       data-slot="chat-turn"
       data-role={turn.role}
       data-turn-id={turn.id}
       data-status={turn.status}
+      data-stuck={isUser && stuck ? "true" : undefined}
+      // The user prompt is always sticky, so it must stay opaque even before
+      // `stuck` flips — an opaque tinted surface keeps the response from
+      // bleeding through. Inline style avoids any reliance on a theme var that
+      // could resolve translucent.
+      style={
+        isUser
+          ? { backgroundColor: "color-mix(in srgb, var(--primary) 7%, var(--ui-surface-solid))" }
+          : undefined
+      }
       className={cn(
         "rounded-lg px-3.5 py-2.5 shadow-[var(--ui-shadow-soft)] transition-colors",
         isUser
-          ? "border border-primary/25 bg-primary/[0.06]"
+          ? cn("sticky top-0 z-20 border border-primary/25", stuck && "shadow-md")
           : "border border-border/60 bg-card/70",
       )}
     >
@@ -107,7 +151,8 @@ export default function ChatTurn({ turn, onOpenArtifact, onRestoreVersion, resto
         </span>
         <StatusLine turn={turn} />
       </header>
-      <div className="flex flex-col gap-2">
+      <div className={cn("relative", condensed && "max-h-11 overflow-hidden")}>
+        <div ref={isUser ? contentRef : null} className="flex flex-col gap-2">
         {!isUser && turn.status === "running" && turn.blocks.length === 0 ? (
           <p
             data-slot="chat-working"
@@ -179,7 +224,30 @@ export default function ChatTurn({ turn, onOpenArtifact, onRestoreVersion, resto
             Start from here
           </button>
         ) : null}
+        </div>
+        {condensed && overflowing ? (
+          <div
+            data-slot="chat-prompt-fade"
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-[var(--ui-surface-solid)] to-transparent"
+          />
+        ) : null}
       </div>
+      {isUser && stuck && overflowing ? (
+        <button
+          type="button"
+          data-slot="chat-prompt-toggle"
+          onClick={() => setExpanded((value) => !value)}
+          className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground transition-colors hover:text-primary"
+        >
+          {expanded ? (
+            <ChevronUp className="size-3" aria-hidden />
+          ) : (
+            <ChevronDown className="size-3" aria-hidden />
+          )}
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      ) : null}
     </article>
   );
 }

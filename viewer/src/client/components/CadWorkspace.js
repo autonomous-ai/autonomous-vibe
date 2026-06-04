@@ -259,7 +259,7 @@ import {
   parseStepModuleParamsPasteText
 } from "@/workbench/stepModuleParameterControls";
 import { emitCadRefSelection } from "@/components/chat/cadRefEvents";
-import { setSelectedMeshFile, setProject as setChatProject } from "@/store/chat";
+import { setSelectedMeshFile, setProject as setChatProject, useChatStore } from "@/store/chat";
 import { useProjectsStore } from "@/store/projects.ts";
 import { sortProjects } from "@/components/library/projectListHelpers.js";
 import { useProjectsFileTree } from "./workbench/hooks/useProjectsFileTree";
@@ -411,6 +411,14 @@ export default function CadWorkspace({
   ), [generationStatus]);
   const catalogRootDir = catalogRootDirFromEnv();
   const currentProjectId = useProjectsStore((state) => state.currentProjectId);
+  // Projects with an in-flight chat turn (the chat store tracks turn→project in
+  // `turnOwners`). Drives the sidebar "generating" spinner so a turn that keeps
+  // running after you switch away still shows visible activity on its project.
+  const turnOwners = useChatStore((state) => state.turnOwners);
+  const generatingProjectIds = useMemo(
+    () => new Set(Object.values(turnOwners || {})),
+    [turnOwners],
+  );
   const openProject = useProjectsStore((state) => state.open);
   const deleteProject = useProjectsStore((state) => state.delete);
   const renameProject = useProjectsStore((state) => state.rename);
@@ -5390,6 +5398,20 @@ export default function CadWorkspace({
       });
   }, [currentProjectId, handleSelectEntry, openProject]);
 
+  // Activate a project from its sidebar header (no specific file). This is the
+  // only way to reopen a project with no files yet — e.g. a freshly created one
+  // you started chatting in, then navigated away from. Switches the chat
+  // session + workspace to it; the catalog/3D view follow.
+  const handleSelectProject = useCallback((projectId) => {
+    if (!projectId || projectId === currentProjectId) return;
+    pendingCrossProjectSelectionRef.current = null;
+    openProject(projectId)
+      .then(() => setChatProject(projectId))
+      .catch((err) => {
+        console.warn("Failed to open project from sidebar", err);
+      });
+  }, [currentProjectId, openProject]);
+
   useEffect(() => {
     const pending = pendingCrossProjectSelectionRef.current;
     if (!pending || pending.projectId !== currentProjectId) {
@@ -6098,6 +6120,8 @@ export default function CadWorkspace({
               onToggleProject={toggleProject}
               onToggleDirectory={onToggleProjectDirectory}
               onSelectEntry={handleSidebarSelectEntry}
+              onSelectProject={handleSelectProject}
+              generatingProjectIds={generatingProjectIds}
               onRequestDeleteProject={handleRequestDeleteProject}
               onRenameProject={handleRenameProject}
               entrySourceFormat={entrySourceFormat}

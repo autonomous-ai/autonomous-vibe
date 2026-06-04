@@ -88,6 +88,10 @@
   --ui-panel-strong: var(--muted);
   --ui-panel-elevated: var(--popover);
   --ui-panel-muted: var(--accent);
+  /* Fully-opaque surface for elements that must occlude scrolling content
+     (e.g. the pinned chat prompt). Glass tones override --card to be
+     translucent, so each scope sets this to its tone's opaque base color. */
+  --ui-surface-solid: var(--card);
   --ui-control-bg: var(--secondary);
   --ui-control-bg-hover: var(--accent);
   --ui-border: var(--border);
@@ -196,6 +200,7 @@
   --ui-glass-surface: rgb(255 255 255 / 42%);
   --ui-glass-popover: rgb(255 255 255 / 58%);
   --ui-glass-control: rgb(255 255 255 / 34%);
+  --ui-surface-solid: rgb(255 255 255);
   --ui-loading-overlay: rgb(255 255 255 / 28%);
   --ui-loading-overlay-strong: rgb(255 255 255 / 62%);
 }
@@ -221,6 +226,7 @@
   --ui-glass-surface: rgb(255 255 255 / 48%);
   --ui-glass-popover: rgb(255 255 255 / 64%);
   --ui-glass-control: rgb(255 255 255 / 40%);
+  --ui-surface-solid: rgb(255 255 255);
   --ui-loading-overlay: rgb(255 255 255 / 34%);
   --ui-loading-overlay-strong: rgb(255 255 255 / 68%);
 }
@@ -242,6 +248,7 @@
   --ui-glass-surface: rgb(4 4 7 / 94%);
   --ui-glass-popover: rgb(6 6 9 / 95%);
   --ui-glass-control: rgb(2 2 5 / 84%);
+  --ui-surface-solid: rgb(6 6 9);
   --ui-glass-saturation: 1.16;
 }
 
@@ -262,6 +269,7 @@
   --ui-glass-surface: rgb(22 22 25 / 49%);
   --ui-glass-popover: rgb(24 24 27 / 56%);
   --ui-glass-control: rgb(13 13 16 / 39%);
+  --ui-surface-solid: rgb(22 22 25);
   --ui-glass-saturation: 1.44;
 }
 

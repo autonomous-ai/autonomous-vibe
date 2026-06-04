@@ -263,6 +263,7 @@ PATTERN_NAMES = [
     "bearing-seat",
     "cable-channel",
     "anchor-to-body",
+    "four-bar-linkage",
 ]
 
 
@@ -280,6 +281,7 @@ HELPER_BACKED_PATTERNS = {
     "magnet-pocket",
     "bearing-seat",
     "cable-channel",
+    "four-bar-linkage",
 }
 # Patterns with no helper: the doc IS the deliverable, so it carries a real
 # CadQuery template. `fillet-stress-relief` is the lone knowledge-only doc — it

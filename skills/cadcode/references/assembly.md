@@ -9,6 +9,13 @@ For a single-piece print (one solid that comes off the bed in one go), do
 NOT use Assembly — just `.union()` everything into a single solid and return
 it from `gen_step()`. Assembly is for parts that should ship as separate solids.
 
+For parts that share a **moving** joint or form a closed loop (a four-bar
+walking leg, crank + rocker, scissor lift), placement is not a fixed offset —
+the shared joint must be *solved* so the pins coincide. See
+`references/kinematic-placement.md` (and the `four-bar-linkage` pattern) before
+posing a linkage; eyeballing each link's angle leaves the joints apart and trips
+`disconnected_bodies`.
+
 ## Why `cq.Assembly`, not `union` for these
 
 A unioned multi-part model:

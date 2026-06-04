@@ -30,10 +30,24 @@ export interface AppInfo {
 export type CatalogKind = "step" | "stl" | "gcode" | "py" | "json" | "png" | "implicit";
 export type SourceKindValue = "python" | "static";
 
+export interface CatalogPart {
+  /** Part name (e.g. `chassis`), used as the display label. */
+  name: string;
+  /** Workspace-relative path of the part `.stl` (the catalog/entry key). */
+  file: string;
+  /** Cache-busted asset URL the viewer loads to render this part. */
+  url: string;
+}
+
 export interface CatalogArtifact {
   /** URL of the sibling `.stl` the viewer renders as a `.step` entry's preview. */
   stlUrl?: string;
   metadataUrl?: string;
+  /**
+   * For assemblies: one printable `.stl` per named part (at build origin). The
+   * viewer groups these under the integrated model. Empty for single-solid projects.
+   */
+  parts?: CatalogPart[];
 }
 
 export interface CatalogEntry {

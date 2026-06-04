@@ -28,17 +28,56 @@ import { transport } from "./transport.ts";
 // the preview). The bytes are served by the pandaasset:// scheme.
 const RENDERABLE_MESH_KINDS = new Set(["stl"]);
 
+// Turn an assembly's `artifact.parts` (from the `.step.json` sidecar) into
+// render-ready `.stl` catalog entries. Each carries `__partOf` (the integrated
+// model's file) so it stays out of the flat rail; they are attached to the
+// integrated entry as `entry.parts` and shown nested under its "Parts" section.
+// The workspace expands these into its `entryMap` so selecting one resolves and
+// renders through the normal single-model path.
+function synthesizePartEntry(part, parentFile, revision) {
+  const url = String(part?.url || "");
+  const file = String(part?.file || "");
+  if (!url || !file) {
+    return null;
+  }
+  return {
+    file,
+    kind: "stl",
+    sourceKind: "static",
+    url,
+    hash: `${url}#${revision}`,
+    name: String(part?.name || ""),
+    __partOf: parentFile,
+  };
+}
+
 function withRenderableMeshHashes(catalog) {
   if (!catalog || !Array.isArray(catalog.entries)) {
     return catalog;
   }
   const revision = catalog.revision ?? 0;
   const entries = catalog.entries.map((entry) => {
-    if (!entry || entry.hash || !RENDERABLE_MESH_KINDS.has(entry.kind)) {
+    if (!entry) {
       return entry;
     }
-    const url = String(entry.url || "");
-    return url ? { ...entry, hash: `${url}#${revision}` } : entry;
+    let next = entry;
+    if (!next.hash && RENDERABLE_MESH_KINDS.has(next.kind)) {
+      const url = String(next.url || "");
+      if (url) {
+        next = { ...next, hash: `${url}#${revision}` };
+      }
+    }
+    const parts = next.artifact?.parts;
+    if (Array.isArray(parts) && parts.length > 0) {
+      const children = parts
+        .map((part) => synthesizePartEntry(part, next.file, revision))
+        .filter(Boolean);
+      if (children.length > 0) {
+        next = next === entry ? { ...entry } : next;
+        next.parts = children;
+      }
+    }
+    return next;
   });
   return { ...catalog, entries };
 }

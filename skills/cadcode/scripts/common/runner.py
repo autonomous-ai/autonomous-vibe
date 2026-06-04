@@ -386,6 +386,14 @@ def _build_success_payload(
         if fact in src:
             payload[fact] = src[fact]
 
+    # Per-part STLs for assemblies — echoed so callers know each part's file.
+    # Absent (or empty) for single-solid projects; kept additive.
+    if src.get("parts"):
+        payload["parts"] = [
+            {"name": str(p.get("name", "")), "stl_path": str(p.get("stl_path", ""))}
+            for p in src["parts"]
+        ]
+
     # Echo the tolerance flags so callers can verify wiring (back-compat
     # with the old runner contract — kept additive).
     if "mesh_tolerance" in src:

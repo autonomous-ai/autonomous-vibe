@@ -8,7 +8,7 @@
 //! as the cadcode pipeline lands.
 
 use crate::ipc::types::{
-    Catalog, CatalogArtifact, CatalogEntry, CatalogKind, GenerationStatus, SourceKind,
+    Catalog, CatalogArtifact, CatalogEntry, CatalogKind, CatalogPart, GenerationStatus, SourceKind,
 };
 use crate::ipc::{IpcError, IpcResult};
 use crate::paths;
@@ -205,9 +205,14 @@ pub fn scan_workspace(root: &Path) -> IpcResult<Vec<CatalogEntry>> {
 ///   `_render.py`), not the user's editable source.
 ///
 /// Kept: `.step`/`.stp`/`.stl`/`.gcode` and real (non-underscore) `.py`.
+///
+/// Per-part STLs under a `<stem>_parts/` directory are also hidden from the flat
+/// list: they are surfaced (grouped) via the integrated `.step` entry's
+/// `artifact.parts`, not as standalone top-level models.
 fn is_auxiliary_file(absolute: &Path, kind: CatalogKind) -> bool {
     match kind {
         CatalogKind::Json | CatalogKind::Png => true,
+        CatalogKind::Stl => is_part_stl(absolute),
         CatalogKind::Py => absolute
             .file_name()
             .and_then(|n| n.to_str())
@@ -215,6 +220,17 @@ fn is_auxiliary_file(absolute: &Path, kind: CatalogKind) -> bool {
             .unwrap_or(false),
         _ => false,
     }
+}
+
+/// True when an `.stl` lives in a `<stem>_parts/` directory written by the
+/// per-part export — those are grouped under their integrated model instead.
+fn is_part_stl(absolute: &Path) -> bool {
+    absolute
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .map(|n| n.ends_with("_parts"))
+        .unwrap_or(false)
 }
 
 fn classify_source_kind(
@@ -245,44 +261,99 @@ fn classify_source_kind(
     }
 }
 
-/// For a .step entry, fish out matching sidecar URLs (the `.stl` the viewer
-/// renders as the preview mesh, plus the `.step.json` metadata) if they exist
-/// next to the file.
+/// Build an entry's `artifact` sidecar block:
+/// - For a `.step` entry: the preview `.stl` URL the viewer renders plus the
+///   `.step.json` metadata URL, if they exist next to the file.
+/// - For the integrated `.stl` entry of an assembly: the per-part list read
+///   from the sibling `.step.json`, so the viewer groups the parts under it.
+///   (The per-part `.stl`s themselves are hidden from the flat list — see
+///   [`is_part_stl`].)
 fn sidecar_artifact(
     kind: CatalogKind,
     absolute: &Path,
     root: &Path,
 ) -> Option<CatalogArtifact> {
-    if !matches!(kind, CatalogKind::Step) {
-        return None;
-    }
     let stem = absolute.file_stem()?.to_string_lossy().into_owned();
     let parent = absolute.parent()?;
-    // `versioned` mirrors the standalone `.stl` entry: the preview mesh URL
-    // carries a cache-bust token so a regenerated sibling re-renders; the
-    // metadata sidecar URL stays plain (it isn't a rendered mesh).
-    let make_url = |suffix: &str, versioned: bool| {
-        let candidate = parent.join(format!("{stem}{suffix}"));
-        if candidate.exists() {
-            let rel = paths::to_workspace_relative(&candidate, root)?;
-            Some(if versioned {
-                versioned_asset_uri(&rel, &candidate)
-            } else {
-                tauri_asset_uri(&rel)
+    match kind {
+        CatalogKind::Step => {
+            // `versioned` mirrors the standalone `.stl` entry: the preview mesh
+            // URL carries a cache-bust token so a regenerated sibling
+            // re-renders; the metadata sidecar URL stays plain (it isn't a
+            // rendered mesh).
+            let make_url = |suffix: &str, versioned: bool| {
+                let candidate = parent.join(format!("{stem}{suffix}"));
+                if candidate.exists() {
+                    let rel = paths::to_workspace_relative(&candidate, root)?;
+                    Some(if versioned {
+                        versioned_asset_uri(&rel, &candidate)
+                    } else {
+                        tauri_asset_uri(&rel)
+                    })
+                } else {
+                    None
+                }
+            };
+            let stl_url = make_url(".stl", true);
+            let metadata_url = make_url(".step.json", false);
+            if stl_url.is_none() && metadata_url.is_none() {
+                return None;
+            }
+            Some(CatalogArtifact {
+                stl_url,
+                metadata_url,
+                parts: Vec::new(),
             })
-        } else {
-            None
         }
-    };
-    let stl_url = make_url(".stl", true);
-    let metadata_url = make_url(".step.json", false);
-    if stl_url.is_none() && metadata_url.is_none() {
-        return None;
+        CatalogKind::Stl => {
+            // Attach per-part info to the integrated `.stl` (the rendered,
+            // sliceable model) so the viewer nests its parts under it.
+            let parts =
+                read_sidecar_parts(&parent.join(format!("{stem}.step.json")), parent, root);
+            if parts.is_empty() {
+                return None;
+            }
+            Some(CatalogArtifact {
+                stl_url: None,
+                metadata_url: None,
+                parts,
+            })
+        }
+        _ => None,
     }
-    Some(CatalogArtifact {
-        stl_url,
-        metadata_url,
-    })
+}
+
+/// Read the `parts` array from a `.step.json` sidecar (assemblies only) and
+/// resolve each to a cache-busted asset URL. `stlPath` is stored relative to the
+/// sidecar's own directory; missing files are dropped. Returns an empty vec for
+/// single-solid projects (no `parts` key) or any read/parse failure.
+fn read_sidecar_parts(metadata_path: &Path, sidecar_dir: &Path, root: &Path) -> Vec<CatalogPart> {
+    let Ok(text) = std::fs::read_to_string(metadata_path) else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    let Some(entries) = json.get("parts").and_then(|p| p.as_array()) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let name = entry.get("name").and_then(|n| n.as_str())?;
+            let stl_path = entry.get("stlPath").and_then(|p| p.as_str())?;
+            let absolute = sidecar_dir.join(stl_path);
+            if !absolute.exists() {
+                return None;
+            }
+            let rel = paths::to_workspace_relative(&absolute, root)?;
+            Some(CatalogPart {
+                name: name.to_string(),
+                file: rel.clone(),
+                url: versioned_asset_uri(&rel, &absolute),
+            })
+        })
+        .collect()
 }
 
 fn tauri_asset_uri(workspace_relative: &str) -> String {
@@ -424,6 +495,39 @@ mod tests {
         assert!(stl_url.contains("model.stl"), "stl_url was {stl_url}");
         assert!(stl_url.contains("?v="), "stl_url should be versioned: {stl_url}");
         assert!(artifact.metadata_url.unwrap().ends_with("model.step.json"));
+    }
+
+    #[test]
+    fn surfaces_assembly_parts_on_integrated_stl_and_hides_part_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(&root.join("widget.step"));
+        touch(&root.join("widget.stl"));
+        touch(&root.join("widget_parts/base.stl"));
+        touch(&root.join("widget_parts/lid.stl"));
+        fs::write(
+            root.join("widget.step.json"),
+            br#"{"parts":[{"name":"base","stlPath":"widget_parts/base.stl"},{"name":"lid","stlPath":"widget_parts/lid.stl"}]}"#,
+        )
+        .unwrap();
+
+        let entries = scan_workspace(root).unwrap();
+        let by_file: HashMap<&str, &CatalogEntry> =
+            entries.iter().map(|e| (e.file.as_str(), e)).collect();
+
+        // Parts ride on the integrated `.stl` entry (the rendered model).
+        let stl = by_file["widget.stl"].artifact.clone().expect("artifact on stl");
+        let names: Vec<&str> = stl.parts.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["base", "lid"]);
+        assert_eq!(stl.parts[0].file, "widget_parts/base.stl");
+        assert!(stl.parts[0].url.contains("?v="), "part url versioned");
+
+        // The per-part STLs are not standalone entries.
+        assert!(
+            !by_file.contains_key("widget_parts/base.stl"),
+            "part STLs must be hidden from the flat list",
+        );
+        assert!(!by_file.contains_key("widget_parts/lid.stl"));
     }
 
     #[test]

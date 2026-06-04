@@ -95,6 +95,24 @@ pub struct CatalogArtifact {
     pub stl_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata_url: Option<String>,
+    /// For assemblies: one entry per named part, each its own printable `.stl`
+    /// (at build origin). The viewer groups these under the integrated model.
+    /// Empty/omitted for single-solid projects.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub parts: Vec<CatalogPart>,
+}
+
+/// A single named part of an assembly, surfaced from the `.step.json` sidecar's
+/// `parts` array.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogPart {
+    /// Part name (e.g. `chassis`), used as the display label.
+    pub name: String,
+    /// Workspace-relative path of the part `.stl` (the catalog/entry key).
+    pub file: String,
+    /// Cache-busted asset URL the viewer loads to render this part.
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

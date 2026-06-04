@@ -31,6 +31,11 @@ export function isPrintableModelEntry(entry) {
   if (!entry) {
     return false;
   }
+  // Per-part STLs are shown nested under their integrated model's "Parts"
+  // section, never as standalone top-level models.
+  if (entry.__partOf) {
+    return false;
+  }
   const rawKind = String(entry.kind || "").toLowerCase();
   if (NON_MODEL_KINDS.has(rawKind)) {
     return false;

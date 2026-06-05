@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 import { transport } from "@/lib/transport.ts";
 import ClaudeCheckStep from "./ClaudeCheckStep.jsx";
+import ClaudeLoginStep from "./ClaudeLoginStep.jsx";
 import PrinterStep from "./PrinterStep.jsx";
 import FilamentStep from "./FilamentStep.jsx";
 import DoneStep from "./DoneStep.jsx";
@@ -12,9 +13,10 @@ import {
 } from "./onboardingHelpers.js";
 
 const STEP_TITLES = {
-  claude: "Step 1 of 3 · Claude Code",
-  printer: "Step 2 of 3 · Printer",
-  filament: "Step 3 of 3 · Filament",
+  claude: "Step 1 of 4 · Claude Code",
+  login: "Step 2 of 4 · Sign in",
+  printer: "Step 3 of 4 · Printer",
+  filament: "Step 4 of 4 · Filament",
   done: "All set",
 };
 
@@ -31,13 +33,18 @@ export default function OnboardingWizard({ onComplete }) {
     if (finishing) return;
     setFinishing(true);
     try {
-      const existing = settings || (await transport.app_settings_read());
+      // Re-read rather than trust the in-memory copy: the sign-in step
+      // persisted `claudeOauthToken` straight to settings, so an older
+      // `settings` snapshot would clobber it on write.
+      const existing = await transport.app_settings_read();
       const nextSettings = {
         defaultFilament: existing?.defaultFilament ?? "PLA",
         slicerBinaryPath: existing?.slicerBinaryPath ?? "",
         usePandaCloud: existing?.usePandaCloud ?? false,
         pandaToken: existing?.pandaToken,
+        claudeOauthToken: existing?.claudeOauthToken,
         hasOnboarded: true,
+        autoUpdate: existing?.autoUpdate ?? false,
       };
       await transport.app_settings_write(nextSettings);
       onComplete?.(nextSettings);
@@ -62,6 +69,7 @@ export default function OnboardingWizard({ onComplete }) {
         </p>
         <div className="mt-3">
           {step === "claude" ? <ClaudeCheckStep onAdvance={advance} /> : null}
+          {step === "login" ? <ClaudeLoginStep onAdvance={advance} /> : null}
           {step === "printer" ? (
             <PrinterStep onAdvance={advance} onSkip={advance} />
           ) : null}

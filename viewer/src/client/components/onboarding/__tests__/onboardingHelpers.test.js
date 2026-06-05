@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildClaudeLoginFlow,
+  describeClaudeLoginProgress,
+  evaluateAuthCheck,
   evaluateClaudeCheck,
   isOnboardingComplete,
   nextOnboardingStep,
@@ -8,12 +11,19 @@ import {
   previousOnboardingStep,
 } from "../onboardingHelpers.js";
 
-test("ONBOARDING_STEPS exposes the four-step machine", () => {
-  assert.deepEqual(ONBOARDING_STEPS, ["claude", "printer", "filament", "done"]);
+test("ONBOARDING_STEPS exposes the five-step machine with sign-in", () => {
+  assert.deepEqual(ONBOARDING_STEPS, [
+    "claude",
+    "login",
+    "printer",
+    "filament",
+    "done",
+  ]);
 });
 
-test("nextOnboardingStep advances and clamps at done", () => {
-  assert.equal(nextOnboardingStep("claude"), "printer");
+test("nextOnboardingStep advances through sign-in and clamps at done", () => {
+  assert.equal(nextOnboardingStep("claude"), "login");
+  assert.equal(nextOnboardingStep("login"), "printer");
   assert.equal(nextOnboardingStep("printer"), "filament");
   assert.equal(nextOnboardingStep("filament"), "done");
   assert.equal(nextOnboardingStep("done"), "done");
@@ -24,7 +34,8 @@ test("nextOnboardingStep maps unknown labels back to the first step", () => {
 });
 
 test("previousOnboardingStep clamps at the first step", () => {
-  assert.equal(previousOnboardingStep("printer"), "claude");
+  assert.equal(previousOnboardingStep("login"), "claude");
+  assert.equal(previousOnboardingStep("printer"), "login");
   assert.equal(previousOnboardingStep("claude"), "claude");
 });
 
@@ -48,4 +59,89 @@ test("evaluateClaudeCheck guards against missing payloads", () => {
     evaluateClaudeCheck(undefined),
     { proceed: false, reason: "claude_cli_missing" },
   );
+});
+
+test("evaluateAuthCheck proceeds when authenticated is true", () => {
+  assert.deepEqual(
+    evaluateAuthCheck({ authenticated: true, source: "oauth_token" }),
+    { proceed: true, source: "oauth_token" },
+  );
+});
+
+test("evaluateAuthCheck reports missing when not authenticated", () => {
+  assert.deepEqual(evaluateAuthCheck({ authenticated: false }), {
+    proceed: false,
+    reason: "claude_not_authenticated",
+  });
+  assert.deepEqual(evaluateAuthCheck(undefined), {
+    proceed: false,
+    reason: "claude_not_authenticated",
+  });
+});
+
+test("describeClaudeLoginProgress maps each stage to a label", () => {
+  assert.equal(describeClaudeLoginProgress({ stage: "starting" }), "Starting sign-in…");
+  assert.equal(
+    describeClaudeLoginProgress({ stage: "awaiting_browser", url: "https://x" }),
+    "Waiting for you to approve in your browser…",
+  );
+  assert.equal(describeClaudeLoginProgress({ stage: "done" }), "Signed in");
+  assert.equal(describeClaudeLoginProgress({ stage: "error", message: "boom" }), "boom");
+  assert.equal(describeClaudeLoginProgress(null), "Working…");
+  assert.equal(describeClaudeLoginProgress({ stage: "weird" }), "Working…");
+});
+
+test("buildClaudeLoginFlow reaches done and fires onComplete on success", async () => {
+  const changes = [];
+  let completed = null;
+  let unsubscribed = false;
+  const flow = buildClaudeLoginFlow({
+    runLogin: () => Promise.resolve({ authenticated: true, source: "oauth_token" }),
+    subscribe: (handler) => {
+      handler({ stage: "awaiting_browser", url: "https://claude.ai/oauth" });
+      return () => {
+        unsubscribed = true;
+      };
+    },
+    onComplete: (result) => {
+      completed = result;
+    },
+    onChange: (snapshot) => changes.push(snapshot),
+  });
+  await flow.start();
+  assert.equal(flow.state, "done");
+  assert.deepEqual(completed, { authenticated: true, source: "oauth_token" });
+  assert.ok(unsubscribed, "listener cleaned up");
+  assert.ok(
+    changes.some((c) => c.progress && c.progress.stage === "awaiting_browser"),
+    "awaiting_browser progress surfaced",
+  );
+});
+
+test("buildClaudeLoginFlow goes to error when runLogin rejects", async () => {
+  let completed = false;
+  const flow = buildClaudeLoginFlow({
+    runLogin: () => Promise.reject({ message: "no token" }),
+    subscribe: () => () => {},
+    onComplete: () => {
+      completed = true;
+    },
+    onChange: () => {},
+  });
+  await flow.start();
+  assert.equal(flow.state, "error");
+  assert.equal(flow.progress.stage, "error");
+  assert.equal(flow.progress.message, "no token");
+  assert.equal(completed, false, "onComplete not called on failure");
+});
+
+test("buildClaudeLoginFlow treats a non-authenticated resolve as failure", async () => {
+  const flow = buildClaudeLoginFlow({
+    runLogin: () => Promise.resolve({ authenticated: false }),
+    subscribe: () => () => {},
+    onComplete: () => {},
+    onChange: () => {},
+  });
+  await flow.start();
+  assert.equal(flow.state, "error");
 });

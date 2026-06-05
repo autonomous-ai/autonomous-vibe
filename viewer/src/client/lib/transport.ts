@@ -221,6 +221,10 @@ export interface AppSettings {
   slicerBinaryPath: string;
   usePandaCloud: boolean;
   pandaToken?: string;
+  // Captured by app_login_claude (`claude setup-token`); exported as
+  // CLAUDE_CODE_OAUTH_TOKEN so headless turns authenticate. Mirrors
+  // ipc/types.rs::AppSettings.claude_oauth_token.
+  claudeOauthToken?: string;
   // Track E contract extension: lets the viewer gate the first-run wizard
   // with a single app_settings_read() call. Mirrored in
   // desktop/src-tauri/src/ipc/types.rs as a follow-up.
@@ -273,6 +277,32 @@ export type ClaudeInstallProgress =
   | { stage: "running" }
   | { stage: "verifying" }
   | { stage: "done"; version: string; binaryPath: string }
+  | { stage: "error"; message: string };
+
+// Claude Code sign-in (setup-token OAuth) ------------------------------------
+
+/**
+ * Result of `app_auth_check` and `app_login_claude`. `authenticated` is the
+ * single bit onboarding gates on; `source` (when present) is `"oauth_token"`
+ * or `"credentials_file"`. Mirrors the serde struct in
+ * `desktop/src-tauri/src/ipc/types.rs::ClaudeAuthStatus`.
+ */
+export interface ClaudeAuthStatus {
+  authenticated: boolean;
+  source?: "oauth_token" | "credentials_file";
+}
+
+/**
+ * Discriminated union streamed via the `claude_login_progress` Tauri event
+ * while `app_login_claude` drives `claude setup-token`. Mirrors the serde
+ * enum in `desktop/src-tauri/src/ipc/types.rs::ClaudeLoginProgress` (tag =
+ * "stage", snake_case variants, camelCase fields).
+ */
+export type ClaudeLoginProgress =
+  | { stage: "starting" }
+  | { stage: "awaiting_browser"; url: string }
+  | { stage: "verifying" }
+  | { stage: "done" }
   | { stage: "error"; message: string };
 
 export interface CatalogChangedEvent {
@@ -494,6 +524,16 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
         code: "PLATFORM_UNSUPPORTED",
         message: `${STUB_TAG} install-claude only runs inside Tauri`,
       } as IpcError;
+    case "app_auth_check":
+      // In a plain browser there's no host `claude`; report authenticated so
+      // the onboarding login gate doesn't block browser-only dev.
+      return { authenticated: true, source: "oauth_token" } as unknown as T;
+    case "app_login_claude":
+      // The real sign-in drives a PTY + browser OAuth — Tauri only.
+      throw {
+        code: "PLATFORM_UNSUPPORTED",
+        message: `${STUB_TAG} claude sign-in only runs inside Tauri`,
+      } as IpcError;
     case "catalog_read":
     case "project_catalog_read":
       return {
@@ -608,6 +648,8 @@ const transportBase = {
     invoke<void>("app_settings_write", { settings }),
   app_install_claude_code: () =>
     invoke<InstalledClaude>("app_install_claude_code"),
+  app_auth_check: () => invoke<ClaudeAuthStatus>("app_auth_check"),
+  app_login_claude: () => invoke<ClaudeAuthStatus>("app_login_claude"),
 
   // catalog
   catalog_read: () => invoke<Catalog>("catalog_read"),
@@ -711,6 +753,8 @@ const transportBase = {
     listenEvent<PrintProgressEvent>("print_progress", handler),
   onClaudeInstallProgress: (handler: (event: ClaudeInstallProgress) => void) =>
     listenEvent<ClaudeInstallProgress>("claude_install_progress", handler),
+  onClaudeLoginProgress: (handler: (event: ClaudeLoginProgress) => void) =>
+    listenEvent<ClaudeLoginProgress>("claude_login_progress", handler),
   onUpdateEvent: (handler: (event: UpdateEvent) => void) =>
     listenEvent<UpdateEvent>("update_event", handler),
 };

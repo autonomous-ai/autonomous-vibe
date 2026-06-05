@@ -401,7 +401,10 @@ export default function CadWorkspace({
   catalogHydrated = false,
   catalogRefreshing = false,
   catalogError = "",
-  projectMenu = null
+  projectMenu = null,
+  onModelsSidebarChange = null,
+  onToolsSheetChange = null,
+  closeLeftSidebarSignal = 0
 }) {
   const manifestEntries = Array.isArray(manifestEntriesProp) ? manifestEntriesProp : [];
   const catalogEntries = manifestEntries;
@@ -1952,6 +1955,25 @@ export default function CadWorkspace({
   const desktopFileSheetOpen = isDesktop && tabToolsOpen && !!selectedFileSheetKind && !previewMode;
   const effectiveSidebarOpen = sidebarOpen && !previewMode;
   const desktopSidebarOpen = isDesktop && effectiveSidebarOpen && !previewMode;
+
+  // Publish the horizontal space the Models sidebar and file tools sheet
+  // actually occupy (desktop only — on mobile they overlay) so the chat panel
+  // can keep the model viewer above its minimum visible width while resizing.
+  // Read-only mirror: ownership of this state stays here. See chatLayout.js.
+  useEffect(() => {
+    onModelsSidebarChange?.(desktopSidebarOpen, sidebarWidth);
+  }, [onModelsSidebarChange, desktopSidebarOpen, sidebarWidth]);
+  useEffect(() => {
+    onToolsSheetChange?.(desktopFileSheetOpen, tabToolsWidth);
+  }, [onToolsSheetChange, desktopFileSheetOpen, tabToolsWidth]);
+
+  // The chat panel auto-closes the Models sidebar when it needs the room. The
+  // signal is a nonce bumped by AppRoot; >0 means "close" (idempotent).
+  useEffect(() => {
+    if (closeLeftSidebarSignal > 0) {
+      setSidebarOpen(false);
+    }
+  }, [closeLeftSidebarSignal, setSidebarOpen]);
 
   const setThemeMenuOpen = useCallback(() => {}, []);
 

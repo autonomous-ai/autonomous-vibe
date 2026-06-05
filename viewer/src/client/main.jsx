@@ -1,7 +1,8 @@
-import { StrictMode, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import CadWorkspace from "./components/CadWorkspace";
-import ChatSidebar, { readStoredChatSidebarWidth } from "./components/chat/ChatSidebar";
+import ChatSidebar, { readStoredChatSidebarWidth, persistChatSidebarWidth } from "./components/chat/ChatSidebar";
+import { CHAT_MIN_WIDTH, maxChatWidth } from "./workbench/chatLayout.js";
 import { bindCadRefSelectionToChatInput } from "./components/chat/cadRefEvents";
 import ProjectMenu from "./components/project/ProjectMenu.jsx";
 import OnboardingWizard from "./components/onboarding/OnboardingWizard.jsx";
@@ -121,6 +122,73 @@ function AppRoot() {
   // the panel itself and the workspace's right padding so neither overlaps.
   const [chatSidebarWidth, setChatSidebarWidth] = useState(readStoredChatSidebarWidth);
 
+  // Chat-vs-workspace layout coordination. AppRoot is the one place the chat
+  // panel and the workspace meet, so it owns the math that keeps the model
+  // viewer visible while the chat resizes (see workbench/chatLayout.js).
+  // CadWorkspace keeps owning its sidebar/tools state and only *publishes* the
+  // widths they occupy here; AppRoot commands a sidebar close via a nonce.
+  const [viewportWidth, setViewportWidth] = useState(() =>
+    typeof window !== "undefined" && window.innerWidth > 0 ? window.innerWidth : 1600,
+  );
+  const [modelsSidebar, setModelsSidebar] = useState({ open: false, width: 0 });
+  const [toolsSheet, setToolsSheet] = useState({ open: false, width: 0 });
+  const [closeLeftSidebarSignal, setCloseLeftSidebarSignal] = useState(0);
+
+  const handleModelsSidebarChange = useCallback((open, width) => {
+    setModelsSidebar((prev) =>
+      prev.open === open && prev.width === width ? prev : { open, width },
+    );
+  }, []);
+  const handleToolsSheetChange = useCallback((open, width) => {
+    setToolsSheet((prev) =>
+      prev.open === open && prev.width === width ? prev : { open, width },
+    );
+  }, []);
+  const requestCloseLeftSidebar = useCallback(() => {
+    setCloseLeftSidebarSignal((nonce) => nonce + 1);
+  }, []);
+
+  const chatLayout = useMemo(
+    () => ({
+      viewportWidth,
+      leftSidebarOpen: modelsSidebar.open,
+      leftSidebarWidth: modelsSidebar.width,
+      toolsSheetOpen: toolsSheet.open,
+      toolsSheetWidth: toolsSheet.width,
+    }),
+    [viewportWidth, modelsSidebar, toolsSheet],
+  );
+
+  // Latest chat width, read by the clamp effect below without making the width
+  // a dependency — otherwise every drag frame would re-run the clamp and fight
+  // the auto-close (which intentionally lets the chat exceed the sidebar-open
+  // cap until the close round-trips back into `chatLayout`).
+  const chatSidebarWidthRef = useRef(chatSidebarWidth);
+  chatSidebarWidthRef.current = chatSidebarWidth;
+
+  // Track the viewport width so the chat clamp follows window resizes.
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const onResize = () => setViewportWidth(window.innerWidth > 0 ? window.innerWidth : 1600);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // Re-clamp the chat whenever the available space shrinks: the window got
+  // narrower, the Models sidebar re-opened, or the tools sheet opened. Keyed on
+  // `chatLayout` only (not the width) so it covers the "squeeze chat to keep the
+  // viewer visible" behavior without interfering with an in-progress chat drag.
+  // Shrinks down to CHAT_MIN — below which the viewer absorbs the overflow as a
+  // last resort. Growing space never widens the chat on its own.
+  useEffect(() => {
+    const max = maxChatWidth(chatLayout);
+    if (chatSidebarWidthRef.current > max) {
+      const next = Math.max(CHAT_MIN_WIDTH, max);
+      setChatSidebarWidth(next);
+      persistChatSidebarWidth(next);
+    }
+  }, [chatLayout]);
+
   const projects = useProjectsStore((state) => state.projects);
   const currentProjectId = useProjectsStore((state) => state.currentProjectId);
   const projectsStatus = useProjectsStore((state) => state.status);
@@ -192,9 +260,17 @@ function AppRoot() {
           catalogRefreshing={catalogRefreshing}
           catalogError={catalogError}
           projectMenu={<ProjectMenu />}
+          onModelsSidebarChange={handleModelsSidebarChange}
+          onToolsSheetChange={handleToolsSheetChange}
+          closeLeftSidebarSignal={closeLeftSidebarSignal}
         />
       </div>
-      <ChatSidebar width={chatSidebarWidth} onWidthChange={setChatSidebarWidth} />
+      <ChatSidebar
+        width={chatSidebarWidth}
+        onWidthChange={setChatSidebarWidth}
+        layout={chatLayout}
+        onRequestCloseLeftSidebar={requestCloseLeftSidebar}
+      />
       <UpdateNotifier />
     </div>
   );

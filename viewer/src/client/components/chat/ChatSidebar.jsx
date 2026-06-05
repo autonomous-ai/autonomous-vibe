@@ -1,22 +1,25 @@
 import { useCallback, useEffect, useRef } from "react";
 import { MessageSquare } from "lucide-react";
 import { cn } from "@/ui/utils";
-import { attachChatEventStream, useChatStore } from "@/store/chat";
+import { attachChatEventStream, restoreVersion, useChatStore } from "@/store/chat";
+import { CHAT_MIN_WIDTH, clampChatWidth } from "@/workbench/chatLayout";
 import ChatHistory from "./ChatHistory";
 import ChatInput from "./ChatInput";
 import ActionButtons from "./ActionButtons";
 
 const SIDEBAR_WIDTH = 440;
-const SIDEBAR_MIN_WIDTH = 320;
-const SIDEBAR_MAX_WIDTH = 720;
 const SIDEBAR_WIDTH_STORAGE_KEY = "panda.chatSidebar.width";
 
-function clampSidebarWidth(value) {
+// Clamp a stored width to the readable minimum only. The dynamic upper bound
+// (a fraction of the viewport, minus the space the model viewer and open side
+// panels need) depends on live layout, so AppRoot applies it once it knows the
+// viewport — see workbench/chatLayout.js and main.jsx.
+function clampStoredWidth(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
     return SIDEBAR_WIDTH;
   }
-  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, numeric));
+  return Math.max(CHAT_MIN_WIDTH, Math.round(numeric));
 }
 
 // Restore the persisted width so the panel keeps its size across launches.
@@ -29,7 +32,7 @@ function readStoredChatSidebarWidth() {
     if (stored == null) {
       return SIDEBAR_WIDTH;
     }
-    return clampSidebarWidth(Number.parseInt(stored, 10));
+    return clampStoredWidth(Number.parseInt(stored, 10));
   } catch {
     return SIDEBAR_WIDTH;
   }
@@ -49,13 +52,18 @@ function persistChatSidebarWidth(width) {
 // Chat is the primary surface of the app, so the panel is permanent — there's
 // no collapse. The collapsible rail is the left "Models" sidebar instead. The
 // panel is resizable from its left edge; the live width is lifted to the parent
-// so the workspace's right padding tracks it.
+// so the workspace's right padding tracks it. The resize is coordinated with
+// the rest of the workspace via the `layout` prop and `onRequestCloseLeftSidebar`
+// (see workbench/chatLayout.js): dragging wide enough auto-closes the Models
+// sidebar to free space, and the viewer keeps a minimum visible width.
 export default function ChatSidebar({
   printerList = [],
   defaultFilament = "PLA",
   onOpenArtifact,
   width = SIDEBAR_WIDTH,
   onWidthChange,
+  layout,
+  onRequestCloseLeftSidebar,
   className,
 }) {
   const lastError = useChatStore((state) => state.lastError);
@@ -63,6 +71,14 @@ export default function ChatSidebar({
   const projectId = useChatStore((state) => state.currentProjectId);
 
   const resizeStateRef = useRef(null);
+  // The window-level pointer handlers below are installed once; these refs keep
+  // them reading the latest layout and callbacks without re-subscribing.
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+  const onWidthChangeRef = useRef(onWidthChange);
+  onWidthChangeRef.current = onWidthChange;
+  const onRequestCloseLeftSidebarRef = useRef(onRequestCloseLeftSidebar);
+  onRequestCloseLeftSidebarRef.current = onRequestCloseLeftSidebar;
 
   // Attach the chat_event stream once the sidebar mounts. The transport's
   // placeholder will throw if the real transport hasn't replaced it — we
@@ -92,9 +108,18 @@ export default function ChatSidebar({
         return;
       }
       const delta = resizeState.startX - event.clientX;
-      const nextWidth = clampSidebarWidth(resizeState.startWidth + delta);
+      const { width: nextWidth, closeLeftSidebar } = clampChatWidth(
+        resizeState.startWidth + delta,
+        { ...(layoutRef.current || {}), allowCloseLeftSidebar: true },
+      );
+      // Reaching past what fits with the Models sidebar open reclaims its space
+      // (one-way; it never auto-reopens). Idempotent: once the close round-trips
+      // into `layout`, clampChatWidth stops asking.
+      if (closeLeftSidebar) {
+        onRequestCloseLeftSidebarRef.current?.();
+      }
       resizeState.latestWidth = nextWidth;
-      onWidthChange?.(nextWidth);
+      onWidthChangeRef.current?.(nextWidth);
     };
 
     const endResize = () => {
@@ -116,7 +141,7 @@ export default function ChatSidebar({
       window.removeEventListener("pointerup", endResize);
       window.removeEventListener("pointercancel", endResize);
     };
-  }, [onWidthChange]);
+  }, []);
 
   const handleResizeStart = useCallback(
     (event) => {
@@ -180,8 +205,6 @@ export default function ChatSidebar({
 
 export {
   SIDEBAR_WIDTH,
-  SIDEBAR_MIN_WIDTH,
-  SIDEBAR_MAX_WIDTH,
-  clampSidebarWidth,
   readStoredChatSidebarWidth,
+  persistChatSidebarWidth,
 };

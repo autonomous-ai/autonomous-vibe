@@ -10,6 +10,7 @@ import {
   chatReducer,
   selectArtifactFiles,
   selectLatestGcode,
+  selectLatestGcode3mf,
   selectLatestStl,
   INITIAL_CHAT_STATE,
 } from "../../../store/chat.js";
@@ -320,4 +321,40 @@ test("Change 4: a completed build turn yields the exact condition that shows the
     planTurn.status === "complete" &&
     planTurn.blocks.some((b) => b.kind === "artifact");
   assert.equal(planShowsHint, false);
+});
+
+test("toolbar slice: set_last_slice surfaces gcode/3mf and turn_start clears it", () => {
+  // A toolbar slice (no chat turn) records its output; the Print button reads
+  // it via selectLatestGcode, and cloud reads the 3mf via selectLatestGcode3mf.
+  const sliced = chatReducer(
+    { ...INITIAL_CHAT_STATE, currentProjectId: "p1" },
+    { type: "set_last_slice", gcodeFile: "model.gcode", gcode3mfFile: "model.gcode.3mf" },
+    FIXED_NOW,
+  );
+  assert.equal(selectLatestGcode(sliced), "model.gcode");
+  assert.equal(selectLatestGcode3mf(sliced), "model.gcode.3mf");
+
+  // A new chat turn supersedes the stale toolbar slice.
+  const afterTurn = chatReducer(
+    sliced,
+    { type: "chat_event", event: { kind: "turn_start", turnId: "t1" } },
+    FIXED_NOW,
+  );
+  assert.equal(selectLatestGcode(afterTurn), "");
+  assert.equal(selectLatestGcode3mf(afterTurn), "");
+});
+
+test("toolbar slice wins over an older chat-artifact gcode", () => {
+  const withChatGcode = applyEvents({ ...INITIAL_CHAT_STATE, currentProjectId: "p1" }, [
+    { kind: "turn_start", turnId: "t1" },
+    { kind: "artifact_changed", turnId: "t1", file: "old.gcode", reason: "new" },
+    { kind: "turn_end", turnId: "t1" },
+  ]);
+  assert.equal(selectLatestGcode(withChatGcode), "old.gcode");
+  const resliced = chatReducer(
+    withChatGcode,
+    { type: "set_last_slice", gcodeFile: "fresh.gcode", gcode3mfFile: "" },
+    FIXED_NOW,
+  );
+  assert.equal(selectLatestGcode(resliced), "fresh.gcode");
 });

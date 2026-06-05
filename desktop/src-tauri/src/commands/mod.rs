@@ -9,5 +9,6 @@ pub mod chat;
 pub mod claude_driver;
 pub mod slicer;
 pub mod printer;
+pub mod cloud;
 pub mod project;
 pub mod update;

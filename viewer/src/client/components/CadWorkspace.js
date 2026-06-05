@@ -85,6 +85,7 @@ import {
 } from "@/workbench/referenceSelection";
 import {
   entryAssetHash,
+  entryAssetUrl,
   entryHasDisplayEdges,
   entryHasDxf,
   entryHasGcode,
@@ -193,11 +194,6 @@ import {
   normalizeDxfPreviewThicknessMm
 } from "cadjs/lib/dxf/buildPreviewMesh";
 import {
-  buildGcodePreviewMeshData,
-  DEFAULT_GCODE_PREVIEW_DETAIL_LEVEL,
-  normalizeGcodePreviewOptions
-} from "cadjs/lib/gcode/buildPreviewMesh";
-import {
   applyUrdfPoseToMeshData,
   buildDefaultUrdfJointValues,
   buildUrdfMeshGeometry,
@@ -213,7 +209,7 @@ import {
   validateUrdfMotionJointValues
 } from "cadjs/lib/urdf/motion";
 import { checkMoveIt2ServerLive, moveit2ServerEnabled, requestMoveIt2Server } from "cadjs/lib/urdf/moveit2ServerClient";
-import { requestStepArtifactGeneration, requestStepSourceStatus } from "cadjs/lib/cadManifestStore";
+import { requestStepArtifactGeneration, requestStepSourceStatus, refreshCadCatalog } from "cadjs/lib/cadManifestStore";
 import { stepArtifactCanGenerate } from "@/workbench/stepArtifactStatus";
 import {
   buildFileStatusItems,
@@ -261,7 +257,7 @@ import {
 import { emitCadRefSelection } from "@/components/chat/cadRefEvents";
 import { basename, pickPrinterForSlice } from "@/components/chat/actionButtonsHelpers";
 import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
-import { setSelectedMeshFile, setProject as setChatProject, useChatStore } from "@/store/chat";
+import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, useChatStore } from "@/store/chat";
 import { useProjectsStore } from "@/store/projects.ts";
 import { sortProjects } from "@/components/library/projectListHelpers.js";
 import { useProjectsFileTree } from "./workbench/hooks/useProjectsFileTree";
@@ -282,6 +278,60 @@ const CAD_WORKSPACE_TOP_BAR_HEIGHT = 44;
 const DEFAULT_LARGE_FILE_STATE = Object.freeze({
   selectableTopologyEnabled: false
 });
+
+// Turn a slice failure (a Tauri IpcError `{ code, message }`, an Error, or a
+// string) into a short, actionable message. Known codes get friendly copy;
+// everything else falls back to the raw message.
+function describeSliceError(err) {
+  const code = err && typeof err === "object" && "code" in err ? String(err.code || "") : "";
+  const raw =
+    err && typeof err === "object" && "message" in err
+      ? String(err.message || "")
+      : String(err || "");
+  switch (code) {
+    case "SLICER_NOT_FOUND":
+      return "OrcaSlicer not found. Install it, or set its path in Settings, then try again.";
+    case "NO_ACTIVE_PROJECT":
+      return "Open a project before slicing.";
+    case "SLICE_FAILED":
+      return `Slicer error: ${raw || "the slicer exited with an error"}`;
+    case "SLICE_TIMEOUT":
+      return "Slicing timed out and was stopped. Try again, or simplify the model.";
+    default:
+      return raw || "Slice failed";
+  }
+}
+
+// Friendly button label for an in-flight slice. The backend emits coarse stage
+// frames (`preparing` → `slicing` → `writing`) over `slice_progress`; we show
+// the stage word rather than a percent, which would otherwise sit frozen at a
+// single value for the whole (potentially multi-minute) slice.
+const SLICE_STAGE_LABELS = {
+  preparing: "Preparing…",
+  slicing: "Slicing…",
+  running: "Slicing…",
+  writing: "Writing…"
+};
+
+function sliceProgressLabel(progress) {
+  return SLICE_STAGE_LABELS[progress?.stage] || "Slicing…";
+}
+
+// Toolbar Print button label. `printing` is the brief upload+start window;
+// `printJob` is the live status polled from `printer_status` afterwards.
+function printButtonLabel(printing, printJob) {
+  if (printJob) {
+    const pct = Math.round((Number(printJob.progress) || 0) * 100);
+    if (printJob.state === "paused") {
+      return `Paused ${pct}%`;
+    }
+    return `Printing ${pct}%`;
+  }
+  if (printing) {
+    return "Starting…";
+  }
+  return "Print";
+}
 
 function viewerAssetBackendFromEnv() {
   return String(import.meta.env?.VIEWER_ASSET_BACKEND || LOCAL_ASSET_BACKEND).trim().toLowerCase();
@@ -451,8 +501,7 @@ export default function CadWorkspace({
   const [dxfBendSettings, setDxfBendSettings] = useState([]);
   const [gcodeShowTravel, setGcodeShowTravel] = useState(false);
   const [gcodeMaxLayer, setGcodeMaxLayer] = useState(null);
-  const [gcodeFullDetail, setGcodeFullDetail] = useState(false);
-  const [gcodePreviewDetailLevel, setGcodePreviewDetailLevel] = useState(DEFAULT_GCODE_PREVIEW_DETAIL_LEVEL);
+  const [gcodeRenderTubes, setGcodeRenderTubes] = useState(false);
   const [referenceQuery, setReferenceQuery] = useState("");
   const [selectedReferenceIds, setSelectedReferenceIds] = useState([]);
   const [largeFileState, setLargeFileState] = useState(() => normalizeLargeFileState(DEFAULT_LARGE_FILE_STATE));
@@ -480,11 +529,32 @@ export default function CadWorkspace({
   });
   const [screenshotStatus, setScreenshotStatus] = useState("");
   const [slicing, setSlicing] = useState(false);
+  const [sliceError, setSliceError] = useState("");
+  // Terminal slice toast (success or failure), kept separate from the
+  // overloaded `screenshotStatus` so failures can be styled as errors.
+  const [sliceStatus, setSliceStatus] = useState("");
+  const [sliceStatusError, setSliceStatusError] = useState(false);
+  // Live in-flight stage from `slice_progress`, drives the button label.
+  const [sliceProgress, setSliceProgress] = useState(null);
   const [addPrinterOpen, setAddPrinterOpen] = useState(false);
-  // When the user triggers Slice with no printer, we open the pairing dialog and
-  // remember to resume the slice once a printer is actually added (set on
-  // `onAdded`, consumed when the dialog closes — so cancelling doesn't re-slice).
-  const pendingSliceAfterAddRef = useRef(false);
+  // When Print is triggered with no printer, we open the pairing dialog and
+  // remember to resume the print once a printer is actually added (armed on
+  // `onAdded`, consumed on close — so cancelling never re-triggers). Slicing is
+  // printer-independent and never opens this dialog.
+  const pendingPrintAfterAddRef = useRef(false);
+  // Print-from-viewer state: when a `.gcode` entry is selected the toolbar shows
+  // a one-click Print button (upload + start), then live progress.
+  const [printing, setPrinting] = useState(false);
+  const [printStatus, setPrintStatus] = useState("");
+  const [printStatusError, setPrintStatusError] = useState(false);
+  // Live job from polling `printer_status` after a print starts (the backend
+  // emits no `print_progress` event). `monitoredPrinterId` drives the poll loop;
+  // `printJob` is the latest status shown on the toolbar button.
+  const [printJob, setPrintJob] = useState(null);
+  const [monitoredPrinterId, setMonitoredPrinterId] = useState("");
+  // Gcode path to auto-select once it lands in the refreshed catalog after a
+  // slice — drives the "view slice on viewer" step.
+  const [autoSelectGcodePath, setAutoSelectGcodePath] = useState("");
   const [fileAccessBusyKey, setFileAccessBusyKey] = useState("");
   const [persistenceStatus, setPersistenceStatus] = useState("");
   const [motionErrorStatus, setMotionErrorStatus] = useState("");
@@ -1207,65 +1277,21 @@ export default function CadWorkspace({
         selectedGcodeLayerCount - 1
       )
     : 0;
-  const selectedGcodePreviewOptions = useMemo(() => normalizeGcodePreviewOptions({
-    showTravel: gcodeShowTravel,
-    layerRange: [0, selectedGcodeMaxLayer],
-    detailMode: gcodeFullDetail ? "full" : "adaptive",
-    detailLevel: gcodePreviewDetailLevel
-  }, selectedGcodeLayerCount), [
-    gcodeFullDetail,
-    gcodePreviewDetailLevel,
-    gcodeShowTravel,
-    selectedGcodeLayerCount,
-    selectedGcodeMaxLayer
-  ]);
-  const selectedGcodePreview = useMemo(() => {
-    if (!selectedGcodeData) {
-      return {
-        meshData: null,
-        error: ""
-      };
-    }
-    try {
-      return {
-        meshData: buildGcodePreviewMeshData(selectedGcodeData, selectedGcodePreviewOptions),
-        error: ""
-      };
-    } catch (error) {
-      return {
-        meshData: null,
-        error: error instanceof Error ? error.message : String(error)
-      };
-    }
-  }, [selectedGcodeData, selectedGcodePreviewOptions]);
-  const selectedGcodeMeshData = selectedGcodePreview.meshData;
-  const selectedGcodePreviewError = selectedGcodePreview.error;
-  const selectedGcodePreviewKey = useMemo(() => {
-    if (!selectedGcodeFileRef || !selectedGcodeData) {
-      return selectedGcodeFileRef;
-    }
-    return `${selectedGcodeFileRef}:travel=${gcodeShowTravel ? "1" : "0"}:layer=${selectedGcodeMaxLayer}:detail=${gcodeFullDetail ? "full" : `adaptive-${gcodePreviewDetailLevel}`}`;
-  }, [
-    gcodeFullDetail,
-    gcodePreviewDetailLevel,
-    gcodeShowTravel,
-    selectedGcodeData,
-    selectedGcodeFileRef,
-    selectedGcodeMaxLayer
-  ]);
+  // Rendering is delegated to the gcode-preview library (GcodePreviewPane), so
+  // the workspace only needs the gcode asset URL plus the native display
+  // options; the parsed `selectedGcodeData` is still used for the file panel's
+  // layer count, bounds, and loading state.
+  const selectedGcodeUrl = isGcodeView && selectedEntry
+    ? entryAssetUrl(selectedEntry, "gcode")
+    : "";
+  // Reset the visible-layer ceiling to "all layers" whenever the file changes.
   useEffect(() => {
-    if (!selectedGcodeFileRef || selectedGcodeLayerCount <= 0) {
-      setGcodeMaxLayer(null);
-      return;
-    }
-    setGcodeMaxLayer(selectedGcodeLayerCount - 1);
-    setGcodeFullDetail(false);
-    setGcodePreviewDetailLevel(DEFAULT_GCODE_PREVIEW_DETAIL_LEVEL);
-  }, [selectedGcodeFileRef, selectedGcodeLayerCount]);
+    setGcodeMaxLayer(null);
+  }, [selectedGcodeFileRef]);
   const selectedMeshData = isRobotRenderFormat(selectedEntrySourceFormat)
     ? selectedUrdfPreview.meshData
     : isGcodeView
-      ? selectedGcodeMeshData
+      ? null
       : selectedMeshMatches
         ? meshState.meshData
         : null;
@@ -1807,10 +1833,12 @@ export default function CadWorkspace({
       );
     }
     if (effectiveRenderFormat === RENDER_FORMAT.GCODE) {
+      // gcode-preview renders the toolpath; surface only load errors here and
+      // defer render-time errors to the pane's runtime alert.
       return buildViewerMeshAlert(
         selectedEntry,
-        !!selectedMeshData,
-        gcodeStatus === ASSET_STATUS.ERROR ? gcodeError : selectedGcodePreviewError
+        !!selectedGcodeData,
+        gcodeStatus === ASSET_STATUS.ERROR ? gcodeError : ""
       ) || viewerRuntimeAlert;
     }
     if (isRobotRenderFormat(effectiveRenderFormat)) {
@@ -1837,7 +1865,7 @@ export default function CadWorkspace({
     selectedDxfData,
     selectedEntry,
     selectedGeneratorRunning,
-    selectedGcodePreviewError,
+    selectedGcodeData,
     selectedMeshData,
     selectedUrdfPreviewError,
     status,
@@ -5538,6 +5566,26 @@ export default function CadWorkspace({
     });
   }, []);
 
+  // Mirror the backend's `slice_progress` stage frames into local state so the
+  // toolbar button can show live progress during a (possibly multi-minute)
+  // slice. The handler clears on the terminal `done` frame; the slice handler
+  // also clears in its `finally`.
+  useEffect(() => {
+    const transport = getTransport();
+    if (!transport?.events?.subscribe) {
+      return undefined;
+    }
+    return transport.events.subscribe("slice_progress", (event) => {
+      if (!event) return;
+      const stage = String(event.stage || "");
+      if (stage === "done") {
+        setSliceProgress(null);
+        return;
+      }
+      setSliceProgress({ stage, progress: Number(event.progress) || 0 });
+    });
+  }, []);
+
   useEffect(() => {
     if (!autoSelectStem) return;
     const match = catalogEntries.find(
@@ -5548,6 +5596,19 @@ export default function CadWorkspace({
       setAutoSelectStem("");
     }
   }, [autoSelectStem, catalogEntries, handleSelectEntry]);
+
+  // After a toolbar slice, switch the viewer to the freshly produced `.gcode`
+  // toolpath preview. The catalog refresh is async, so we stash the gcode path
+  // and select it once the matching entry materializes (mirrors the printable
+  // auto-select above). `findEntryByUrlPath` handles path normalization/aliases.
+  useEffect(() => {
+    if (!autoSelectGcodePath) return;
+    const match = findEntryByUrlPath(catalogEntries, autoSelectGcodePath);
+    if (match) {
+      handleSelectEntry(fileKey(match));
+      setAutoSelectGcodePath("");
+    }
+  }, [autoSelectGcodePath, catalogEntries, handleSelectEntry]);
 
   const handleRevealEntryInExplorerView = useCallback((entry) => {
     const targetKey = fileKey(entry);
@@ -5851,9 +5912,11 @@ export default function CadWorkspace({
     }
   }, [selectedEntry]);
 
-  const handleSliceForBambu = useCallback(async () => {
+  const handleSlicePlate = useCallback(async () => {
     // Slice the STL the user is currently viewing. Non-STL selections don't
     // reach this handler — the toolbar only renders the button for STL parts.
+    // Slicing is printer-independent: it just runs OrcaSlicer (the backend slice
+    // job ignores `printerId`). Printer selection happens later, at Print time.
     const stlFile =
       selectedEntry && entrySourceFormat(selectedEntry) === RENDER_FORMAT.STL
         ? fileKey(selectedEntry)
@@ -5862,31 +5925,149 @@ export default function CadWorkspace({
       return;
     }
     setSlicing(true);
+    setSliceError("");
+    setSliceStatus("");
+    setSliceStatusError(false);
+    setSliceProgress(null);
     setCopyStatus("");
-    setScreenshotStatus(`Slicing ${basename(stlFile)}…`);
+    try {
+      const transport = getTransport();
+      const stats = await transport.slice_run({
+        meshFile: stlFile,
+        printerId: "",
+        filament: "PLA"
+      });
+      // Surface the result so the chat Print button lights up (the toolbar
+      // slice has no chat turn, so it never streams an `artifact_changed`),
+      // and refresh the catalog so the new gcode appears in the Models rail.
+      recordSlice(stats?.gcodeFile || "", stats?.gcode3mfFile || "");
+      try {
+        await refreshCadCatalog({ markRefreshing: false });
+      } catch {
+        // Non-fatal: the rail will catch up on the next refresh.
+      }
+      // Switch the viewer to the new gcode toolpath preview once it appears in
+      // the refreshed catalog (deferred select — the refresh is async).
+      if (stats?.gcodeFile) {
+        setAutoSelectGcodePath(stats.gcodeFile);
+      }
+      setSliceStatus("Plate sliced");
+      setSliceStatusError(false);
+    } catch (err) {
+      // Surface a clear, actionable message both as a toast and a persistent
+      // chip on the toolbar (the toast alone was too easy to miss).
+      const message = describeSliceError(err);
+      setSliceStatus(message);
+      setSliceStatusError(true);
+      setSliceError(message);
+    } finally {
+      setSlicing(false);
+      setSliceProgress(null);
+    }
+  }, [selectedEntry]);
+
+  // Print the `.gcode` the user is currently viewing. One-click: pick the first
+  // paired printer (dropping into pairing when there is none), then upload + start
+  // immediately (confirmed=true per contract §2) and begin polling status so the
+  // toolbar shows live progress.
+  const handlePrint = useCallback(async () => {
+    const gcodeFile =
+      selectedEntry && entrySourceFormat(selectedEntry) === RENDER_FORMAT.GCODE
+        ? fileKey(selectedEntry)
+        : "";
+    if (!gcodeFile) {
+      return;
+    }
+    setPrintStatus("");
+    setPrintStatusError(false);
+    setPrinting(true);
     try {
       const transport = getTransport();
       const printers = await transport.printer_list();
       const targetPrinter = pickPrinterForSlice(Array.isArray(printers) ? printers : []);
       if (!targetPrinter) {
-        // No printer yet — drop the user into the pairing flow, then resume the
-        // slice automatically once they finish adding one.
-        setScreenshotStatus("");
+        // No printer yet — pair first, then resume the print on dialog close.
         setAddPrinterOpen(true);
         return;
       }
-      await transport.slice_run({
-        meshFile: stlFile,
+      // Cloud print prefers the sliced `.gcode.3mf`, but only when it belongs to
+      // the gcode being printed (a stale slice of a different model must not be
+      // sent). LAN always uploads the plain gcode. Upload + start reference the
+      // SAME file so their names agree.
+      const lastSlice = useChatStore.getState().lastSlice || {};
+      const gcode3mfFile =
+        lastSlice.gcodeFile === gcodeFile ? selectLatestGcode3mf(useChatStore.getState()) : "";
+      const sendFile =
+        targetPrinter.transport === "cloud" && gcode3mfFile ? gcode3mfFile : gcodeFile;
+      await transport.printer_upload_gcode({
         printerId: targetPrinter.id,
-        filament: "PLA"
+        gcodeFile: sendFile
       });
-      setScreenshotStatus(`Sliced for ${targetPrinter.model || "Bambu"}`);
-    } catch (sliceError) {
-      setScreenshotStatus(sliceError instanceof Error ? sliceError.message : "Slice failed");
+      await transport.printer_start_print({
+        printerId: targetPrinter.id,
+        remoteName: basename(sendFile),
+        confirmed: true
+      });
+      setPrintStatus("Print started");
+      setPrintStatusError(false);
+      // Kick off live progress polling (no backend `print_progress` event exists,
+      // so we poll `printer_status`). Seed a job so the button flips immediately.
+      setPrintJob({ state: "printing", progress: 0, etaSeconds: 0, name: basename(sendFile) });
+      setMonitoredPrinterId(targetPrinter.id);
+    } catch (error) {
+      setPrintStatus(error instanceof Error ? error.message : String(error));
+      setPrintStatusError(true);
     } finally {
-      setSlicing(false);
+      setPrinting(false);
     }
   }, [selectedEntry]);
+
+  // Live print progress: the backend's print monitor (spawned by
+  // `printer_start_print`) emits `print_progress` events; we subscribe and drive
+  // the toolbar button label + terminal toast. Stops on a terminal state
+  // (error, or idle-after-active), or quietly after a cap of idle events if the
+  // job never registers (mirrors the backend's give-up cap).
+  useEffect(() => {
+    if (!monitoredPrinterId) {
+      return undefined;
+    }
+    const transport = getTransport();
+    if (!transport?.events?.subscribe) {
+      return undefined;
+    }
+    const MAX_IDLE_EVENTS = 20;
+    let sawActive = false;
+    let idleEvents = 0;
+    const stop = () => {
+      setMonitoredPrinterId("");
+      setPrintJob(null);
+    };
+    return transport.events.subscribe("print_progress", (event) => {
+      if (!event || event.printerId !== monitoredPrinterId) {
+        return;
+      }
+      const state = String(event.state || "idle");
+      setPrintJob({ state, progress: Number(event.progress) || 0 });
+      if (state === "printing" || state === "paused") {
+        sawActive = true;
+      } else if (state === "error") {
+        setPrintStatus("Print error");
+        setPrintStatusError(true);
+        stop();
+      } else if (state === "idle") {
+        if (sawActive) {
+          setPrintStatus("Print complete");
+          setPrintStatusError(false);
+          stop();
+        } else {
+          idleEvents += 1;
+          if (idleEvents >= MAX_IDLE_EVENTS) {
+            stop();
+          }
+        }
+      }
+    });
+  }, [monitoredPrinterId]);
 
   const handleEnterPreviewMode = useCallback(() => {
     if (effectiveRenderFormat === RENDER_FORMAT.DXF || viewerLoading || !selectedMeshData || previewMode) {
@@ -6078,6 +6259,10 @@ export default function CadWorkspace({
           selectedDxfMeshData={selectedDxfMeshData}
           selectedKey={selectedKey}
           selectedDxfKey={selectedDxfPreviewKey}
+          gcodeUrl={selectedGcodeUrl}
+          gcodeTopLayer={selectedGcodeMaxLayer}
+          gcodeShowTravel={gcodeShowTravel}
+          gcodeRenderTubes={gcodeRenderTubes}
           missingFileRef={missingFileRef}
           viewerPerspective={viewerPerspective}
           viewerPerspectiveRef={activePerspectiveRef}
@@ -6246,7 +6431,13 @@ export default function CadWorkspace({
                 handleScreenshotDownload={handleScreenshotDownload}
                 canSlice={selectedEntrySourceFormat === RENDER_FORMAT.STL}
                 slicing={slicing}
-                handleSliceForBambu={handleSliceForBambu}
+                sliceLabel={slicing ? sliceProgressLabel(sliceProgress) : "Slice plate"}
+                sliceError={sliceError}
+                handleSlicePlate={handleSlicePlate}
+                canPrint={selectedEntrySourceFormat === RENDER_FORMAT.GCODE}
+                printing={printing || Boolean(monitoredPrinterId)}
+                printLabel={printButtonLabel(printing, printJob)}
+                handlePrint={handlePrint}
               />
 
               <ViewerLoadingOverlay
@@ -6294,15 +6485,12 @@ export default function CadWorkspace({
                 selectedEntry={selectedEntry}
                 onStartResize={handleStartFileSheetResize}
                 gcodeData={selectedGcodeData}
-                previewMetadata={selectedGcodeMeshData?.metadata || null}
                 maxLayer={selectedGcodeMaxLayer}
                 showTravel={gcodeShowTravel}
-                fullDetail={gcodeFullDetail}
-                previewDetailLevel={gcodePreviewDetailLevel}
+                renderTubes={gcodeRenderTubes}
                 onMaxLayerChange={setGcodeMaxLayer}
                 onShowTravelChange={setGcodeShowTravel}
-                onFullDetailChange={setGcodeFullDetail}
-                onPreviewDetailLevelChange={setGcodePreviewDetailLevel}
+                onRenderTubesChange={setGcodeRenderTubes}
                 fileDownloadAvailable={fileLinkCopyAvailable}
                 viewerServerInfo={viewerServerInfo}
                 localFileOpenAvailable={fileRevealAvailable}
@@ -6494,12 +6682,20 @@ export default function CadWorkspace({
           screenshotStatus={screenshotStatus}
           persistenceStatus={persistenceStatus}
           motionErrorStatus={motionErrorStatus}
+          sliceStatus={sliceStatus}
+          sliceStatusError={sliceStatusError}
+          printStatus={printStatus}
+          printStatusError={printStatusError}
           previewMode={previewMode}
           onClear={() => {
             setCopyStatus("");
             setScreenshotStatus("");
             setPersistenceStatus("");
             setMotionErrorStatus("");
+            setSliceStatus("");
+            setSliceStatusError(false);
+            setPrintStatus("");
+            setPrintStatusError(false);
             lastPersistenceFailureKeyRef.current = "";
           }}
         />
@@ -6522,15 +6718,16 @@ export default function CadWorkspace({
           open={addPrinterOpen}
           onOpenChange={(next) => {
             setAddPrinterOpen(next);
-            // Resume the slice once the dialog closes, but only if a printer was
-            // actually added (cancelling leaves the flag false → no re-slice).
-            if (!next && pendingSliceAfterAddRef.current) {
-              pendingSliceAfterAddRef.current = false;
-              void handleSliceForBambu();
+            // Resume the print once the dialog closes, but only if a printer was
+            // actually added (`onAdded` arms it — cancelling leaves it false → no
+            // re-trigger, no reopen loop).
+            if (!next && pendingPrintAfterAddRef.current) {
+              pendingPrintAfterAddRef.current = false;
+              void handlePrint();
             }
           }}
           onAdded={() => {
-            pendingSliceAfterAddRef.current = true;
+            pendingPrintAfterAddRef.current = true;
           }}
         />
       </SidebarInset>

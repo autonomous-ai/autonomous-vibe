@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import { transport } from "@/lib/transport.ts";
 import ClaudeCheckStep from "./ClaudeCheckStep.jsx";
 import ClaudeLoginStep from "./ClaudeLoginStep.jsx";
+import SlicerCheckStep from "./SlicerCheckStep.jsx";
 import PrinterStep from "./PrinterStep.jsx";
 import FilamentStep from "./FilamentStep.jsx";
 import DoneStep from "./DoneStep.jsx";
@@ -13,10 +14,11 @@ import {
 } from "./onboardingHelpers.js";
 
 const STEP_TITLES = {
-  claude: "Step 1 of 4 · Claude Code",
-  login: "Step 2 of 4 · Sign in",
-  printer: "Step 3 of 4 · Printer",
-  filament: "Step 4 of 4 · Filament",
+  claude: "Step 1 of 5 · Claude Code",
+  login: "Step 2 of 5 · Sign in",
+  orca: "Step 3 of 5 · OrcaSlicer",
+  printer: "Step 4 of 5 · Printer",
+  filament: "Step 5 of 5 · Filament",
   done: "All set",
 };
 
@@ -70,6 +72,7 @@ export default function OnboardingWizard({ onComplete }) {
         <div className="mt-3">
           {step === "claude" ? <ClaudeCheckStep onAdvance={advance} /> : null}
           {step === "login" ? <ClaudeLoginStep onAdvance={advance} /> : null}
+          {step === "orca" ? <SlicerCheckStep onAdvance={advance} /> : null}
           {step === "printer" ? (
             <PrinterStep onAdvance={advance} onSkip={advance} />
           ) : null}

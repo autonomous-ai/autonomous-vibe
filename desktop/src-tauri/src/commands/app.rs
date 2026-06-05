@@ -2,7 +2,8 @@
 
 use crate::ipc::types::{
     AppInfo, AppSettings, ClaudeAuthStatus, ClaudeCliStatus, ClaudeInstallProgress,
-    ClaudeLoginProgress, InstalledClaude, PrereqCheck, PythonStatus, SlicerStatus,
+    ClaudeLoginProgress, InstalledClaude, InstalledSlicer, PrereqCheck, PythonStatus,
+    SlicerInstallProgress, SlicerStatus,
 };
 use crate::ipc::{IpcError, IpcResult};
 use crate::paths;
@@ -26,6 +27,17 @@ pub const CLAUDE_LOGIN_PROGRESS_EVENT: &str = "claude_login_progress";
 /// switch to a browser, sign in, approve, then copy the authorization code
 /// back into the app (`setup-token` uses the paste-the-code flow).
 const LOGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Tauri event channel for `slicer_install_progress` payloads.
+#[cfg(not(target_os = "windows"))]
+pub const SLICER_INSTALL_PROGRESS_EVENT: &str = "slicer_install_progress";
+
+/// Pinned OrcaSlicer release, embedded at compile time so the runtime
+/// auto-installer downloads exactly the version the bundled sidecar build
+/// targets. Looks like `v2.3.2`.
+#[cfg(not(target_os = "windows"))]
+const SLICER_VERSION_PIN: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/build/SLICER_VERSION.txt"));
 
 /// Upstream installer script (macOS + Linux). 302-redirects to
 /// `https://downloads.claude.ai/claude-code-releases/bootstrap.sh`.
@@ -191,25 +203,20 @@ pub fn python_available_for_status() -> bool {
 }
 
 fn detect_slicer() -> SlicerStatus {
-    let bundled_path = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|p| p.join("resources/slicer/orcaslicer")))
-        .filter(|p| p.exists());
-    if let Some(p) = bundled_path {
-        return SlicerStatus {
-            found: true,
-            binary_path: p.display().to_string(),
-        };
-    }
-    if let Ok(path) = which::which("orcaslicer").or_else(|_| which::which("OrcaSlicer")) {
-        return SlicerStatus {
+    // Reuse the exact resolution the slice path uses, so the onboarding gate
+    // and the slicer command can never disagree — mirrors how
+    // `detect_claude_cli` defers to `resolve_claude`. An empty `configured`
+    // means "probe the bundled sidecar, then well-known install locations
+    // (e.g. ~/Applications/OrcaSlicer.app on macOS), then PATH".
+    match crate::commands::slicer::resolve_slicer_binary("") {
+        Ok(path) => SlicerStatus {
             found: true,
             binary_path: path.display().to_string(),
-        };
-    }
-    SlicerStatus {
-        found: false,
-        binary_path: String::new(),
+        },
+        Err(_) => SlicerStatus {
+            found: false,
+            binary_path: String::new(),
+        },
     }
 }
 
@@ -1147,6 +1154,264 @@ pub async fn app_submit_login_code(
     state
         .write_login_code(&code)
         .map_err(|msg| IpcError::new("LOGIN_NO_ACTIVE_SESSION", msg))
+}
+
+// ---------------------------------------------------------------------------
+// app_install_orcaslicer
+// ---------------------------------------------------------------------------
+
+/// One-click OrcaSlicer installer. Downloads the pinned OrcaSlicer release for
+/// the host platform from GitHub, installs it into a user-writable location
+/// (`~/Applications/OrcaSlicer.app` on macOS, `~/.local/bin/orcaslicer` on
+/// Linux), then re-runs `detect_slicer` to confirm the binary is resolvable by
+/// the same probe the slice path uses. Progress streams via the
+/// `slicer_install_progress` Tauri event.
+///
+/// Windows is not auto-installed (the upstream release is a portable zip with
+/// no installer) — it returns `PLATFORM_UNSUPPORTED` and the UI points the user
+/// at the official download.
+#[tauri::command]
+#[cfg(target_os = "windows")]
+pub async fn app_install_orcaslicer(_app: tauri::AppHandle) -> IpcResult<InstalledSlicer> {
+    Err(IpcError::new(
+        "PLATFORM_UNSUPPORTED",
+        "Automatic OrcaSlicer install isn't supported on Windows — download it from orcaslicer.com",
+    ))
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "windows"))]
+pub async fn app_install_orcaslicer(app: tauri::AppHandle) -> IpcResult<InstalledSlicer> {
+    let emit = |progress: SlicerInstallProgress| {
+        let _ = app.emit(SLICER_INSTALL_PROGRESS_EVENT, &progress);
+    };
+
+    let version = SLICER_VERSION_PIN.trim().to_string();
+
+    // Asset name follows the convention in scripts/build/build-slicer-sidecar.sh.
+    #[cfg(target_os = "macos")]
+    let asset = format!("OrcaSlicer_Mac_universal_{version}.dmg");
+    #[cfg(target_os = "linux")]
+    let asset = format!("OrcaSlicer_Linux_AppImage_Ubuntu2404_{version}.AppImage");
+    let url =
+        format!("https://github.com/SoftFever/OrcaSlicer/releases/download/{version}/{asset}");
+
+    // 1. Download into a per-process temp dir.
+    emit(SlicerInstallProgress::Downloading {
+        received_bytes: None,
+        total_bytes: None,
+    });
+
+    let tmp_dir = std::env::temp_dir().join(format!("panda-slicer-{}", std::process::id()));
+    if let Err(err) = tokio::fs::create_dir_all(&tmp_dir).await {
+        let msg = format!("Failed to create temp dir: {err}");
+        emit(SlicerInstallProgress::Error {
+            message: msg.clone(),
+        });
+        return Err(IpcError::new("INSTALL_FAILED", msg));
+    }
+    let download = tmp_dir.join(&asset);
+
+    if let Err(err) = download_slicer_asset(&app, &url, &download).await {
+        emit(SlicerInstallProgress::Error {
+            message: err.message.clone(),
+        });
+        let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+        return Err(err);
+    }
+
+    // 2. Install (platform-specific), always cleaning up the temp dir.
+    let install_result = install_downloaded_slicer(&app, &download).await;
+    let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+    if let Err(err) = install_result {
+        emit(SlicerInstallProgress::Error {
+            message: err.message.clone(),
+        });
+        return Err(err);
+    }
+
+    // 3. Verify via the same probe `app_prereq_check` uses.
+    emit(SlicerInstallProgress::Verifying);
+    let slicer = detect_slicer();
+    if !slicer.found {
+        let msg = "Installer finished but OrcaSlicer was not detected".to_string();
+        emit(SlicerInstallProgress::Error {
+            message: msg.clone(),
+        });
+        return Err(IpcError::new("INSTALL_VERIFIED_MISSING", msg));
+    }
+
+    emit(SlicerInstallProgress::Done {
+        version: version.clone(),
+        binary_path: slicer.binary_path.clone(),
+    });
+
+    Ok(InstalledSlicer {
+        version,
+        binary_path: slicer.binary_path,
+    })
+}
+
+/// Stream `url` to `dest`, emitting `Downloading` progress every ~4 MB. Kept a
+/// free function so the platform install helpers can share it.
+#[cfg(not(target_os = "windows"))]
+async fn download_slicer_asset(
+    app: &tauri::AppHandle,
+    url: &str,
+    dest: &Path,
+) -> IpcResult<()> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .map_err(|e| IpcError::new("INSTALLER_CLIENT_ERROR", e.to_string()))?;
+    let mut resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| IpcError::new("INSTALLER_FETCH_FAILED", e.to_string()))?;
+    if !resp.status().is_success() {
+        return Err(IpcError::new(
+            "INSTALLER_FETCH_FAILED",
+            format!("OrcaSlicer download returned HTTP {}", resp.status()),
+        ));
+    }
+
+    let total = resp.content_length();
+    let mut file = tokio::fs::File::create(dest).await.map_err(IpcError::from)?;
+    let mut received: u64 = 0;
+    let mut next_emit: u64 = 0;
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| IpcError::new("INSTALLER_FETCH_FAILED", e.to_string()))?
+    {
+        file.write_all(&chunk).await.map_err(IpcError::from)?;
+        received += chunk.len() as u64;
+        if received >= next_emit {
+            next_emit = received + 4 * 1024 * 1024;
+            let _ = app.emit(
+                SLICER_INSTALL_PROGRESS_EVENT,
+                &SlicerInstallProgress::Downloading {
+                    received_bytes: Some(received),
+                    total_bytes: total,
+                },
+            );
+        }
+    }
+    file.flush().await.map_err(IpcError::from)?;
+    Ok(())
+}
+
+/// macOS: mount the DMG, copy `OrcaSlicer.app` into `~/Applications`, detach.
+#[cfg(target_os = "macos")]
+async fn install_downloaded_slicer(app: &tauri::AppHandle, dmg: &Path) -> IpcResult<()> {
+    use tokio::process::Command as TokioCommand;
+    let emit = |progress: SlicerInstallProgress| {
+        let _ = app.emit(SLICER_INSTALL_PROGRESS_EVENT, &progress);
+    };
+
+    emit(SlicerInstallProgress::Extracting);
+    let mount = dmg.with_extension("mnt");
+    tokio::fs::create_dir_all(&mount).await.map_err(IpcError::from)?;
+
+    let attach = TokioCommand::new("hdiutil")
+        .arg("attach")
+        .arg(dmg)
+        .arg("-mountpoint")
+        .arg(&mount)
+        .args(["-nobrowse", "-quiet"])
+        .status()
+        .await
+        .map_err(|e| IpcError::new("INSTALL_FAILED", format!("hdiutil attach failed: {e}")))?;
+    if !attach.success() {
+        return Err(IpcError::new(
+            "INSTALL_FAILED",
+            "hdiutil could not mount the OrcaSlicer DMG",
+        ));
+    }
+
+    // Always detach, even if the copy fails.
+    let copied = copy_macos_app_from_mount(app, &mount).await;
+    let _ = TokioCommand::new("hdiutil")
+        .arg("detach")
+        .arg(&mount)
+        .arg("-quiet")
+        .status()
+        .await;
+    copied
+}
+
+#[cfg(target_os = "macos")]
+async fn copy_macos_app_from_mount(app: &tauri::AppHandle, mount: &Path) -> IpcResult<()> {
+    use tokio::process::Command as TokioCommand;
+    let emit = |progress: SlicerInstallProgress| {
+        let _ = app.emit(SLICER_INSTALL_PROGRESS_EVENT, &progress);
+    };
+
+    let src_app = mount.join("OrcaSlicer.app");
+    if !src_app.exists() {
+        return Err(IpcError::new(
+            "INSTALL_FAILED",
+            "OrcaSlicer.app was not found inside the downloaded DMG",
+        ));
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| IpcError::new("INSTALL_FAILED", "HOME is not set"))?;
+    let apps_dir = home.join("Applications");
+    tokio::fs::create_dir_all(&apps_dir)
+        .await
+        .map_err(IpcError::from)?;
+    let dst_app = apps_dir.join("OrcaSlicer.app");
+
+    emit(SlicerInstallProgress::Installing);
+    // Replace any prior copy so a re-run is idempotent.
+    let _ = tokio::fs::remove_dir_all(&dst_app).await;
+    // `ditto` preserves code signatures, symlinks, and resource forks inside
+    // the bundle — a plain recursive copy would break the signed .app.
+    let copy = TokioCommand::new("ditto")
+        .arg(&src_app)
+        .arg(&dst_app)
+        .status()
+        .await
+        .map_err(|e| IpcError::new("INSTALL_FAILED", format!("ditto failed: {e}")))?;
+    if !copy.success() {
+        return Err(IpcError::new(
+            "INSTALL_FAILED",
+            "ditto could not copy OrcaSlicer.app into ~/Applications",
+        ));
+    }
+    Ok(())
+}
+
+/// Linux: drop the AppImage into `~/.local/bin/orcaslicer` and mark it
+/// executable. `~/.local/bin` is one of `well_known_slicer_paths()`.
+#[cfg(target_os = "linux")]
+async fn install_downloaded_slicer(app: &tauri::AppHandle, appimage: &Path) -> IpcResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = app.emit(
+        SLICER_INSTALL_PROGRESS_EVENT,
+        &SlicerInstallProgress::Installing,
+    );
+
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| IpcError::new("INSTALL_FAILED", "HOME is not set"))?;
+    let bin_dir = home.join(".local/bin");
+    tokio::fs::create_dir_all(&bin_dir)
+        .await
+        .map_err(IpcError::from)?;
+    let dst = bin_dir.join("orcaslicer");
+    tokio::fs::copy(appimage, &dst).await.map_err(IpcError::from)?;
+    let mut perms = tokio::fs::metadata(&dst)
+        .await
+        .map_err(IpcError::from)?
+        .permissions();
+    perms.set_mode(0o755);
+    tokio::fs::set_permissions(&dst, perms)
+        .await
+        .map_err(IpcError::from)?;
+    Ok(())
 }
 
 #[cfg(test)]

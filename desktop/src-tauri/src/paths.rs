@@ -33,6 +33,12 @@ pub fn printers_path() -> PathBuf {
     app_data_dir().join("bambu-printers.json")
 }
 
+/// The signed-in Bambu cloud account record (tokens + account metadata).
+/// Sensitive — like the LAN access code it is never serialized back to JS.
+pub fn cloud_account_path() -> PathBuf {
+    app_data_dir().join("bambu-cloud.json")
+}
+
 /// Resolve a workspace-relative path against the projects root. Returns
 /// an error if the resolved path escapes the projects root.
 pub fn resolve_workspace_relative(rel: &str) -> Result<PathBuf, String> {

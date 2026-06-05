@@ -72,8 +72,19 @@ x509-parser = "0.16"
 # pulled in transitively by Tauri's bundled stack; pinned here as a direct
 # dep so the `app_install_claude_code` command can call it without leaning on
 # someone else's feature flags. rustls backend matches the rest of the app
-# (no system OpenSSL needed).
-reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+# (no system OpenSSL needed). `json` powers the Bambu cloud REST calls
+# (login / device bind / print-job) in `commands/cloud.rs`.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+
+# Bambu cloud printing (commands/cloud.rs).
+# Decode the `uid`/`exp` claims out of the cloud accessToken JWT payload — we
+# read our own token's middle segment, never verify the signature (we don't
+# have Bambu's key and don't need it).
+base64 = "0.22"
+# Real CA trust anchors for the *cloud* MQTT broker (us.mqtt.bambulab.com),
+# which — unlike the LAN printer — presents a normal CA-signed cert. The LAN
+# path keeps its no-verify config for self-signed printer certs.
+webpki-roots = "0.26"
 
 # Claude Code sign-in: `claude setup-token` is an interactive command that
 # opens a browser OAuth flow and prints a long-lived token. It detects a TTY

@@ -142,6 +142,8 @@ export interface SliceStats {
   layerCount: number;
   supportsUsed: boolean;
   gcodeFile: string;
+  /** Sliced project `.3mf` (gcode embedded) for the cloud print path. */
+  gcode3mfFile?: string;
 }
 
 export interface SliceStatus {
@@ -157,11 +159,17 @@ export interface SliceProgressEvent {
 
 // Printer --------------------------------------------------------------------
 
+export type PrinterTransport = "lan" | "cloud";
+
 export interface PrinterCard {
   id: string;
   model: string;
-  ipAddress: string;
+  transport: PrinterTransport;
+  /** LAN IP — absent for cloud-only devices. */
+  ipAddress?: string;
   hostName: string;
+  /** Online flag from the cloud bind list — absent for LAN cards. */
+  online?: boolean;
 }
 
 export interface AddPrinterRequest {
@@ -194,6 +202,34 @@ export interface PrintProgressEvent {
   progress: number;
 }
 
+// Bambu cloud account --------------------------------------------------------
+
+export type CloudRegion = "global" | "china";
+
+export interface CloudLoginRequest {
+  account: string;
+  region?: CloudRegion;
+}
+
+export interface CloudLoginSubmit {
+  account: string;
+  code: string;
+}
+
+export interface CloudLoginChallenge {
+  /** "codeSent" | "success" | "needPassword" | "tfa" */
+  kind: string;
+  tfaKey?: string;
+}
+
+export interface CloudAccountStatus {
+  signedIn: boolean;
+  account?: string;
+  region?: CloudRegion;
+  expiresAt?: number;
+  needsReauth: boolean;
+}
+
 // Projects -------------------------------------------------------------------
 
 export interface ProjectSummary {
@@ -219,6 +255,11 @@ export interface PrereqCheck {
 export interface AppSettings {
   defaultFilament: FilamentKind;
   slicerBinaryPath: string;
+  // OrcaSlicer machine+process config for `--load-settings` — `;`-joined
+  // absolute JSON path(s). Empty = use OrcaSlicer's own default.
+  slicerSettingsProfile?: string;
+  // OrcaSlicer filament config for `--load-filaments`. Empty = none.
+  slicerFilamentProfile?: string;
   usePandaCloud: boolean;
   pandaToken?: string;
   // Captured by app_login_claude (`claude setup-token`); exported as
@@ -303,6 +344,26 @@ export type ClaudeLoginProgress =
   | { stage: "awaiting_browser"; url: string }
   | { stage: "verifying" }
   | { stage: "done" }
+  | { stage: "error"; message: string };
+
+/** Result of `app_install_orcaslicer`. */
+export interface InstalledSlicer {
+  version: string;
+  binaryPath: string;
+}
+
+/**
+ * Discriminated union streamed via the `slicer_install_progress` Tauri event
+ * while `app_install_orcaslicer` is running. Mirrors the serde enum in
+ * `desktop/src-tauri/src/ipc/types.rs::SlicerInstallProgress` (tag = "stage",
+ * snake_case variants, camelCase fields).
+ */
+export type SlicerInstallProgress =
+  | { stage: "downloading"; receivedBytes?: number; totalBytes?: number }
+  | { stage: "extracting" }
+  | { stage: "installing" }
+  | { stage: "verifying" }
+  | { stage: "done"; version: string; binaryPath: string }
   | { stage: "error"; message: string };
 
 export interface CatalogChangedEvent {
@@ -413,14 +474,43 @@ export function _resetTransportForTests(): void {
   cachedBridge = undefined;
 }
 
+// Toggle transport call logging. On by default in dev; flip the global
+// `__PANDA_TRANSPORT_LOG__` to override at runtime from the console.
+function transportLogEnabled(): boolean {
+  const w = globalThis as unknown as { __PANDA_TRANSPORT_LOG__?: boolean };
+  if (typeof w.__PANDA_TRANSPORT_LOG__ === "boolean") {
+    return w.__PANDA_TRANSPORT_LOG__;
+  }
+  return true;
+}
+
+const TRANSPORT_TAG = "[panda:transport]";
+
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const bridge = detectTauri();
-  if (bridge) {
-    return (await bridge.invoke(cmd, args)) as T;
+  const route = bridge ? "invoke" : "stub";
+  if (transportLogEnabled()) {
+    // eslint-disable-next-line no-console
+    console.log(`${TRANSPORT_TAG} → ${cmd} (${route})`, args ?? {});
   }
-  // Browser dev stub. The labels here are visible in DevTools so it's
-  // obvious WHY a UI screen is showing canned data.
-  return stubResponse<T>(cmd, args ?? {});
+  try {
+    const result = bridge
+      ? ((await bridge.invoke(cmd, args)) as T)
+      : // Browser dev stub. The labels here are visible in DevTools so it's
+        // obvious WHY a UI screen is showing canned data.
+        stubResponse<T>(cmd, args ?? {});
+    if (transportLogEnabled()) {
+      // eslint-disable-next-line no-console
+      console.log(`${TRANSPORT_TAG} ← ${cmd} (${route})`, result);
+    }
+    return result;
+  } catch (err) {
+    if (transportLogEnabled()) {
+      // eslint-disable-next-line no-console
+      console.error(`${TRANSPORT_TAG} ✕ ${cmd} (${route})`, err);
+    }
+    throw err;
+  }
 }
 
 // How long / how often to keep probing for the Tauri bridge when a listener
@@ -591,6 +681,7 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
       return {
         id: `stub-${String(addReq.ipAddress ?? "0.0.0.0")}`,
         model: "X1C",
+        transport: "lan",
         ipAddress: String(addReq.ipAddress ?? ""),
         hostName: String(addReq.ipAddress ?? ""),
       } as unknown as T;
@@ -601,6 +692,16 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
       return { online: false, state: "idle" } as unknown as T;
     case "printer_upload_gcode":
     case "printer_start_print":
+      return undefined as unknown as T;
+    case "printer_discover_cloud":
+      return [] as unknown as T;
+    case "cloud_login_request_code":
+      return { kind: "codeSent" } as unknown as T;
+    case "cloud_login_submit_code":
+      return { signedIn: false, needsReauth: false } as unknown as T;
+    case "cloud_account_status":
+      return { signedIn: false, needsReauth: false } as unknown as T;
+    case "cloud_logout":
       return undefined as unknown as T;
     case "project_list":
       return [] as unknown as T;
@@ -657,6 +758,8 @@ const transportBase = {
   // in-flight `claude setup-token` PTY (see app_login_claude).
   app_submit_login_code: (code: string) =>
     invoke<void>("app_submit_login_code", { code }),
+  app_install_orcaslicer: () =>
+    invoke<InstalledSlicer>("app_install_orcaslicer"),
 
   // catalog
   catalog_read: () => invoke<Catalog>("catalog_read"),
@@ -705,6 +808,17 @@ const transportBase = {
     invoke<void>("printer_upload_gcode", { req }),
   printer_start_print: (req: StartPrintRequest) =>
     invoke<void>("printer_start_print", { req }),
+
+  // cloud (Bambu account + cloud-transport printing)
+  cloud_login_request_code: (req: CloudLoginRequest) =>
+    invoke<CloudLoginChallenge>("cloud_login_request_code", { req }),
+  cloud_login_submit_code: (req: CloudLoginSubmit, region?: CloudRegion) =>
+    invoke<CloudAccountStatus>("cloud_login_submit_code", { req, region }),
+  cloud_account_status: () =>
+    invoke<CloudAccountStatus>("cloud_account_status"),
+  cloud_logout: () => invoke<void>("cloud_logout"),
+  printer_discover_cloud: () =>
+    invoke<PrinterCard[]>("printer_discover_cloud"),
 
   // project
   project_list: () => invoke<ProjectSummary[]>("project_list"),
@@ -762,6 +876,8 @@ const transportBase = {
     listenEvent<ClaudeInstallProgress>("claude_install_progress", handler),
   onClaudeLoginProgress: (handler: (event: ClaudeLoginProgress) => void) =>
     listenEvent<ClaudeLoginProgress>("claude_login_progress", handler),
+  onSlicerInstallProgress: (handler: (event: SlicerInstallProgress) => void) =>
+    listenEvent<SlicerInstallProgress>("slicer_install_progress", handler),
   onUpdateEvent: (handler: (event: UpdateEvent) => void) =>
     listenEvent<UpdateEvent>("update_event", handler),
 };

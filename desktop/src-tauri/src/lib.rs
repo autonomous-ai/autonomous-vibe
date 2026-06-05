@@ -106,6 +106,7 @@ pub fn run() {
             app::app_install_claude_code,
             app::app_auth_check,
             app::app_login_claude,
+            app::app_submit_login_code,
             // catalog
             catalog::catalog_read,
             catalog::project_catalog_read,

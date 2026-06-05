@@ -534,6 +534,9 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
         code: "PLATFORM_UNSUPPORTED",
         message: `${STUB_TAG} claude sign-in only runs inside Tauri`,
       } as IpcError;
+    case "app_submit_login_code":
+      // Feeds the live PTY — Tauri only. No-op in browser dev.
+      return undefined as unknown as T;
     case "catalog_read":
     case "project_catalog_read":
       return {
@@ -650,6 +653,10 @@ const transportBase = {
     invoke<InstalledClaude>("app_install_claude_code"),
   app_auth_check: () => invoke<ClaudeAuthStatus>("app_auth_check"),
   app_login_claude: () => invoke<ClaudeAuthStatus>("app_login_claude"),
+  // Submit the authorization code the user pasted from the browser into the
+  // in-flight `claude setup-token` PTY (see app_login_claude).
+  app_submit_login_code: (code: string) =>
+    invoke<void>("app_submit_login_code", { code }),
 
   // catalog
   catalog_read: () => invoke<Catalog>("catalog_read"),

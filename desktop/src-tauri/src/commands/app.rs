@@ -6,6 +6,7 @@ use crate::ipc::types::{
 };
 use crate::ipc::{IpcError, IpcResult};
 use crate::paths;
+use crate::state::AppState;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
@@ -22,8 +23,9 @@ pub const CLAUDE_LOGIN_PROGRESS_EVENT: &str = "claude_login_progress";
 
 /// How long to wait for the user to finish the browser OAuth flow before
 /// giving up and killing `claude setup-token`. Generous: the user has to
-/// switch to a browser, sign in, and approve.
-const LOGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// switch to a browser, sign in, approve, then copy the authorization code
+/// back into the app (`setup-token` uses the paste-the-code flow).
+const LOGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// Upstream installer script (macOS + Linux). 302-redirects to
 /// `https://downloads.claude.ai/claude-code-releases/bootstrap.sh`.
@@ -945,12 +947,19 @@ fn parse_setup_token(text: &str) -> Option<String> {
 /// and exports it for subsequent headless turns. Progress streams via the
 /// `claude_login_progress` event.
 ///
-/// Assumes the modern loopback-callback variant of `setup-token` that prints
-/// the token directly (no copy-paste of a code back into the terminal). If a
-/// future CLI reverts to paste-the-code, this capture would need a text input;
-/// the UI's manual-URL fallback at least keeps the user unblocked.
+/// `setup-token` uses the paste-the-code OAuth variant: after the user approves
+/// in the browser, Claude Code prints an authorization code they must paste back
+/// into the terminal. We can't type into a hidden PTY for them, so we stash the
+/// PTY's writer in [`AppState`] and surface the URL via `AwaitingBrowser`; the
+/// onboarding UI then collects the code and calls `app_submit_login_code`, which
+/// writes it into this PTY so `setup-token` proceeds to print the token. (If a
+/// CLI build instead uses a loopback callback and prints the token directly, the
+/// code input simply goes unused and capture still works.)
 #[tauri::command]
-pub async fn app_login_claude(app: tauri::AppHandle) -> IpcResult<ClaudeAuthStatus> {
+pub async fn app_login_claude(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> IpcResult<ClaudeAuthStatus> {
     use portable_pty::{native_pty_system, CommandBuilder, PtySize};
     use std::io::Read;
 
@@ -1000,6 +1009,13 @@ pub async fn app_login_claude(app: tauri::AppHandle) -> IpcResult<ClaudeAuthStat
         .try_clone_reader()
         .map_err(|e| fail(&emit, "LOGIN_PTY_FAILED", e.to_string()))?;
 
+    // Writer over the PTY's stdin. `setup-token` prompts for an authorization
+    // code after browser approval; `app_submit_login_code` feeds it through here.
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| fail(&emit, "LOGIN_PTY_FAILED", e.to_string()))?;
+
     let mut child = pair
         .slave
         .spawn_command(cmd)
@@ -1009,6 +1025,10 @@ pub async fn app_login_claude(app: tauri::AppHandle) -> IpcResult<ClaudeAuthStat
     // so the reader hits EOF the moment the child exits.
     let _master = pair.master;
     drop(pair.slave);
+
+    // Expose the writer so `app_submit_login_code` can reach this PTY while the
+    // sign-in is in flight. Cleared once the reader finishes (below).
+    state.set_login_pty_writer(writer);
 
     let app_for_reader = app.clone();
     let reader_handle = tokio::task::spawn_blocking(move || -> Option<String> {
@@ -1038,7 +1058,11 @@ pub async fn app_login_claude(app: tauri::AppHandle) -> IpcResult<ClaudeAuthStat
         parse_setup_token(&text)
     });
 
-    let token = match tokio::time::timeout(LOGIN_TIMEOUT, reader_handle).await {
+    let token_result = tokio::time::timeout(LOGIN_TIMEOUT, reader_handle).await;
+    // Reading is done (success, panic, or timeout): retire the writer so a
+    // stale `app_submit_login_code` can't write into a dead PTY.
+    state.clear_login_pty_writer();
+    let token = match token_result {
         Ok(Ok(token)) => token,
         Ok(Err(_join_err)) => None, // reader task panicked
         Err(_) => {
@@ -1079,6 +1103,30 @@ pub async fn app_login_claude(app: tauri::AppHandle) -> IpcResult<ClaudeAuthStat
     }
     emit(ClaudeLoginProgress::Done);
     Ok(status)
+}
+
+/// Feed a user-pasted authorization code into the in-flight `claude setup-token`
+/// PTY. `app_login_claude` surfaces the OAuth URL via `AwaitingBrowser`; after
+/// the user approves in the browser, Claude Code prints a code they must paste
+/// back. The onboarding UI collects it and calls this, which writes it (plus
+/// Enter) into the PTY so `setup-token` can finish and print the token.
+///
+/// Errors with `LOGIN_NO_ACTIVE_SESSION` if no sign-in is currently awaiting a
+/// code (e.g. it already timed out), or `LOGIN_EMPTY_CODE` for blank input.
+#[tauri::command]
+pub async fn app_submit_login_code(
+    code: String,
+    state: tauri::State<'_, AppState>,
+) -> IpcResult<()> {
+    if code.trim().is_empty() {
+        return Err(IpcError::new(
+            "LOGIN_EMPTY_CODE",
+            "Authorization code is empty".to_string(),
+        ));
+    }
+    state
+        .write_login_code(&code)
+        .map_err(|msg| IpcError::new("LOGIN_NO_ACTIVE_SESSION", msg))
 }
 
 #[cfg(test)]

@@ -22,6 +22,9 @@ export default function ClaudeLoginStep({ onAdvance }) {
   const [error, setError] = useState("");
   const [loginState, setLoginState] = useState("idle"); // idle | signing_in | done | error
   const [loginProgress, setLoginProgress] = useState(null);
+  const [authCode, setAuthCode] = useState("");
+  const [submittingCode, setSubmittingCode] = useState(false);
+  const [codeError, setCodeError] = useState("");
   const advancedRef = useRef(false);
   const loginFlowRef = useRef(null);
 
@@ -69,6 +72,27 @@ export default function ClaudeLoginStep({ onAdvance }) {
     loginFlowRef.current = flow;
     void flow.start();
   }, [onAdvance]);
+
+  const submitAuthCode = useCallback(async () => {
+    const trimmed = authCode.trim();
+    if (!trimmed || submittingCode) return;
+    setSubmittingCode(true);
+    setCodeError("");
+    try {
+      await transport.app_submit_login_code(trimmed);
+      // The PTY now has the code; the backend advances to "verifying" → "done".
+      // Clear the field so a stale code can't be re-submitted.
+      setAuthCode("");
+    } catch (err) {
+      const message =
+        err && typeof err === "object" && "message" in err
+          ? String(err.message || "Failed to submit code")
+          : String(err || "Failed to submit code");
+      setCodeError(message);
+    } finally {
+      setSubmittingCode(false);
+    }
+  }, [authCode, submittingCode]);
 
   useEffect(() => {
     void runCheck();
@@ -156,6 +180,52 @@ export default function ClaudeLoginStep({ onAdvance }) {
                   <ExternalLink className="size-3" /> Didn’t open? Click here to
                   sign in
                 </a>
+              ) : null}
+              {browserUrl ? (
+                <form
+                  className="mt-1 flex flex-col gap-1.5"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void submitAuthCode();
+                  }}
+                  data-testid="claude-login-code-form"
+                >
+                  <label
+                    className="text-xs text-muted-foreground"
+                    htmlFor="claude-auth-code"
+                  >
+                    After approving, paste the authorization code from your
+                    browser here:
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="claude-auth-code"
+                      type="text"
+                      value={authCode}
+                      onChange={(e) => setAuthCode(e.target.value)}
+                      placeholder="Paste authorization code"
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-primary/40"
+                      data-testid="claude-login-code-input"
+                    />
+                    <Button
+                      type="submit"
+                      size="sm"
+                      disabled={submittingCode || !authCode.trim()}
+                      data-testid="claude-login-code-submit"
+                    >
+                      {submittingCode ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        "Submit"
+                      )}
+                    </Button>
+                  </div>
+                  {codeError ? (
+                    <span className="text-xs text-red-600">{codeError}</span>
+                  ) : null}
+                </form>
               ) : null}
             </div>
           ) : null}

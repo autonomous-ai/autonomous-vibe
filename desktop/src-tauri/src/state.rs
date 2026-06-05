@@ -9,6 +9,7 @@ use crate::ipc::types::{
 };
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub struct AppState {
@@ -39,6 +40,12 @@ pub struct AppState {
     /// Registered Bambu printers (Track C stubs return canned data,
     /// real impl persists to `bambu-printers.json`).
     printers: Mutex<Vec<PrinterCard>>,
+
+    /// Writer over the in-flight `claude setup-token` PTY's stdin. Installed by
+    /// `app_login_claude` for the duration of a sign-in; `app_submit_login_code`
+    /// writes the user-pasted authorization code into it so the OAuth
+    /// paste-the-code flow can complete. `None` when no sign-in is in progress.
+    login_pty_writer: Mutex<Option<Box<dyn Write + Send>>>,
 }
 
 impl AppState {
@@ -51,6 +58,7 @@ impl AppState {
             chat_sessions: Mutex::new(HashMap::new()),
             printers: Mutex::new(Vec::new()),
             active_project: Mutex::new(None),
+            login_pty_writer: Mutex::new(None),
         }
     }
 
@@ -116,6 +124,32 @@ impl AppState {
             return;
         }
         list.push(card);
+    }
+
+    /// Install the active sign-in PTY writer (see [`login_pty_writer`]).
+    pub fn set_login_pty_writer(&self, writer: Box<dyn Write + Send>) {
+        *self.login_pty_writer.lock() = Some(writer);
+    }
+
+    /// Drop the sign-in PTY writer (closes the child's stdin). Called when a
+    /// login attempt finishes, succeeds, errors, or times out.
+    pub fn clear_login_pty_writer(&self) {
+        *self.login_pty_writer.lock() = None;
+    }
+
+    /// Write a user-submitted authorization code (plus a carriage return, which
+    /// is what a terminal sends for Enter) into the active sign-in PTY. Returns
+    /// `Err` when no sign-in is currently awaiting a code, or the write fails.
+    pub fn write_login_code(&self, code: &str) -> Result<(), String> {
+        let mut guard = self.login_pty_writer.lock();
+        let writer = guard
+            .as_mut()
+            .ok_or_else(|| "no sign-in is currently awaiting a code".to_string())?;
+        writer
+            .write_all(code.trim().as_bytes())
+            .and_then(|_| writer.write_all(b"\r"))
+            .and_then(|_| writer.flush())
+            .map_err(|e| e.to_string())
     }
 }
 

@@ -1,17 +1,21 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Send, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ImagePlus, Send, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/ui/utils";
 import {
+  addPendingAttachment,
   cancelTurn,
+  consumePendingAttachments,
   consumePendingTokens,
+  removePendingAttachment,
   setProject as setChatProject,
   startTurn,
   useChatStore,
 } from "@/store/chat";
 import { useProjectsStore } from "@/store/projects.ts";
 import { buildSendValue, PLACEHOLDER_PROJECT_NAME } from "./chatInputHelpers";
+import { blobToAttachment, imageFilesFromDataTransfer, MAX_ATTACHMENTS } from "./attachments";
 
 export { buildSendValue };
 
@@ -19,26 +23,54 @@ export default function ChatInput({ className }) {
   const [value, setValue] = useState("");
   const turnInProgress = useChatStore((state) => state.turnInProgress);
   const pendingTokens = useChatStore((state) => state.pendingTokens);
+  const pendingAttachments = useChatStore((state) => state.pendingAttachments);
   const currentProjectId = useChatStore((state) => state.currentProjectId);
   const awaitingApproval = useChatStore((state) => state.awaitingApproval);
 
-  // When tokens are queued by face clicks, prepend them visually so the user
-  // sees what they're referring to. We do NOT auto-eat them on every keystroke
-  // — they live in store and get attached at send time. No project is needed
-  // up front: the first message lazily creates one with a placeholder name
-  // that Claude's AI title later replaces, so the user never names anything.
-  const sendDisabled = turnInProgress || (
-    !value.trim() && !pendingTokens.length
+  const fileInputRef = useRef(null);
+  const dragDepth = useRef(0);
+  const [dragging, setDragging] = useState(false);
+  // Transient hint shown next to the attach button (wrong type, too many, …).
+  const [notice, setNotice] = useState("");
+
+  // A turn needs text, a face-ref token, or at least one attached image.
+  const sendDisabled =
+    turnInProgress || (!value.trim() && !pendingTokens.length && !pendingAttachments.length);
+
+  // Read image files (from a picker, paste, or drop), validate + encode each,
+  // and queue it. Respects the per-turn cap and surfaces a brief notice.
+  const ingestFiles = useCallback(
+    async (files) => {
+      const candidates = Array.from(files || []).filter((file) =>
+        String(file.type || "").startsWith("image/"),
+      );
+      if (!candidates.length) {
+        if (files && files.length) setNotice("Only images can be attached");
+        return;
+      }
+      const room = Math.max(0, MAX_ATTACHMENTS - pendingAttachments.length);
+      if (room <= 0) {
+        setNotice(`Up to ${MAX_ATTACHMENTS} images`);
+        return;
+      }
+      if (candidates.length > room) setNotice(`Up to ${MAX_ATTACHMENTS} images`);
+      for (const file of candidates.slice(0, room)) {
+        try {
+          addPendingAttachment(await blobToAttachment(file));
+        } catch (error) {
+          setNotice(error instanceof Error ? error.message : "Could not attach image");
+        }
+      }
+    },
+    [pendingAttachments.length],
   );
 
   const handleSend = useCallback(async () => {
     const payload = buildSendValue(value, pendingTokens);
-    if (!payload.trim()) return;
+    if (!payload.trim() && !pendingAttachments.length) return;
     if (!currentProjectId) {
       try {
-        const summary = await useProjectsStore
-          .getState()
-          .create(PLACEHOLDER_PROJECT_NAME);
+        const summary = await useProjectsStore.getState().create(PLACEHOLDER_PROJECT_NAME);
         setChatProject(summary.id);
       } catch {
         // create() surfaces its own error via the projects store; bail so we
@@ -46,12 +78,14 @@ export default function ChatInput({ className }) {
         return;
       }
     }
-    const response = await startTurn(payload);
+    // startTurn consumes pending tokens + attachments on success and echoes the
+    // image thumbnails into the user bubble.
+    const response = await startTurn(payload, { attachments: pendingAttachments });
     if (response) {
       setValue("");
       consumePendingTokens();
     }
-  }, [value, pendingTokens, currentProjectId]);
+  }, [value, pendingTokens, pendingAttachments, currentProjectId]);
 
   const handleKeyDown = useCallback(
     (event) => {
@@ -65,6 +99,54 @@ export default function ChatInput({ className }) {
     [handleSend, sendDisabled],
   );
 
+  const handlePaste = useCallback(
+    (event) => {
+      const images = imageFilesFromDataTransfer(event.clipboardData);
+      if (images.length) {
+        // Keep the image out of the textarea; queue it as an attachment instead.
+        event.preventDefault();
+        void ingestFiles(images);
+      }
+    },
+    [ingestFiles],
+  );
+
+  const handlePick = useCallback(
+    (event) => {
+      void ingestFiles(event.target.files);
+      // Reset so picking the same file again still fires onChange.
+      event.target.value = "";
+    },
+    [ingestFiles],
+  );
+
+  // Drag-drop uses DOM events (tauri.conf.json sets dragDropEnabled:false so the
+  // OS webview doesn't swallow them). A depth counter keeps the overlay steady
+  // as the cursor moves across child nodes.
+  const dragHasFiles = (event) =>
+    Array.from(event.dataTransfer?.types || []).includes("Files");
+  const handleDragEnter = useCallback((event) => {
+    if (!dragHasFiles(event)) return;
+    dragDepth.current += 1;
+    setDragging(true);
+  }, []);
+  const handleDragLeave = useCallback(() => {
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDragging(false);
+  }, []);
+  const handleDragOver = useCallback((event) => {
+    if (dragHasFiles(event)) event.preventDefault();
+  }, []);
+  const handleDrop = useCallback(
+    (event) => {
+      event.preventDefault();
+      dragDepth.current = 0;
+      setDragging(false);
+      void ingestFiles(imageFilesFromDataTransfer(event.dataTransfer));
+    },
+    [ingestFiles],
+  );
+
   const handleCancel = useCallback(() => {
     void cancelTurn();
   }, []);
@@ -72,16 +154,19 @@ export default function ChatInput({ className }) {
   const tokenChips = useMemo(() => pendingTokens.slice(0, 6), [pendingTokens]);
   const tokenOverflow = pendingTokens.length - tokenChips.length;
 
-  // Drop selected tokens from the chip row.
-  const clearTokens = useCallback(() => {
+  const clearRefs = useCallback(() => {
     consumePendingTokens();
+    consumePendingAttachments();
   }, []);
 
-  // Auto-focus is intentionally NOT applied — would steal focus from the 3D
-  // viewport during face clicks.
+  // Auto-dismiss the notice so it doesn't linger.
   useEffect(() => {
-    // no-op: kept so tests can spy on a future effect if needed
-  }, []);
+    if (!notice) return undefined;
+    const timer = setTimeout(() => setNotice(""), 3000);
+    return () => clearTimeout(timer);
+  }, [notice]);
+
+  const hasStrip = pendingTokens.length > 0 || pendingAttachments.length > 0;
 
   return (
     <div
@@ -89,35 +174,74 @@ export default function ChatInput({ className }) {
       data-turn-in-progress={turnInProgress ? "true" : "false"}
       className={cn("border-t border-border/60 bg-background/60 p-2.5", className)}
     >
-      {pendingTokens.length ? (
-        <div data-slot="chat-input-tokens" className="mb-1.5 flex flex-wrap items-center gap-1">
-          {tokenChips.map((token) => (
-            <span
-              key={token}
-              data-slot="chat-input-token"
-              title={token}
-              className="max-w-[14rem] truncate rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[11px] font-mono text-foreground"
-            >
-              {token}
-            </span>
-          ))}
-          {tokenOverflow > 0 ? (
-            <span className="text-[11px] text-muted-foreground">+{tokenOverflow} more</span>
-          ) : null}
-          <button
-            type="button"
-            onClick={clearTokens}
-            className="ml-auto text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+      <div
+        data-slot="chat-composer"
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
+        className={cn(
+          "relative flex flex-col gap-2 rounded-xl border border-border/70 bg-background px-2.5 py-2 shadow-sm transition-colors",
+          "focus-within:border-ring/70 focus-within:ring-2 focus-within:ring-ring/25",
+          dragging && "border-primary",
+        )}
+      >
+        {hasStrip ? (
+          <div
+            data-slot="chat-input-strip"
+            className="flex flex-wrap items-center gap-1.5"
           >
-            clear refs
-          </button>
-        </div>
-      ) : null}
-      <div className="flex items-stretch gap-1.5">
+            {pendingAttachments.map((attachment) => (
+              <div
+                key={attachment.id}
+                data-slot="chat-input-attachment"
+                className="group relative size-12 overflow-hidden rounded-md border border-border/70 bg-muted"
+              >
+                {attachment.objectUrl ? (
+                  <img
+                    src={attachment.objectUrl}
+                    alt={attachment.name}
+                    className="size-full object-cover"
+                  />
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => removePendingAttachment(attachment.id)}
+                  title={`Remove ${attachment.name}`}
+                  className="absolute right-0.5 top-0.5 grid size-4 place-items-center rounded-full bg-background/85 text-foreground opacity-0 shadow transition-opacity group-hover:opacity-100"
+                >
+                  <X className="size-3" aria-hidden />
+                </button>
+              </div>
+            ))}
+            {tokenChips.map((token) => (
+              <span
+                key={token}
+                data-slot="chat-input-token"
+                title={token}
+                className="max-w-[14rem] truncate rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[11px] font-mono text-foreground"
+              >
+                {token}
+              </span>
+            ))}
+            {tokenOverflow > 0 ? (
+              <span className="text-[11px] text-muted-foreground">+{tokenOverflow} more</span>
+            ) : null}
+            <button
+              type="button"
+              onClick={clearRefs}
+              className="ml-auto text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+            >
+              clear
+            </button>
+          </div>
+        ) : null}
+
         <Textarea
           value={value}
           onChange={(event) => setValue(event.target.value)}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           placeholder={
             awaitingApproval
               ? "Reply to refine the plan, or use the buttons above"
@@ -126,35 +250,71 @@ export default function ChatInput({ className }) {
                 : "Describe what you want to print, then press Enter"
           }
           rows={2}
-          className="min-h-[2.25rem] flex-1 resize-none text-sm"
+          className="min-h-[2.5rem] resize-none border-0 bg-transparent px-1 py-0.5 text-sm shadow-none focus-visible:ring-0"
           data-slot="chat-input-textarea"
         />
-        {turnInProgress ? (
-          <Button
-            type="button"
-            variant="destructive"
-            size="icon-sm"
-            onClick={handleCancel}
-            title="Cancel turn"
-            data-slot="chat-cancel-button"
-            className="h-auto self-stretch"
+
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif"
+              multiple
+              className="hidden"
+              onChange={handlePick}
+              data-slot="chat-attach-input"
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={turnInProgress}
+              title="Attach images"
+              data-slot="chat-attach-button"
+            >
+              <ImagePlus aria-hidden />
+            </Button>
+            {notice ? (
+              <span className="truncate text-[11px] text-muted-foreground">{notice}</span>
+            ) : null}
+          </div>
+          {turnInProgress ? (
+            <Button
+              type="button"
+              variant="destructive"
+              size="icon-sm"
+              onClick={handleCancel}
+              title="Cancel turn"
+              data-slot="chat-cancel-button"
+            >
+              <X aria-hidden />
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              variant="default"
+              size="icon-sm"
+              onClick={handleSend}
+              disabled={sendDisabled}
+              title="Send"
+              data-slot="chat-send-button"
+            >
+              <Send aria-hidden />
+            </Button>
+          )}
+        </div>
+
+        {dragging ? (
+          <div
+            data-slot="chat-input-dropzone"
+            aria-hidden
+            className="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-xl border-2 border-dashed border-primary bg-primary/10 text-xs font-medium text-primary"
           >
-            <X aria-hidden />
-          </Button>
-        ) : (
-          <Button
-            type="button"
-            variant="default"
-            size="icon-sm"
-            onClick={handleSend}
-            disabled={sendDisabled}
-            title="Send"
-            data-slot="chat-send-button"
-            className="h-auto self-stretch"
-          >
-            <Send aria-hidden />
-          </Button>
-        )}
+            Drop image to attach
+          </div>
+        ) : null}
       </div>
     </div>
   );

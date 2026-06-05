@@ -48,6 +48,9 @@ open = "5"
 # Percent-decode/-encode the custom `pandaasset://` URI scheme paths used to
 # stream the open project's files to the webview (see src/asset_protocol.rs).
 percent-encoding = "2"
+# Decode base64 reference images the chat composer attaches over IPC, before
+# persisting them into the project workspace (see commands/chat.rs).
+base64 = "0.22"
 
 # Track G: real slicer + printer wiring.
 # SSDP (UDP multicast) discovery — the path Bambu Studio/OrcaSlicer use and

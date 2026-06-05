@@ -290,9 +290,20 @@ function step_artifact_regenerate(file: string, force: boolean): Promise<void>;
 #### Chat (drives the host `claude` CLI)
 
 ```typescript
+interface ImageAttachment {
+  name?: string;        // original filename, display-only (never used as a path)
+  mediaType: string;    // "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+  dataBase64: string;   // raw file bytes, base64-encoded (no "data:" prefix)
+}
 interface StartTurnRequest {
   projectId: string;
   userMessage: string;
+  // Optional reference images. The handler persists each into the project's
+  // `inputs/` dir (before the mtime baseline, so no artifact_changed fires) and
+  // appends a note pointing the model at them; it views them with its Read tool.
+  // Additive + optional — absent for text-only turns. Added 2026-06-05; see
+  // panda-interfaces-CHANGES.md.
+  images?: ImageAttachment[];
 }
 interface StartTurnResponse { turnId: string; }
 function chat_start_turn(req: StartTurnRequest): Promise<StartTurnResponse>;

@@ -58,6 +58,7 @@ import { __setTransportForTesting, getTransport } from "../lib/transport.ts";
  * @property {boolean} turnInProgress
  * @property {ChatTurn[]} history
  * @property {string[]} pendingTokens
+ * @property {{id:string,name:string,mediaType:string,dataBase64:string,objectUrl:string}[]} pendingAttachments
  * @property {string} lastError
  * @property {string} selectedMeshFile
  * @property {boolean} awaitingApproval
@@ -71,6 +72,10 @@ export const INITIAL_CHAT_STATE = Object.freeze({
   turnInProgress: false,
   history: [],
   pendingTokens: [],
+  // Reference images the user has attached (paste/drag/pick) but not yet sent.
+  // Parallel to pendingTokens; consumed at send. Each carries base64 data (for
+  // transport) plus a local objectUrl (for an instant composer thumbnail).
+  pendingAttachments: [],
   lastError: "",
   // Project-relative path of the part the user currently has selected in the
   // workspace (the breadcrumb / Models rail). Drives the Slice button target
@@ -407,6 +412,8 @@ export function chatReducer(state, action, now = Date.now()) {
         startedAt: action.at,
         endedAt: action.at,
         userText: action.text,
+        // Thumbnails of any images attached to this prompt (`{name,url}`).
+        images: action.images || [],
       };
       // The backend's `turn_start` (assistant turn) can race ahead of this
       // dispatch — it rides a separate event channel and may land while
@@ -492,6 +499,20 @@ export function chatReducer(state, action, now = Date.now()) {
     case "consume_pending_tokens":
       if (!state.pendingTokens.length) return state;
       return { ...state, pendingTokens: [] };
+    case "add_pending_attachment": {
+      const att = action.attachment;
+      if (!att || !att.id) return state;
+      if (state.pendingAttachments.some((a) => a.id === att.id)) return state;
+      return { ...state, pendingAttachments: [...state.pendingAttachments, att] };
+    }
+    case "remove_pending_attachment":
+      return {
+        ...state,
+        pendingAttachments: state.pendingAttachments.filter((a) => a.id !== action.id),
+      };
+    case "consume_pending_attachments":
+      if (!state.pendingAttachments.length) return state;
+      return { ...state, pendingAttachments: [] };
     case "mark_plan": {
       // Flip a proposed plan block's status (approved | superseded) and,
       // once it's acted on, clear the awaiting-approval gate.
@@ -664,9 +685,11 @@ export function detachChatEventStream() {
 // Action helpers used by components (components never hit transport directly).
 // ---------------------------------------------------------------------------
 
-export async function startTurn(userMessage, transport = getTransport()) {
+export async function startTurn(userMessage, { attachments = [] } = {}, transport = getTransport()) {
   const text = String(userMessage || "").trim();
-  if (!text) return null;
+  const images = Array.isArray(attachments) ? attachments : [];
+  // A turn needs either text or at least one attached image.
+  if (!text && !images.length) return null;
   const state = getChatState();
   if (!state.currentProjectId) {
     dispatch({ type: "set_error", message: "No project selected" });
@@ -677,17 +700,28 @@ export async function startTurn(userMessage, transport = getTransport()) {
     return null;
   }
   try {
-    const response = await transport.chat_start_turn({
-      projectId: state.currentProjectId,
-      userMessage: text,
-    });
+    // Keep the request shape identical to the text-only case unless images are
+    // actually attached (additive `images` field; see transport + chat.rs).
+    const request = { projectId: state.currentProjectId, userMessage: text };
+    if (images.length) {
+      request.images = images.map(({ name, mediaType, dataBase64 }) => ({
+        name,
+        mediaType,
+        dataBase64,
+      }));
+    }
+    const response = await transport.chat_start_turn(request);
     dispatch({
       type: "queue_user_message",
       turnId: response.turnId,
       text,
       at: Date.now(),
+      // Thumbnails for the echoed bubble use the local object URLs — no backend
+      // round-trip. Reloaded history shows text only (see parse_session_history).
+      images: images.map((a) => ({ name: a.name, url: a.objectUrl })),
     });
     dispatch({ type: "consume_pending_tokens" });
+    dispatch({ type: "consume_pending_attachments" });
     return response;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -826,6 +860,18 @@ export function addPendingToken(token) {
 
 export function consumePendingTokens() {
   dispatch({ type: "consume_pending_tokens" });
+}
+
+export function addPendingAttachment(attachment) {
+  dispatch({ type: "add_pending_attachment", attachment });
+}
+
+export function removePendingAttachment(id) {
+  dispatch({ type: "remove_pending_attachment", id });
+}
+
+export function consumePendingAttachments() {
+  dispatch({ type: "consume_pending_attachments" });
 }
 
 export function resetChatStore() {

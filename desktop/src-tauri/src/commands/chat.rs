@@ -6,18 +6,19 @@
 use crate::commands::claude_driver;
 use crate::commands::claude_driver::TurnPhase;
 use crate::ipc::types::{
-    ApprovePlanRequest, ChatEvent, ChatHistoryEntry, ChatRole, ChatSessionState,
+    ApprovePlanRequest, ChatEvent, ChatHistoryEntry, ChatRole, ChatSessionState, ImageAttachment,
     PlanChangesRequest, StartTurnRequest, StartTurnResponse,
 };
-use crate::ipc::IpcResult;
+use crate::ipc::{IpcError, IpcResult};
 use crate::paths;
 use crate::state::AppState;
+use base64::Engine as _;
 use chrono::DateTime;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, State};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -29,6 +30,17 @@ const CHAT_EVENT: &str = "chat_event";
 /// rehydrated user lines that start with it. Keep in sync with the `format!` in
 /// [`chat_approve_plan`].
 const APPROVE_PLAN_PREAMBLE: &str = "The plan below is approved. Implement it now, generating all parts";
+
+/// Marker beginning the note [`attachment_note`] appends to a user message so
+/// the model views attached reference images. [`parse_session_history`] strips
+/// it (and everything after) from rehydrated history, so a reloaded user bubble
+/// shows only what the user typed — never the machine-readable image note.
+const ATTACHMENT_NOTE_MARKER: &str = "\n\n[Attached reference image";
+
+/// Caps on per-turn reference images: count, and bytes per image. Generous for
+/// phone photos while bounding memory and the appended note's length.
+const MAX_ATTACHMENTS: usize = 6;
+const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024; // 10 MiB
 
 /// UUID v5 namespace for deriving per-project Claude session UUIDs from
 /// `projectId`. Using `Uuid::NAMESPACE_OID` matches what cadcode's
@@ -113,6 +125,70 @@ fn spawn_chat_turn(app: AppHandle, project_id: &str, message: String, phase: Tur
     turn_id
 }
 
+/// Decode and persist the user's reference images into `<workspace>/inputs/`,
+/// returning their workspace-relative paths (e.g. `inputs/<uuid>.png`). Written
+/// before the turn spawns so they predate the driver's mtime baseline (no
+/// spurious `artifact_changed`); `inputs/` is skipped by the catalog so they
+/// never surface as CAD parts. The user-supplied `name` is never used as a
+/// path — files are uuid-named with an extension chosen from the MIME type.
+async fn persist_attachments(workspace: &Path, images: &[ImageAttachment]) -> IpcResult<Vec<String>> {
+    if images.len() > MAX_ATTACHMENTS {
+        return Err(IpcError::invalid_argument(format!(
+            "too many images: {} (max {MAX_ATTACHMENTS})",
+            images.len()
+        )));
+    }
+    let dir = workspace.join("inputs");
+    tokio::fs::create_dir_all(&dir).await.map_err(IpcError::from)?;
+    let mut rels = Vec::with_capacity(images.len());
+    for image in images {
+        let ext = image_extension(&image.media_type).ok_or_else(|| {
+            IpcError::invalid_argument(format!("unsupported image type: {}", image.media_type))
+        })?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(image.data_base64.as_bytes())
+            .map_err(|e| IpcError::invalid_argument(format!("invalid base64 image data: {e}")))?;
+        if bytes.is_empty() || bytes.len() > MAX_ATTACHMENT_BYTES {
+            return Err(IpcError::invalid_argument(format!(
+                "image must be 1..={MAX_ATTACHMENT_BYTES} bytes, got {}",
+                bytes.len()
+            )));
+        }
+        let name = format!("{}.{ext}", Uuid::new_v4());
+        tokio::fs::write(dir.join(&name), &bytes)
+            .await
+            .map_err(IpcError::from)?;
+        rels.push(format!("inputs/{name}"));
+    }
+    Ok(rels)
+}
+
+/// Map an image MIME type to a file extension (allow-list — anything else is
+/// rejected so we never persist a blob the model cannot view).
+fn image_extension(media_type: &str) -> Option<&'static str> {
+    match media_type.trim().to_ascii_lowercase().as_str() {
+        "image/png" => Some("png"),
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/webp" => Some("webp"),
+        "image/gif" => Some("gif"),
+        _ => None,
+    }
+}
+
+/// The note appended to a user message so the model opens the attached images
+/// (Claude Code's Read tool renders images). Listing workspace-relative paths
+/// suffices — the child's cwd is the workspace. Begins with
+/// [`ATTACHMENT_NOTE_MARKER`] so it can be stripped on rehydration.
+fn attachment_note(rels: &[String]) -> String {
+    if rels.is_empty() {
+        return String::new();
+    }
+    format!(
+        "{ATTACHMENT_NOTE_MARKER}(s): {}. View each with the Read tool before responding.]",
+        rels.join(", ")
+    )
+}
+
 #[tauri::command]
 pub async fn chat_start_turn(
     req: StartTurnRequest,
@@ -122,7 +198,17 @@ pub async fn chat_start_turn(
     // A fresh user message always starts in the planning phase; the model
     // may call ExitPlanMode immediately for a trivial edit (a one-line
     // plan) or run a full design pass for a new part.
-    let turn_id = spawn_chat_turn(app, &req.project_id, req.user_message, TurnPhase::Plan);
+    let mut message = req.user_message;
+    if !req.images.is_empty() {
+        // Persist the reference images into the project workspace and point the
+        // model at them (it views them with its Read tool). Done here, before
+        // the turn spawns, so they predate the driver's mtime baseline and fire
+        // no `artifact_changed`.
+        let workspace = project_workspace(&req.project_id);
+        let rels = persist_attachments(&workspace, &req.images).await?;
+        message.push_str(&attachment_note(&rels));
+    }
+    let turn_id = spawn_chat_turn(app, &req.project_id, message, TurnPhase::Plan);
     Ok(StartTurnResponse { turn_id })
 }
 
@@ -223,11 +309,19 @@ fn parse_session_history(contents: &str) -> Vec<ChatHistoryEntry> {
             Some("assistant") => ChatRole::Assistant,
             _ => continue,
         };
-        let text = obj
+        let mut text = obj
             .get("message")
             .and_then(Value::as_object)
             .map(|message| extract_visible_text(message.get("content")))
             .unwrap_or_default();
+        // Strip the machine-readable image note the build appends to a user
+        // message (everything from the marker on) so the rehydrated bubble shows
+        // only what the user typed.
+        if role == ChatRole::User {
+            if let Some(idx) = text.find(ATTACHMENT_NOTE_MARKER) {
+                text.truncate(idx);
+            }
+        }
         let trimmed = text.trim();
         if trimmed.is_empty() {
             continue;
@@ -382,5 +476,110 @@ mod tests {
         assert!(token.is_cancelled());
         // Removed from registry on cancel:
         assert!(!cancel_turn(&id));
+    }
+
+    #[tokio::test]
+    async fn persist_attachments_writes_uuid_named_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let images = vec![
+            ImageAttachment {
+                name: "photo.png".into(),
+                media_type: "image/png".into(),
+                data_base64: "aGVsbG8=".into(), // "hello"
+            },
+            // A hostile filename must never reach the path — files are uuid-named.
+            ImageAttachment {
+                name: "../../evil.jpg".into(),
+                media_type: "image/jpeg".into(),
+                data_base64: "d29ybGQ=".into(), // "world"
+            },
+        ];
+        let rels = persist_attachments(dir.path(), &images).await.unwrap();
+        assert_eq!(rels.len(), 2);
+        for rel in &rels {
+            assert!(rel.starts_with("inputs/"), "got {rel}");
+            assert!(!rel.contains("evil"), "user name must not leak into path: {rel}");
+            assert!(dir.path().join(rel).is_file());
+        }
+    }
+
+    #[tokio::test]
+    async fn persist_attachments_rejects_bad_base64() {
+        let dir = tempfile::tempdir().unwrap();
+        let images = vec![ImageAttachment {
+            name: "a.png".into(),
+            media_type: "image/png".into(),
+            data_base64: "not valid base64!!".into(),
+        }];
+        let err = persist_attachments(dir.path(), &images).await.unwrap_err();
+        assert_eq!(err.code, "INVALID_ARGUMENT");
+    }
+
+    #[tokio::test]
+    async fn persist_attachments_rejects_unsupported_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let images = vec![ImageAttachment {
+            name: "a.txt".into(),
+            media_type: "text/plain".into(),
+            data_base64: "aGVsbG8=".into(),
+        }];
+        let err = persist_attachments(dir.path(), &images).await.unwrap_err();
+        assert_eq!(err.code, "INVALID_ARGUMENT");
+    }
+
+    #[tokio::test]
+    async fn persist_attachments_rejects_too_many() {
+        let dir = tempfile::tempdir().unwrap();
+        let one = ImageAttachment {
+            name: "a.png".into(),
+            media_type: "image/png".into(),
+            data_base64: "aGVsbG8=".into(),
+        };
+        let images = vec![one; MAX_ATTACHMENTS + 1];
+        let err = persist_attachments(dir.path(), &images).await.unwrap_err();
+        assert_eq!(err.code, "INVALID_ARGUMENT");
+    }
+
+    #[test]
+    fn attachment_note_lists_paths_and_is_empty_for_none() {
+        assert_eq!(attachment_note(&[]), "");
+        let note = attachment_note(&["inputs/a.png".into(), "inputs/b.jpg".into()]);
+        assert!(note.starts_with(ATTACHMENT_NOTE_MARKER));
+        assert!(note.contains("inputs/a.png") && note.contains("inputs/b.jpg"));
+        assert!(note.contains("Read tool"));
+    }
+
+    #[test]
+    fn start_turn_request_defaults_images_when_absent() {
+        let req: StartTurnRequest =
+            serde_json::from_str(r#"{"projectId":"p","userMessage":"hi"}"#).unwrap();
+        assert!(req.images.is_empty());
+    }
+
+    #[test]
+    fn start_turn_request_parses_camel_case_images() {
+        let req: StartTurnRequest = serde_json::from_str(
+            r#"{"projectId":"p","userMessage":"hi","images":[{"name":"a.png","mediaType":"image/png","dataBase64":"aGVsbG8="}]}"#,
+        )
+        .unwrap();
+        assert_eq!(req.images.len(), 1);
+        assert_eq!(req.images[0].media_type, "image/png");
+        assert_eq!(req.images[0].data_base64, "aGVsbG8=");
+    }
+
+    #[test]
+    fn parse_session_history_strips_the_attachment_note() {
+        let content = format!(
+            "make a stand{ATTACHMENT_NOTE_MARKER}(s): inputs/x.png. View each with the Read tool before responding.]"
+        );
+        let line = serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": content},
+            "timestamp": "2026-06-03T05:00:00.000Z"
+        })
+        .to_string();
+        let history = parse_session_history(&line);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].content, "make a stand");
     }
 }

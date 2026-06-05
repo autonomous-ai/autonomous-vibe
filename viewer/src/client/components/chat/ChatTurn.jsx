@@ -164,6 +164,18 @@ export default function ChatTurn({ turn, onOpenArtifact, scrollRootRef }) {
       </header>
       <div className={cn("relative", condensed && "max-h-11 overflow-hidden")}>
         <div ref={isUser ? contentRef : null} className="flex flex-col gap-2">
+        {isUser && turn.images?.length ? (
+          <div data-slot="chat-turn-images" className="flex flex-wrap gap-1.5">
+            {turn.images.map((image, index) => (
+              <img
+                key={index}
+                src={image.url}
+                alt={image.name || "attachment"}
+                className="size-16 rounded-md border border-border/60 object-cover"
+              />
+            ))}
+          </div>
+        ) : null}
         {!isUser && turn.status === "running" && turn.blocks.length === 0 ? (
           <p
             data-slot="chat-working"

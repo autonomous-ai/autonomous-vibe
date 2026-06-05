@@ -87,9 +87,23 @@ export interface StepSourceStatus {
 
 // Chat -----------------------------------------------------------------------
 
+export interface ImageAttachment {
+  /** Original filename, for display only (never used as a path server-side). */
+  name?: string;
+  /** MIME type, e.g. `image/png`. */
+  mediaType: string;
+  /** Raw file bytes, base64-encoded (no `data:` prefix). */
+  dataBase64: string;
+}
+
 export interface StartTurnRequest {
   projectId: string;
   userMessage: string;
+  /**
+   * Optional reference images. The backend persists each into the project's
+   * `inputs/` dir and points the model at them (it views them with Read).
+   */
+  images?: ImageAttachment[];
 }
 
 export interface StartTurnResponse {

@@ -469,11 +469,11 @@ function app_settings_write(s: AppSettings): Promise<void>;
 
 // Track I — auto-install Claude Code from the first-run wizard.
 //
-// Fetches Anthropic's official installer over HTTPS, runs it through
-// /bin/sh, then re-runs the same detection used by app_prereq_check.
-// Resolves with the post-install version + binary path; rejects with
-// one of:
-//   - "PLATFORM_UNSUPPORTED"      — Windows (upstream installer rejects it)
+// Fetches Anthropic's official installer over HTTPS, then runs it through
+// /bin/sh (macOS + Linux) or PowerShell (Windows: install.ps1 via
+// -ExecutionPolicy Bypass -File), then re-runs the same detection used by
+// app_prereq_check. Resolves with the post-install version + binary path;
+// rejects with one of:
 //   - "INSTALLER_INSECURE_URL"    — script URL was not https://
 //   - "INSTALLER_FETCH_FAILED"    — network or non-2xx response
 //   - "INSTALLER_TOO_LARGE"       — body exceeded the 100 KB cap

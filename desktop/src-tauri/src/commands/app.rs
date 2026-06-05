@@ -8,19 +8,30 @@ use crate::ipc::{IpcError, IpcResult};
 use crate::paths;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-#[cfg(not(target_os = "windows"))]
 use std::process::Stdio;
-#[cfg(not(target_os = "windows"))]
 use tauri::Emitter;
+use tokio::io::{AsyncBufReadExt, BufReader};
 #[cfg(not(target_os = "windows"))]
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 
 /// Tauri event channel for `claude_install_progress` payloads.
 pub const CLAUDE_INSTALL_PROGRESS_EVENT: &str = "claude_install_progress";
 
-/// Upstream installer script. 302-redirects to
+/// Upstream installer script (macOS + Linux). 302-redirects to
 /// `https://downloads.claude.ai/claude-code-releases/bootstrap.sh`.
+#[cfg(not(target_os = "windows"))]
 const CLAUDE_INSTALLER_URL: &str = "https://claude.ai/install.sh";
+
+/// Upstream installer script (Windows). 302-redirects to
+/// `https://downloads.claude.ai/claude-code-releases/bootstrap.ps1`. The
+/// `param([ValidatePattern...] $Target)` script is invoked via PowerShell's
+/// `-File <script> stable`, then delegates to `claude.exe install`, which
+/// (as of installer 2.1.x) places the binary at `~/.local/bin/claude.exe`
+/// and updates PATH. Both that dir and `%LOCALAPPDATA%\Programs\claude` are
+/// on `augmented_path`, so detection finds it regardless of which the
+/// installer picks.
+#[cfg(target_os = "windows")]
+const CLAUDE_INSTALLER_URL_WINDOWS: &str = "https://claude.ai/install.ps1";
 
 /// Hard size cap for the installer body. The real script is ~6 KB today;
 /// 100 KB is a generous ceiling that still rejects anything pathological
@@ -235,15 +246,192 @@ pub async fn app_settings_write(settings: AppSettings) -> IpcResult<()> {
 /// known install locations. Progress streams via the
 /// `claude_install_progress` Tauri event.
 ///
-/// Platform support: macOS + Linux only — the upstream script rejects
-/// MINGW/MSYS, so Windows returns `PLATFORM_UNSUPPORTED` immediately.
+/// Platform support: macOS + Linux run Anthropic's `install.sh` through
+/// `/bin/sh`; Windows runs `install.ps1` through PowerShell (see the
+/// `cfg(target_os = "windows")` variant below). Both verify via the same
+/// `detect_claude_cli` probe `app_prereq_check` uses.
+///
+/// Windows one-click installer. Fetches Anthropic's official `install.ps1`
+/// bootstrap over HTTPS (same size/scheme guards as the Unix path), writes
+/// it to a temp `.ps1`, and runs it through Windows PowerShell with
+/// `-ExecutionPolicy Bypass -File <script> stable`. The script downloads the
+/// release and delegates to `claude.exe install`, which lands the binary at
+/// `~/.local/bin/claude.exe` (already on `augmented_path`, so the verify
+/// step finds it even though this process's PATH wasn't refreshed) and
+/// updates the user PATH. Progress streams via `claude_install_progress`.
 #[tauri::command]
 #[cfg(target_os = "windows")]
-pub async fn app_install_claude_code(_app: tauri::AppHandle) -> IpcResult<InstalledClaude> {
-    Err(IpcError::new(
-        "PLATFORM_UNSUPPORTED",
-        "Claude Code installer doesn't support Windows",
-    ))
+pub async fn app_install_claude_code(app: tauri::AppHandle) -> IpcResult<InstalledClaude> {
+    use std::os::windows::process::CommandExt;
+    // Don't flash a console window when the GUI app spawns PowerShell.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let emit = |progress: ClaudeInstallProgress| {
+        let _ = app.emit(CLAUDE_INSTALL_PROGRESS_EVENT, &progress);
+    };
+
+    // 1. Fetch the installer script (https + size-cap enforced, same as Unix).
+    emit(ClaudeInstallProgress::Downloading {
+        received_bytes: None,
+        total_bytes: None,
+    });
+
+    let script = match fetch_installer(CLAUDE_INSTALLER_URL_WINDOWS).await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            emit(ClaudeInstallProgress::Error {
+                message: err.message.clone(),
+            });
+            return Err(err);
+        }
+    };
+
+    emit(ClaudeInstallProgress::Downloading {
+        received_bytes: Some(script.len() as u64),
+        total_bytes: Some(script.len() as u64),
+    });
+
+    // 2. The bootstrap is a `param(...)` script, so it must be invoked via
+    //    `-File <path> <Target>` (positional args don't survive piping to
+    //    `-Command -`). Write it to a temp `.ps1`, keyed by PID so concurrent
+    //    installs (there shouldn't be any, but be safe) don't collide.
+    let script_path =
+        std::env::temp_dir().join(format!("panda-claude-install-{}.ps1", std::process::id()));
+    if let Err(err) = tokio::fs::write(&script_path, &script).await {
+        let msg = format!("Failed to write installer script: {err}");
+        emit(ClaudeInstallProgress::Error {
+            message: msg.clone(),
+        });
+        return Err(IpcError::new("INSTALL_FAILED", msg));
+    }
+
+    emit(ClaudeInstallProgress::Running);
+
+    // 3. Spawn PowerShell on the temp script. `-NoProfile -NonInteractive`
+    //    keep it hermetic; `-ExecutionPolicy Bypass` lets the unsigned temp
+    //    script run; `stable` pins the release channel (matching the Unix
+    //    `sh -s -- stable`).
+    let mut std_cmd = std::process::Command::new("powershell");
+    std_cmd
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ])
+        .arg(&script_path)
+        .arg("stable")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW);
+    let mut cmd = tokio::process::Command::from(std_cmd);
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(err) => {
+            let _ = tokio::fs::remove_file(&script_path).await;
+            let msg = format!("Failed to spawn PowerShell installer: {err}");
+            emit(ClaudeInstallProgress::Error {
+                message: msg.clone(),
+            });
+            return Err(IpcError::new("INSTALL_FAILED", msg));
+        }
+    };
+
+    let mut stdout_reader = BufReader::new(child.stdout.take().expect("stdout piped")).lines();
+    let mut stderr_reader = BufReader::new(child.stderr.take().expect("stderr piped")).lines();
+
+    let stderr_tail = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<String>::new()));
+
+    let stderr_tail_clone = stderr_tail.clone();
+    let app_for_stderr = app.clone();
+    let stderr_task = tokio::spawn(async move {
+        while let Ok(Some(line)) = stderr_reader.next_line().await {
+            if let Some(stage) = parse_progress_line(&line) {
+                let _ = app_for_stderr.emit(CLAUDE_INSTALL_PROGRESS_EVENT, &stage);
+            }
+            let mut tail = stderr_tail_clone.lock();
+            tail.push(line);
+            if tail.len() > 20 {
+                let drop_count = tail.len() - 20;
+                tail.drain(0..drop_count);
+            }
+        }
+    });
+
+    let app_for_stdout = app.clone();
+    let stdout_task = tokio::spawn(async move {
+        while let Ok(Some(line)) = stdout_reader.next_line().await {
+            if let Some(stage) = parse_progress_line(&line) {
+                let _ = app_for_stdout.emit(CLAUDE_INSTALL_PROGRESS_EVENT, &stage);
+            }
+        }
+    });
+
+    let status = match child.wait().await {
+        Ok(s) => s,
+        Err(err) => {
+            let _ = tokio::fs::remove_file(&script_path).await;
+            let msg = format!("Installer subprocess errored: {err}");
+            emit(ClaudeInstallProgress::Error {
+                message: msg.clone(),
+            });
+            return Err(IpcError::new("INSTALL_FAILED", msg));
+        }
+    };
+
+    let _ = stdout_task.await;
+    let _ = stderr_task.await;
+    let _ = tokio::fs::remove_file(&script_path).await;
+
+    let stderr_lines = stderr_tail.lock().clone();
+
+    if !status.success() {
+        let last_line = stderr_lines
+            .iter()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| format!("installer exited with {status}"));
+        emit(ClaudeInstallProgress::Error {
+            message: last_line.clone(),
+        });
+        return Err(IpcError::new("INSTALL_FAILED", last_line).with_detail(serde_json::json!({
+            "exitCode": status.code(),
+            "stderrTail": stderr_lines,
+        })));
+    }
+
+    // 4. Verify post-install via the same probe `app_prereq_check` uses.
+    emit(ClaudeInstallProgress::Verifying);
+
+    let claude = detect_claude_cli();
+    if !claude.found {
+        let msg = "Installer exited cleanly but Claude CLI was not detected".to_string();
+        emit(ClaudeInstallProgress::Error {
+            message: msg.clone(),
+        });
+        return Err(
+            IpcError::new("INSTALL_VERIFIED_MISSING", msg).with_detail(serde_json::json!({
+                "stderrTail": stderr_lines,
+            })),
+        );
+    }
+
+    let version = claude.version.unwrap_or_default();
+    let binary_path = resolve_claude_binary_path().unwrap_or_default();
+
+    emit(ClaudeInstallProgress::Done {
+        version: version.clone(),
+        binary_path: binary_path.clone(),
+    });
+
+    Ok(InstalledClaude {
+        version,
+        binary_path,
+    })
 }
 
 #[tauri::command]
@@ -411,7 +599,6 @@ pub async fn app_install_claude_code(app: tauri::AppHandle) -> IpcResult<Install
 /// Pure helper: pull the installer body from `url`, enforcing the
 /// https + size constraints. Kept module-public so tests can hit it
 /// without spinning Tauri.
-#[cfg(not(target_os = "windows"))]
 pub(crate) async fn fetch_installer(url: &str) -> IpcResult<Vec<u8>> {
     if !url.starts_with("https://") {
         return Err(IpcError::new(
@@ -430,7 +617,6 @@ pub(crate) async fn fetch_installer(url: &str) -> IpcResult<Vec<u8>> {
 /// an arbitrary `reqwest::Client` and `url`. Tests pass a plain-HTTP
 /// client + a local mock-server URL so they can exercise the size cap
 /// without standing up a TLS terminator.
-#[cfg(not(target_os = "windows"))]
 async fn fetch_installer_with(client: &reqwest::Client, url: &str) -> IpcResult<Vec<u8>> {
     let resp = client
         .get(url)
@@ -473,7 +659,6 @@ async fn fetch_installer_with(client: &reqwest::Client, url: &str) -> IpcResult<
 /// progress stage when we can recognize it. Returns `None` for lines we
 /// don't classify — the surrounding `Running` emission already covered
 /// those.
-#[cfg(not(target_os = "windows"))]
 pub(crate) fn parse_progress_line(line: &str) -> Option<ClaudeInstallProgress> {
     let lower = line.to_lowercase();
     // Anthropic's bootstrap.sh phases (as of 2026-05):
@@ -495,23 +680,16 @@ pub(crate) fn parse_progress_line(line: &str) -> Option<ClaudeInstallProgress> {
     None
 }
 
-/// Same probe order as `detect_claude_cli` but returns the resolved
-/// path string. Pulled out so the post-install verify step doesn't need
-/// to re-derive it from the `ClaudeCliStatus` (which intentionally
-/// hides the path).
+/// Same resolver as `detect_claude_cli`, but returns the resolved path
+/// string. Pulled out so the post-install verify step doesn't need to
+/// re-derive it from the `ClaudeCliStatus` (which intentionally hides the
+/// path). Goes through `resolve_claude` (augmented PATH) so it finds the
+/// npm-global / `~/.local/bin` / `%LOCALAPPDATA%\Programs\claude` install
+/// the GUI process didn't inherit on PATH — on Windows it also follows a
+/// `claude.cmd` shim to the real `claude.exe`.
 fn resolve_claude_binary_path() -> Option<String> {
-    let resolved = which::which("claude").ok().or_else(|| {
-        let home = std::env::var("HOME").ok().map(std::path::PathBuf::from)?;
-        let candidates = [
-            home.join(".local/bin/claude"),
-            home.join(".claude/local/claude"),
-            home.join(".npm-global/bin/claude"),
-            std::path::PathBuf::from("/opt/homebrew/bin/claude"),
-            std::path::PathBuf::from("/usr/local/bin/claude"),
-        ];
-        candidates.into_iter().find(|p| p.exists())
-    });
-    resolved.map(|p| p.display().to_string())
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    crate::commands::claude_driver::resolve_claude(&cwd).map(|p| p.display().to_string())
 }
 
 #[cfg(test)]
@@ -541,6 +719,7 @@ mod tests {
     // Track I: auto-install Claude Code
     // -----------------------------------------------------------------
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn installer_url_uses_https() {
         assert!(
@@ -670,17 +849,17 @@ mod tests {
     }
 
     #[cfg(target_os = "windows")]
-    #[tokio::test]
-    async fn windows_returns_platform_unsupported() {
-        // Can't easily construct a `tauri::AppHandle` in unit tests, so
-        // this test compiles the windows branch as a sanity check —
-        // the actual rejection codepath is the IpcError shape we return
-        // from the windows-gated function above. We assert the error
-        // constant equals what the contract documents.
-        // The function itself is async + needs an AppHandle, but we can
-        // assert the static expectations.
-        let expected_code = "PLATFORM_UNSUPPORTED";
-        assert_eq!(expected_code, "PLATFORM_UNSUPPORTED");
+    #[test]
+    fn windows_installer_url_uses_https() {
+        // The Windows path runs install.ps1 through PowerShell. Like the
+        // Unix script it must be fetched over HTTPS — `fetch_installer`
+        // rejects anything else, but pin the constant here so a typo can't
+        // ship an http:// URL that only fails at runtime.
+        assert!(
+            CLAUDE_INSTALLER_URL_WINDOWS.starts_with("https://"),
+            "Windows installer must be fetched over HTTPS",
+        );
+        assert!(CLAUDE_INSTALLER_URL_WINDOWS.ends_with(".ps1"));
     }
 
     #[cfg(not(target_os = "windows"))]

@@ -415,36 +415,6 @@ AI-generated title on the first list refresh after a title exists. The user can
 override this at any time via `project_rename` (sidebar inline edit); once a
 non-placeholder name is set, the self-heal stops touching it.
 
-#### Versions (checkpoints / branching)
-
-```typescript
-interface CheckpointInfo {
-  id: string;
-  parentId: string | null;   // tree edge — restoring + rebuilding forks here
-  turnId: string;
-  sessionId: string;         // Claude session whose transcript this snapshot carries
-  createdAt: number;
-  title: string;             // short label derived from the turn's prompt
-  prompt: string;
-  artifacts: string[];       // workspace-relative paths captured
-}
-function versions_list(projectId: string): Promise<CheckpointInfo[]>;
-
-interface RestoreVersionRequest { projectId: string; checkpointId: string; }
-function version_restore(req: RestoreVersionRequest): Promise<void>;
-```
-
-**Model.** A checkpoint is auto-created after each successful build turn
-(emitted as `checkpoint_created`); it snapshots the working files + the Claude
-session transcript into `<project>/.panda/checkpoints/<id>/`, with the tree +
-`head` + current session id in `<project>/.panda/history.json`. `version_restore`
-("Start from here") reverts the working files and **forks** the conversation:
-it mints a new session id seeded from the checkpoint's transcript snapshot and
-moves `head`, so the next build's checkpoint parents off the restored one. The
-per-turn session id therefore comes from `history.json` (falling back to the
-deterministic per-project id for projects with no history yet), not from
-`session_id_for_project` directly.
-
 #### App
 
 ```typescript
@@ -514,7 +484,6 @@ type ChatEvent =
   | { kind: "tool_use_start"; turnId: string; tool: string; input: unknown }
   | { kind: "tool_use_end"; turnId: string; tool: string; ok: boolean }
   | { kind: "artifact_changed"; turnId: string; file: string; reason: "new" | "modified" }
-  | { kind: "checkpoint_created"; turnId: string; checkpointId: string }
   | { kind: "turn_end"; turnId: string }
   | { kind: "error"; turnId: string; message: string };
 

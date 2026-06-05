@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, History, ChevronDown, ChevronUp } from "lucide-react";
+import { Loader2, ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "@/ui/utils";
 import ToolUseBlock from "./ToolUseBlock";
 import ArtifactBadge from "./ArtifactBadge";
@@ -77,7 +77,7 @@ function StatusLine({ turn }) {
   return null;
 }
 
-export default function ChatTurn({ turn, onOpenArtifact, onRestoreVersion, restoreDisabled, scrollRootRef }) {
+export default function ChatTurn({ turn, onOpenArtifact, scrollRootRef }) {
   const isUser = turn.role === "user";
   // User prompts stick to the top of the scroll container; once pinned (a
   // response has scrolled underneath) they collapse to a couple of lines with a
@@ -111,11 +111,6 @@ export default function ChatTurn({ turn, onOpenArtifact, onRestoreVersion, resto
     turn.phase === "implement" &&
     turn.status === "complete" &&
     turn.blocks.some((block) => block.kind === "artifact");
-  // A completed build turn that produced a checkpoint can be restored —
-  // "Start from here" reverts the model + conversation to this version and
-  // forks future edits from it (the abandoned path stays saved).
-  const showRestore =
-    !isUser && turn.status === "complete" && !!turn.checkpointId && !!onRestoreVersion;
   return (
     <>
       {isUser ? (
@@ -220,25 +215,6 @@ export default function ChatTurn({ turn, onOpenArtifact, onRestoreVersion, resto
             Done. Want changes? Just describe them below — e.g. “make it 1 cm
             taller” or “add a hole for a screw”.
           </p>
-        ) : null}
-        {showRestore ? (
-          <button
-            type="button"
-            data-slot="chat-restore-version"
-            data-checkpoint-id={turn.checkpointId}
-            disabled={restoreDisabled}
-            onClick={() => onRestoreVersion(turn.checkpointId)}
-            title="Revert the model and conversation to this version, then continue from here"
-            className={cn(
-              "mt-0.5 inline-flex w-fit items-center gap-1.5 rounded-md border border-border/60 px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors",
-              restoreDisabled
-                ? "cursor-not-allowed opacity-50"
-                : "hover:border-primary/40 hover:bg-primary/10 hover:text-primary",
-            )}
-          >
-            <History className="size-3" aria-hidden />
-            Start from here
-          </button>
         ) : null}
         </div>
         {condensed && overflowing ? (

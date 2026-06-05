@@ -57,7 +57,7 @@ pub type MtimeSnapshot = HashMap<String, MtimeEntry>;
 ///   the Physics check). The plan turn is bounded by `PLAN_SYSTEM_PROMPT`, not
 ///   the CLI, to NOT write part source or generate final artifacts — the
 ///   committed build still happens only after the user approves, so the
-///   viewer, version checkpoints, and approve→build flow are unchanged.
+///   viewer and approve→build flow are unchanged.
 /// - `Implement`: `--permission-mode bypassPermissions` — runs unattended.
 ///   `acceptEdits` is NOT enough: it auto-applies Edit/Write but still
 ///   prompts for Bash, and the cadcode generator is a Bash command
@@ -1181,8 +1181,7 @@ where
     // deterministic check still reports warnings in the `.step.json` sidecars,
     // resume the same session and let the model render-inspect-fix. Runs inside
     // this build turn (no separate user-visible turn). Best-effort: it never
-    // fails the turn, and it settles before the checkpoint so the saved version
-    // captures the corrected geometry.
+    // fails the turn.
     if matches!(phase, TurnPhase::Implement) && !cancelled && saw_output && artifacts_changed {
         run_review_fix_loop(
             &claude_path,
@@ -1193,26 +1192,6 @@ where
             &cancel,
         )
         .await;
-    }
-
-    // Auto-save a version checkpoint after a successful build that actually
-    // produced/changed artifacts (plan turns write nothing; cancelled or
-    // empty turns aren't worth a snapshot). Best-effort: a checkpoint failure
-    // must never fail the turn. See `commands::versions`.
-    if matches!(phase, TurnPhase::Implement) && !cancelled && saw_output && artifacts_changed {
-        match crate::commands::versions::create_checkpoint(
-            workspace_dir,
-            &session_id.to_string(),
-            turn_id,
-            user_message,
-        ) {
-            Ok(Some(checkpoint_id)) => on_event(ChatEvent::CheckpointCreated {
-                turn_id: turn_id.to_string(),
-                checkpoint_id,
-            }),
-            Ok(None) => {}
-            Err(e) => eprintln!("checkpoint creation failed: {e}"),
-        }
     }
 
     // Land the auto-generated project name (if any) before TurnEnd so the

@@ -132,9 +132,6 @@ pub fn run() {
             project::project_open,
             project::project_rename,
             project::project_delete,
-            // versions (checkpoints / branching)
-            versions::versions_list,
-            versions::version_restore,
             // update
             update::update_check,
             update::update_install,

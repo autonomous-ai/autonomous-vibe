@@ -11,4 +11,3 @@ pub mod slicer;
 pub mod printer;
 pub mod project;
 pub mod update;
-pub mod versions;

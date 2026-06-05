@@ -21,8 +21,6 @@ function groupTurns(history) {
 export default function ChatHistory({
   history,
   onOpenArtifact,
-  onRestoreVersion,
-  restoreDisabled,
   className,
 }) {
   const ref = useRef(null);
@@ -83,8 +81,6 @@ export default function ChatHistory({
               key={turn.id}
               turn={turn}
               onOpenArtifact={onOpenArtifact}
-              onRestoreVersion={onRestoreVersion}
-              restoreDisabled={restoreDisabled}
               scrollRootRef={ref}
             />
           ))}

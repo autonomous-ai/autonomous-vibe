@@ -82,14 +82,7 @@ pub fn session_id_for_project(project_id: &str) -> Uuid {
 fn spawn_chat_turn(app: AppHandle, project_id: &str, message: String, phase: TurnPhase) -> String {
     let turn_id = Uuid::new_v4().to_string();
     let workspace = project_workspace(project_id);
-    // The per-turn session is the project's *current* branch session (from
-    // `.panda/history.json`), falling back to the deterministic per-project id
-    // for projects with no version history yet. This is what lets "Start from
-    // here" fork the conversation — see `commands::versions`.
-    let session_id = crate::commands::versions::current_session_id(
-        &workspace,
-        session_id_for_project(project_id),
-    );
+    let session_id = session_id_for_project(project_id);
     let cancel = CancellationToken::new();
     register_turn(&turn_id, cancel.clone());
 
@@ -180,11 +173,7 @@ pub async fn chat_session_state(
     if let Some(existing) = state.chat_session_snapshot(&project_id) {
         return Ok(existing);
     }
-    let session_id = crate::commands::versions::current_session_id(
-        &project_workspace(&project_id),
-        session_id_for_project(&project_id),
-    )
-    .to_string();
+    let session_id = session_id_for_project(&project_id).to_string();
     // No in-memory snapshot (e.g. fresh app launch or project switch): rebuild
     // the transcript from the JSONL Claude Code persists for this session so
     // chat history survives restarts. A missing or unreadable file just means

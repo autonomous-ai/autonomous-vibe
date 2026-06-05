@@ -83,6 +83,11 @@ pub fn run() {
                 let handle = tauri::Manager::app_handle(app).clone();
                 tauri::async_runtime::spawn(commands::update::run_startup_auto_update(handle));
             }
+            // Export any stored Claude Code OAuth token (captured by
+            // `app_login_claude` → `claude setup-token`) into this process's
+            // environment so every spawned `claude -p` child inherits it and
+            // headless turns authenticate without an interactive `/login`.
+            tauri::async_runtime::spawn(commands::app::apply_stored_oauth_token_to_env());
             Ok(())
         })
         .on_menu_event(|app, event| menu::on_event(app, event.id.as_ref()))
@@ -99,6 +104,8 @@ pub fn run() {
             app::app_settings_read,
             app::app_settings_write,
             app::app_install_claude_code,
+            app::app_auth_check,
+            app::app_login_claude,
             // catalog
             catalog::catalog_read,
             catalog::project_catalog_read,

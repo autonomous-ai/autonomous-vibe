@@ -1,8 +1,8 @@
 //! `app_*` IPC commands: app metadata, prereq check, settings I/O.
 
 use crate::ipc::types::{
-    AppInfo, AppSettings, ClaudeCliStatus, ClaudeInstallProgress, InstalledClaude, PrereqCheck,
-    PythonStatus, SlicerStatus,
+    AppInfo, AppSettings, ClaudeAuthStatus, ClaudeCliStatus, ClaudeInstallProgress,
+    ClaudeLoginProgress, InstalledClaude, PrereqCheck, PythonStatus, SlicerStatus,
 };
 use crate::ipc::{IpcError, IpcResult};
 use crate::paths;
@@ -16,6 +16,14 @@ use tokio::io::AsyncWriteExt;
 
 /// Tauri event channel for `claude_install_progress` payloads.
 pub const CLAUDE_INSTALL_PROGRESS_EVENT: &str = "claude_install_progress";
+
+/// Tauri event channel for `claude_login_progress` payloads.
+pub const CLAUDE_LOGIN_PROGRESS_EVENT: &str = "claude_login_progress";
+
+/// How long to wait for the user to finish the browser OAuth flow before
+/// giving up and killing `claude setup-token`. Generous: the user has to
+/// switch to a browser, sign in, and approve.
+const LOGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Upstream installer script (macOS + Linux). 302-redirects to
 /// `https://downloads.claude.ai/claude-code-releases/bootstrap.sh`.
@@ -692,6 +700,387 @@ fn resolve_claude_binary_path() -> Option<String> {
     crate::commands::claude_driver::resolve_claude(&cwd).map(|p| p.display().to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Claude Code sign-in (setup-token OAuth) — Track I follow-up
+// ---------------------------------------------------------------------------
+//
+// Why a separate flow from install: a freshly *installed* `claude` is not
+// *authenticated*. The chat runs `claude -p` headless, where the interactive
+// `/login` slash command does not exist ("/login isn't available in this
+// environment"). Headless turns can only *read* credentials that already
+// exist. So we drive `claude setup-token` — the official non-interactive
+// auth path — which opens a browser OAuth flow (Claude Pro/Max subscription)
+// and prints a 1-year token. We capture that token, persist it, and export it
+// as `CLAUDE_CODE_OAUTH_TOKEN`; every spawned `claude` child inherits the
+// parent process env, so subsequent turns authenticate transparently.
+
+/// The user's home dir, honoring `HOME` then `USERPROFILE` (Windows). Matches
+/// `claude_driver::home_dir`'s resolution so we look where the CLI actually
+/// stores credentials.
+fn user_home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+}
+
+/// Path to Claude Code's persisted credential file, honoring the
+/// `CLAUDE_CONFIG_DIR` override the CLI itself respects. Used only to *detect*
+/// that the user logged in interactively elsewhere — we never read its
+/// contents.
+fn claude_credentials_path() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+        return Some(PathBuf::from(dir).join(".credentials.json"));
+    }
+    user_home().map(|h| h.join(".claude").join(".credentials.json"))
+}
+
+/// Non-empty env var → `true`. Treats whitespace-only as unset.
+fn env_set(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// Pure decision: given the three independent auth signals, what's the status?
+/// Pulled out so the precedence is unit-testable without touching the
+/// environment or filesystem. Precedence mirrors Claude Code's own:
+/// an explicit API/OAuth token in the environment wins, then a token we
+/// stored, then a credentials file from an interactive login.
+fn resolve_auth_status(
+    env_token: bool,
+    stored_token: bool,
+    credentials_file: bool,
+) -> ClaudeAuthStatus {
+    if env_token || stored_token {
+        ClaudeAuthStatus {
+            authenticated: true,
+            source: Some("oauth_token".into()),
+        }
+    } else if credentials_file {
+        ClaudeAuthStatus {
+            authenticated: true,
+            source: Some("credentials_file".into()),
+        }
+    } else {
+        ClaudeAuthStatus {
+            authenticated: false,
+            source: None,
+        }
+    }
+}
+
+/// Gather the live auth signals and resolve them. Async only because reading
+/// persisted settings is async.
+async fn detect_claude_auth() -> ClaudeAuthStatus {
+    // An OAuth token or API key already exported into our environment — set by
+    // `apply_stored_oauth_token_to_env` at startup, by a just-completed login,
+    // or by the user/CI directly.
+    let env_token = env_set("CLAUDE_CODE_OAUTH_TOKEN")
+        || env_set("ANTHROPIC_API_KEY")
+        || env_set("ANTHROPIC_AUTH_TOKEN");
+    let stored_token = load_settings()
+        .await
+        .ok()
+        .and_then(|s| s.claude_oauth_token)
+        .map(|t| !t.trim().is_empty())
+        .unwrap_or(false);
+    let credentials_file = claude_credentials_path()
+        .map(|p| p.is_file())
+        .unwrap_or(false);
+    resolve_auth_status(env_token, stored_token, credentials_file)
+}
+
+/// Is the user authenticated to Claude Code? Onboarding gates the chat on this
+/// the same way it gates on the CLI being installed.
+#[tauri::command]
+pub async fn app_auth_check() -> IpcResult<ClaudeAuthStatus> {
+    Ok(detect_claude_auth().await)
+}
+
+/// Export a stored OAuth token into this process's environment so every
+/// spawned `claude` child inherits it. No-op if the variable is already set
+/// (don't clobber an explicit env/CI token) or if nothing is stored. Called
+/// once at startup; login also sets it directly so no restart is needed.
+pub async fn apply_stored_oauth_token_to_env() {
+    if std::env::var_os("CLAUDE_CODE_OAUTH_TOKEN").is_some() {
+        return;
+    }
+    if let Ok(settings) = load_settings().await {
+        if let Some(token) = settings.claude_oauth_token {
+            if !token.trim().is_empty() {
+                std::env::set_var("CLAUDE_CODE_OAUTH_TOKEN", token);
+            }
+        }
+    }
+}
+
+/// Persist a captured OAuth token into settings (preserving the rest) and
+/// export it immediately.
+async fn store_oauth_token(token: &str) -> IpcResult<()> {
+    let mut settings = load_settings().await.unwrap_or_default();
+    settings.claude_oauth_token = Some(token.to_string());
+    app_settings_write(settings).await?;
+    std::env::set_var("CLAUDE_CODE_OAUTH_TOKEN", token);
+    Ok(())
+}
+
+/// Strip ANSI/VT escape sequences (CSI `ESC [ … final` and OSC
+/// `ESC ] … BEL/ST`) from PTY output so URL/token scanning sees clean text.
+/// A small hand-rolled scanner — we only need it good enough to recover
+/// `https://…` and `sk-ant-…` runs, not a full terminal emulator.
+fn strip_ansi(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == 0x1b && i + 1 < bytes.len() {
+            match bytes[i + 1] {
+                b'[' => {
+                    // CSI: consume until a final byte in 0x40..=0x7e.
+                    i += 2;
+                    while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+                        i += 1;
+                    }
+                    i += 1; // skip the final byte
+                    continue;
+                }
+                b']' => {
+                    // OSC: consume until BEL or ESC\ (ST).
+                    i += 2;
+                    while i < bytes.len() {
+                        if bytes[i] == 0x07 {
+                            i += 1;
+                            break;
+                        }
+                        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                            i += 2;
+                            break;
+                        }
+                        i += 1;
+                    }
+                    continue;
+                }
+                _ => {
+                    // Other ESC-prefixed sequence: drop ESC + the next byte.
+                    i += 2;
+                    continue;
+                }
+            }
+        }
+        // Keep printable + whitespace; drop stray control bytes.
+        if b == b'\n' || b == b'\t' || b >= 0x20 {
+            out.push(b as char);
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Find the first plausible OAuth sign-in URL in CLI output. We only surface
+/// it as a manual fallback (the CLI opens the browser itself), so a loose
+/// match is fine: first `https://` run that points at a Claude/Anthropic host.
+fn find_login_url(text: &str) -> Option<String> {
+    for start in find_all(text, "https://") {
+        let rest = &text[start..];
+        let end = rest
+            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ')' || c == '<')
+            .unwrap_or(rest.len());
+        let url = &rest[..end];
+        let lower = url.to_ascii_lowercase();
+        if lower.contains("claude.ai")
+            || lower.contains("anthropic")
+            || lower.contains("oauth")
+            || lower.contains("console.")
+        {
+            return Some(url.to_string());
+        }
+    }
+    None
+}
+
+/// Byte offsets of every occurrence of `needle` in `hay`.
+fn find_all(hay: &str, needle: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(rel) = hay[from..].find(needle) {
+        let at = from + rel;
+        out.push(at);
+        from = at + needle.len();
+    }
+    out
+}
+
+/// Extract a Claude OAuth token from `claude setup-token` output. Tokens look
+/// like `sk-ant-oat01-<long base64url-ish run>`; we anchor on the documented
+/// prefix, fall back to the generic `sk-ant-` family, and take the maximal run
+/// of token characters. Returns the longest candidate (the real token dwarfs
+/// any incidental `sk-ant-` mention) of at least `MIN_TOKEN_LEN`.
+fn parse_setup_token(text: &str) -> Option<String> {
+    const MIN_TOKEN_LEN: usize = 24;
+    let is_tok = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    let mut best: Option<String> = None;
+    for prefix in ["sk-ant-oat01-", "sk-ant-"] {
+        for start in find_all(text, prefix) {
+            let rest = &text[start..];
+            let end = rest.find(|c: char| !is_tok(c)).unwrap_or(rest.len());
+            let candidate = &rest[..end];
+            if candidate.len() >= MIN_TOKEN_LEN
+                && best.as_ref().map(|b| candidate.len() > b.len()).unwrap_or(true)
+            {
+                best = Some(candidate.to_string());
+            }
+        }
+        if best.is_some() {
+            break; // prefer the more specific prefix
+        }
+    }
+    best
+}
+
+/// One-click Claude Code sign-in. Drives `claude setup-token` inside a real
+/// pseudo-terminal (it detects a TTY and opens the browser OAuth flow), watches
+/// the output for the sign-in URL and the printed token, persists the token,
+/// and exports it for subsequent headless turns. Progress streams via the
+/// `claude_login_progress` event.
+///
+/// Assumes the modern loopback-callback variant of `setup-token` that prints
+/// the token directly (no copy-paste of a code back into the terminal). If a
+/// future CLI reverts to paste-the-code, this capture would need a text input;
+/// the UI's manual-URL fallback at least keeps the user unblocked.
+#[tauri::command]
+pub async fn app_login_claude(app: tauri::AppHandle) -> IpcResult<ClaudeAuthStatus> {
+    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+    use std::io::Read;
+
+    let emit = |progress: ClaudeLoginProgress| {
+        let _ = app.emit(CLAUDE_LOGIN_PROGRESS_EVENT, &progress);
+    };
+
+    let fail = |emit: &dyn Fn(ClaudeLoginProgress), code: &str, msg: String| -> IpcError {
+        emit(ClaudeLoginProgress::Error { message: msg.clone() });
+        IpcError::new(code, msg)
+    };
+
+    emit(ClaudeLoginProgress::Starting);
+
+    // Resolve `claude` the same way the chat driver does (augmented PATH,
+    // following a Windows `.cmd` shim to the real `.exe`).
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let Some(claude) = crate::commands::claude_driver::resolve_claude(&cwd) else {
+        return Err(fail(
+            &emit,
+            "CLAUDE_NOT_INSTALLED",
+            "Claude Code is not installed yet".to_string(),
+        ));
+    };
+
+    let mut cmd = CommandBuilder::new(claude);
+    cmd.arg("setup-token");
+    cmd.cwd(&cwd);
+    cmd.env("PATH", crate::commands::claude_driver::augmented_path());
+    // Don't let the CLI rewrite its own binary mid-login (Windows 0xC0000142).
+    cmd.env("DISABLE_AUTOUPDATER", "1");
+
+    // Wide terminal so a long token prints on a single unwrapped line — the
+    // token scanner reads the merged PTY stream and line-wrapping would split
+    // the run.
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 50,
+            cols: 512,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| fail(&emit, "LOGIN_PTY_FAILED", e.to_string()))?;
+
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| fail(&emit, "LOGIN_PTY_FAILED", e.to_string()))?;
+
+    let mut child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|e| fail(&emit, "LOGIN_SPAWN_FAILED", e.to_string()))?;
+
+    // Keep the master alive for the reader's lifetime; close our slave handle
+    // so the reader hits EOF the moment the child exits.
+    let _master = pair.master;
+    drop(pair.slave);
+
+    let app_for_reader = app.clone();
+    let reader_handle = tokio::task::spawn_blocking(move || -> Option<String> {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let mut url_emitted = false;
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break, // EOF: child exited
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if !url_emitted {
+                        let text = strip_ansi(&String::from_utf8_lossy(&buf));
+                        if let Some(url) = find_login_url(&text) {
+                            url_emitted = true;
+                            let _ = app_for_reader.emit(
+                                CLAUDE_LOGIN_PROGRESS_EVENT,
+                                &ClaudeLoginProgress::AwaitingBrowser { url },
+                            );
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let text = strip_ansi(&String::from_utf8_lossy(&buf));
+        parse_setup_token(&text)
+    });
+
+    let token = match tokio::time::timeout(LOGIN_TIMEOUT, reader_handle).await {
+        Ok(Ok(token)) => token,
+        Ok(Err(_join_err)) => None, // reader task panicked
+        Err(_) => {
+            // Timed out — the user never finished. Kill the child; the reader
+            // task then hits EOF and ends on its own.
+            let _ = child.kill();
+            return Err(fail(
+                &emit,
+                "LOGIN_TIMEOUT",
+                "Timed out waiting for browser sign-in".to_string(),
+            ));
+        }
+    };
+
+    // Reap the child so it doesn't linger.
+    let _ = child.wait();
+
+    let Some(token) = token else {
+        return Err(fail(
+            &emit,
+            "LOGIN_NO_TOKEN",
+            "Sign-in did not return a token. Please try again.".to_string(),
+        ));
+    };
+
+    emit(ClaudeLoginProgress::Verifying);
+    store_oauth_token(&token)
+        .await
+        .map_err(|e| fail(&emit, "LOGIN_STORE_FAILED", e.message))?;
+
+    let status = detect_claude_auth().await;
+    if !status.authenticated {
+        return Err(fail(
+            &emit,
+            "LOGIN_VERIFY_FAILED",
+            "Captured a token but could not confirm authentication".to_string(),
+        ));
+    }
+    emit(ClaudeLoginProgress::Done);
+    Ok(status)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,6 +1091,74 @@ mod tests {
         assert_eq!(info.pid, std::process::id());
         assert_eq!(info.app_version, APP_VERSION);
         assert!(!info.root_path.is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // Claude sign-in: pure helpers
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn resolve_auth_status_precedence() {
+        // Env or stored token → authenticated as oauth_token.
+        let s = resolve_auth_status(true, false, false);
+        assert!(s.authenticated);
+        assert_eq!(s.source.as_deref(), Some("oauth_token"));
+        let s = resolve_auth_status(false, true, true);
+        assert_eq!(s.source.as_deref(), Some("oauth_token"));
+        // Only a credentials file → authenticated as credentials_file.
+        let s = resolve_auth_status(false, false, true);
+        assert!(s.authenticated);
+        assert_eq!(s.source.as_deref(), Some("credentials_file"));
+        // Nothing → unauthenticated, no source.
+        let s = resolve_auth_status(false, false, false);
+        assert!(!s.authenticated);
+        assert!(s.source.is_none());
+    }
+
+    #[test]
+    fn strip_ansi_removes_csi_and_osc() {
+        // Colored text + an OSC title sequence.
+        let raw = "\x1b[32mhello\x1b[0m \x1b]0;title\x07world\n";
+        assert_eq!(strip_ansi(raw), "hello world\n");
+    }
+
+    #[test]
+    fn find_login_url_picks_anthropic_host() {
+        let text = "Visit https://example.com first, then \
+                    open https://claude.ai/oauth/authorize?code=abc to sign in.";
+        assert_eq!(
+            find_login_url(text).as_deref(),
+            Some("https://claude.ai/oauth/authorize?code=abc"),
+        );
+        assert!(find_login_url("no urls here").is_none());
+    }
+
+    #[test]
+    fn parse_setup_token_extracts_oat_prefix() {
+        let text = "Success! Your token:\n  \
+                    sk-ant-oat01-AbC123_def-456XyZ7890ABCDEF\n\
+                    Set CLAUDE_CODE_OAUTH_TOKEN to use it.";
+        assert_eq!(
+            parse_setup_token(text).as_deref(),
+            Some("sk-ant-oat01-AbC123_def-456XyZ7890ABCDEF"),
+        );
+    }
+
+    #[test]
+    fn parse_setup_token_survives_ansi_and_trailing_punctuation() {
+        let raw = "token=\x1b[1msk-ant-oat01-LONGtokenVALUE1234567890abcXYZ\x1b[0m.\n";
+        let cleaned = strip_ansi(raw);
+        assert_eq!(
+            parse_setup_token(&cleaned).as_deref(),
+            Some("sk-ant-oat01-LONGtokenVALUE1234567890abcXYZ"),
+        );
+    }
+
+    #[test]
+    fn parse_setup_token_rejects_short_noise() {
+        // A short `sk-ant-` mention that isn't a real token.
+        assert!(parse_setup_token("sk-ant-x and other words").is_none());
+        assert!(parse_setup_token("no token at all").is_none());
     }
 
     #[tokio::test]

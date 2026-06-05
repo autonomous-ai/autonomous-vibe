@@ -19,9 +19,11 @@ function createStepMachine() {
   };
 }
 
-test("OnboardingWizard state machine advances claude → printer → filament → done", () => {
+test("OnboardingWizard state machine advances claude → login → printer → filament → done", () => {
   const machine = createStepMachine();
   assert.equal(machine.step, "claude");
+  machine.advance();
+  assert.equal(machine.step, "login");
   machine.advance();
   assert.equal(machine.step, "printer");
   machine.advance();

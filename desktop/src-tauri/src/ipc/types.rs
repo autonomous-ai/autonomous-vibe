@@ -544,6 +544,14 @@ pub struct AppSettings {
     pub use_panda_cloud: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub panda_token: Option<String>,
+    /// Long-lived (1-year) Claude Code OAuth token captured by
+    /// `app_login_claude` (`claude setup-token`). When present it is exported
+    /// as `CLAUDE_CODE_OAUTH_TOKEN` into the spawned `claude -p` environment so
+    /// headless turns authenticate without an interactive `/login`. Stored here
+    /// (like `panda_token`) rather than in the OS keychain for v1 simplicity;
+    /// the file already lives in the per-user app data dir.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub claude_oauth_token: Option<String>,
     /// Lets the viewer gate the first-run wizard with a single
     /// app_settings_read() call. Added by Track E.
     #[serde(default)]
@@ -564,6 +572,7 @@ impl Default for AppSettings {
             slicer_binary_path: String::new(),
             use_panda_cloud: false,
             panda_token: None,
+            claude_oauth_token: None,
             has_onboarded: false,
             auto_update: false,
         }
@@ -611,6 +620,47 @@ pub enum ClaudeInstallProgress {
         version: String,
         binary_path: String,
     },
+    Error {
+        message: String,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// Claude Code sign-in (setup-token OAuth)
+// ---------------------------------------------------------------------------
+
+/// Result of `app_auth_check` and `app_login_claude`. `authenticated` is the
+/// single bit onboarding gates on; `source` says how we know (for diagnostics
+/// / UI copy), and is `None` when unauthenticated.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeAuthStatus {
+    pub authenticated: bool,
+    /// One of `"oauth_token"` (a token we captured/stored or one already in the
+    /// environment) or `"credentials_file"` (the user logged in interactively
+    /// elsewhere and `~/.claude/.credentials.json` exists). `None` when not
+    /// authenticated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// Streamed via the `claude_login_progress` Tauri event while
+/// `app_login_claude` drives `claude setup-token` through a PTY. Mirrors the
+/// TS discriminated union in `viewer/src/client/lib/transport.ts`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "stage", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum ClaudeLoginProgress {
+    /// Spawning `claude setup-token`.
+    Starting,
+    /// The OAuth URL was detected in the CLI output. The CLI opens the default
+    /// browser itself; `url` is surfaced so the UI can show a manual fallback
+    /// link if the browser didn't open.
+    AwaitingBrowser {
+        url: String,
+    },
+    /// Browser flow finished; we captured a token and are persisting it.
+    Verifying,
+    Done,
     Error {
         message: String,
     },

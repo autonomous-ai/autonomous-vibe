@@ -75,6 +75,12 @@ x509-parser = "0.16"
 # (no system OpenSSL needed).
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 
+# Claude Code sign-in: `claude setup-token` is an interactive command that
+# opens a browser OAuth flow and prints a long-lived token. It detects a TTY
+# and misbehaves under plain pipes, so `app_login_claude` runs it inside a real
+# pseudo-terminal. portable-pty wraps ConPTY on Windows and openpty elsewhere.
+portable-pty = "0.8"
+
 [features]
 # this feature is used for production builds or when a dev server is not specified
 # DO NOT REMOVE!!

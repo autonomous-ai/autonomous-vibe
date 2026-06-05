@@ -11,9 +11,12 @@ import {
   chatWidthAfterPanelsGrew,
 } from "./chatLayout.js";
 
-// A roomy desktop where the fraction cap, not the viewer floor, binds.
+// A roomy desktop where the fraction cap, not the viewer floor, binds. The
+// fraction only beats the floor once the viewport exceeds
+// CAD_VIEWER_MIN_VISIBLE_WIDTH / (1 - CHAT_MAX_VIEWPORT_FRACTION) = 480 / 0.2 =
+// 2400; 2560 clears that (fraction 2048 < floor cap 2080).
 const WIDE = {
-  viewportWidth: 1920,
+  viewportWidth: 2560,
   leftSidebarOpen: false,
   leftSidebarWidth: 0,
   toolsSheetOpen: false,
@@ -22,7 +25,7 @@ const WIDE = {
 
 test("fraction cap bounds chat on a wide viewport", () => {
   const { width, closeLeftSidebar } = clampChatWidth(9999, WIDE);
-  assert.equal(width, Math.floor(1920 * CHAT_MAX_VIEWPORT_FRACTION));
+  assert.equal(width, Math.floor(WIDE.viewportWidth * CHAT_MAX_VIEWPORT_FRACTION));
   assert.equal(closeLeftSidebar, false);
 });
 

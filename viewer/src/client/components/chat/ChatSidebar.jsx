@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { MessageSquare } from "lucide-react";
 import { cn } from "@/ui/utils";
-import { attachChatEventStream, restoreVersion, useChatStore } from "@/store/chat";
+import { attachChatEventStream, useChatStore } from "@/store/chat";
 import { CHAT_MIN_WIDTH, clampChatWidth } from "@/workbench/chatLayout";
 import ChatHistory from "./ChatHistory";
 import ChatInput from "./ChatInput";

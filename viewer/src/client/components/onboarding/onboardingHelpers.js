@@ -4,6 +4,7 @@
 export const ONBOARDING_STEPS = Object.freeze([
   "claude",
   "login",
+  "orca",
   "printer",
   "filament",
   "done",
@@ -64,6 +65,20 @@ export function evaluateAuthCheck(status) {
 }
 
 /**
+ * Slicer counterpart to `evaluateClaudeCheck`: returns `{ proceed: true }`
+ * once OrcaSlicer is resolvable (bundled sidecar, a standard install path, or
+ * on PATH), otherwise reports back the missing reason so the UI can render the
+ * install card.
+ */
+export function evaluateSlicerCheck(check) {
+  const found = Boolean(check?.slicer?.found);
+  if (found) {
+    return { proceed: true, binaryPath: String(check?.slicer?.binaryPath || "") };
+  }
+  return { proceed: false, reason: "slicer_missing" };
+}
+
+/**
  * Drive the Claude-check polling loop. Returns the timer id so callers can
  * cancel. Pulled out so it can be unit-tested with a fake timer.
  */
@@ -73,7 +88,14 @@ export function schedulePoll(callback, intervalMs, scheduler = setTimeout) {
 
 export const CLAUDE_INSTALL_URL = "https://claude.ai/install";
 
+/** Manual-install fallback shown when the user opts to grab OrcaSlicer themselves. */
+export const ORCA_DOWNLOAD_URL =
+  "https://github.com/SoftFever/OrcaSlicer/releases/latest";
+
 export const CLAUDE_CHECK_POLL_INTERVAL_MS = 5000;
+
+/** Shared poll cadence for both the Claude and OrcaSlicer onboarding gates. */
+export const SLICER_CHECK_POLL_INTERVAL_MS = CLAUDE_CHECK_POLL_INTERVAL_MS;
 
 /**
  * Drive the Claude-check loop without React: caller passes a transport-like
@@ -167,6 +189,33 @@ export function describeClaudeInstallProgress(event) {
       return "Downloading Claude Code…";
     case "running":
       return "Installing…";
+    case "verifying":
+      return "Verifying install…";
+    case "done":
+      return "Installed";
+    case "error":
+      return String(event.message || "Install failed");
+    default:
+      return "Working…";
+  }
+}
+
+/**
+ * Slicer counterpart to `describeClaudeInstallProgress`. Maps a
+ * `slicer_install_progress` event to a short status label for the install
+ * button + progress card. Unknown stages report a generic "Working…".
+ */
+export function describeSlicerInstallProgress(event) {
+  if (!event || typeof event !== "object") {
+    return "Working…";
+  }
+  switch (event.stage) {
+    case "downloading":
+      return "Downloading OrcaSlicer…";
+    case "extracting":
+      return "Preparing installer…";
+    case "installing":
+      return "Installing OrcaSlicer…";
     case "verifying":
       return "Verifying install…";
     case "done":
@@ -448,3 +497,11 @@ export function buildClaudeLoginFlow({ runLogin, subscribe, onComplete, onChange
     },
   };
 }
+
+/**
+ * The install-flow state machine is dependency-agnostic — it only inspects
+ * `event.stage === "error"` and drives idle → installing → done/error. The
+ * OrcaSlicer step reuses it verbatim via this alias so the two onboarding
+ * gates share one tested code path.
+ */
+export const buildInstallFlow = buildClaudeInstallFlow;

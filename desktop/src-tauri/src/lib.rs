@@ -107,6 +107,7 @@ pub fn run() {
             app::app_auth_check,
             app::app_login_claude,
             app::app_submit_login_code,
+            app::app_install_orcaslicer,
             // catalog
             catalog::catalog_read,
             catalog::project_catalog_read,
@@ -134,6 +135,12 @@ pub fn run() {
             printer::printer_status,
             printer::printer_upload_gcode,
             printer::printer_start_print,
+            // cloud (Bambu account + cloud-transport printing)
+            cloud::cloud_login_request_code,
+            cloud::cloud_login_submit_code,
+            cloud::cloud_account_status,
+            cloud::cloud_logout,
+            cloud::printer_discover_cloud,
             // project
             project::project_list,
             project::project_create,

@@ -330,6 +330,11 @@ pub struct SliceStats {
     pub layer_count: u32,
     pub supports_used: bool,
     pub gcode_file: String,
+    /// Sliced project `.3mf` (gcode embedded) emitted alongside the plain
+    /// G-code — the artifact the Bambu **cloud** print path uploads. `None`
+    /// when the slicer did not produce one.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub gcode_3mf_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -361,13 +366,32 @@ pub struct SliceProgressEvent {
 // Printer
 // ---------------------------------------------------------------------------
 
+/// How Panda reaches a printer. `Lan` is the original direct-to-IP path
+/// (SSDP/mDNS + FTPS + MQTT to the printer); `Cloud` routes through the
+/// signed-in Bambu account (cloud MQTT + REST upload/print-job).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PrinterTransport {
+    #[default]
+    Lan,
+    Cloud,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrinterCard {
     pub id: String,
     pub model: String,
-    pub ip_address: String,
+    #[serde(default)]
+    pub transport: PrinterTransport,
+    /// LAN IP. `None` for cloud-only devices (no LAN address known).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ip_address: Option<String>,
     pub host_name: String,
+    /// Online flag — carried by the cloud bind list; `None` for LAN cards
+    /// (LAN discovery does not report it).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub online: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -429,6 +453,65 @@ pub struct PrintProgressEvent {
     pub printer_id: String,
     pub state: String,
     pub progress: f64,
+}
+
+// ---------------------------------------------------------------------------
+// Bambu cloud account
+// ---------------------------------------------------------------------------
+
+/// Which Bambu cloud region (host set) the account belongs to. Global is the
+/// default; China uses a separate API host + MQTT broker (carried for future
+/// support — v1 ships Global).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CloudRegion {
+    #[default]
+    Global,
+    China,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudLoginRequest {
+    pub account: String,
+    #[serde(default)]
+    pub region: CloudRegion,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudLoginSubmit {
+    pub account: String,
+    pub code: String,
+}
+
+/// Result of `cloud_login_request_code`. `kind` is one of:
+/// `codeSent` (verification email dispatched — call submit next),
+/// `success` (token returned directly, no code needed),
+/// `needPassword` (account requires password — unsupported in the
+/// code-only v1 flow), `tfa` (two-factor — `tfa_key` set).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudLoginChallenge {
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tfa_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudAccountStatus {
+    pub signed_in: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<CloudRegion>,
+    /// Unix seconds the access token expires at (from the JWT `exp` claim).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    /// True when the token is expired/near-expired and no refresh succeeded —
+    /// the UI should re-prompt for an email code.
+    pub needs_reauth: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +586,17 @@ pub struct SlicerStatus {
 pub struct AppSettings {
     pub default_filament: FilamentKind,
     pub slicer_binary_path: String,
+    /// OrcaSlicer machine+process config for `--load-settings` — one or more
+    /// absolute JSON paths joined by `;` (e.g. `machine.json;process.json`).
+    /// Empty = pass no profile (OrcaSlicer uses its own default/last-used).
+    /// v1 ships no bundled Bambu profiles, so this is how dev points the
+    /// slicer at real configs. Added with cloud printing.
+    #[serde(default)]
+    pub slicer_settings_profile: String,
+    /// OrcaSlicer filament config for `--load-filaments` — absolute JSON
+    /// path(s), `;`-joined. Empty = none.
+    #[serde(default)]
+    pub slicer_filament_profile: String,
     pub use_panda_cloud: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub panda_token: Option<String>,
@@ -532,6 +626,8 @@ impl Default for AppSettings {
         Self {
             default_filament: FilamentKind::Pla,
             slicer_binary_path: String::new(),
+            slicer_settings_profile: String::new(),
+            slicer_filament_profile: String::new(),
             use_panda_cloud: false,
             panda_token: None,
             claude_oauth_token: None,
@@ -623,6 +719,43 @@ pub enum ClaudeLoginProgress {
     /// Browser flow finished; we captured a token and are persisting it.
     Verifying,
     Done,
+    Error {
+        message: String,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// OrcaSlicer auto-install
+// ---------------------------------------------------------------------------
+
+/// Result of `app_install_orcaslicer` — the post-install snapshot of the
+/// freshly resolved slicer binary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledSlicer {
+    pub version: String,
+    pub binary_path: String,
+}
+
+/// Streamed via the `slicer_install_progress` Tauri event while
+/// `app_install_orcaslicer` is running. Mirrors the TS discriminated union in
+/// `viewer/src/client/lib/transport.ts`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "stage", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum SlicerInstallProgress {
+    Downloading {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        received_bytes: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        total_bytes: Option<u64>,
+    },
+    Extracting,
+    Installing,
+    Verifying,
+    Done {
+        version: String,
+        binary_path: String,
+    },
     Error {
         message: String,
     },

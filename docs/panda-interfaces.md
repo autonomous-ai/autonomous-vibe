@@ -9,6 +9,7 @@ Changes since pre-flight:
 - AppSettings gained `hasOnboarded: boolean` (Track E; mirrored in Rust as `has_onboarded`)
 - §1 documents the concrete `generate_step()` signature now that Track A's follow-up wrapper has landed
 - §2 added `app_install_claude_code()` + `claude_install_progress` event for Track I (one-click Claude Code install from the first-run wizard)
+- §2 added `app_install_orcaslicer()` + `slicer_install_progress` event (one-click OrcaSlicer install from the first-run wizard, step 2 of 4); `app_prereq_check().slicer` now resolves via the same probe the slice path uses
 
 - [1. `gen_step()` CadQuery contract](#1-gen_step-cadquery-contract) — Tracks A, B
 - [2. Tauri IPC schema](#2-tauri-ipc-schema) — Tracks C, D, E
@@ -324,6 +325,7 @@ interface SliceStats {
   layerCount: number;
   supportsUsed: boolean;
   gcodeFile: string;            // workspace-relative .gcode
+  gcode3mfFile?: string;        // sliced .gcode.3mf (cloud upload artifact); absent if not produced
 }
 function slice_run(req: SliceRequest): Promise<SliceStats>;
 
@@ -338,13 +340,16 @@ function slice_status(): Promise<SliceStatus>;
 #### Printer (Bambu)
 
 ```typescript
+type PrinterTransport = "lan" | "cloud";
 interface PrinterCard {
-  id: string;                   // serial-derived
+  id: string;                   // serial-derived (dev_id for cloud)
   model: string;                // "X1C", "P1S", "A1", …
-  ipAddress: string;
+  transport: PrinterTransport;  // how Panda reaches it
+  ipAddress?: string;           // LAN only — absent for cloud-only devices
   hostName: string;
+  online?: boolean;             // cloud bind-list flag; absent for LAN
 }
-function printer_discover(): Promise<PrinterCard[]>;
+function printer_discover(): Promise<PrinterCard[]>;  // LAN (SSDP/mDNS)
 
 interface AddPrinterRequest {
   ipAddress: string;
@@ -375,6 +380,43 @@ interface StartPrintRequest {
   confirmed: true;              // explicit consumer-facing confirm — see plan
 }
 function printer_start_print(req: StartPrintRequest): Promise<void>;
+```
+
+`printer_status` / `printer_upload_gcode` / `printer_start_print` dispatch on
+the stored record's `transport`: LAN uses FTPS + direct-to-IP MQTT; cloud
+routes through the signed-in account (cloud MQTT + REST upload/print-job). The
+cloud upload uploads the sliced `.gcode.3mf` (it auto-prefers the sibling 3mf
+when handed a `.gcode`).
+
+#### Cloud account (Bambu)
+
+Account login is by **email + verification code**. One signed-in account →
+many bound devices, which `printer_discover_cloud` upserts into the shared
+printer list tagged `transport: "cloud"`. Tokens persist to `bambu-cloud.json`
+(sensitive — never returned to JS), refreshed before expiry; a stale,
+unrefreshable session surfaces `CLOUD_REAUTH_REQUIRED`.
+
+```typescript
+type CloudRegion = "global" | "china";   // v1 ships global
+interface CloudLoginRequest { account: string; region?: CloudRegion; }
+interface CloudLoginChallenge {
+  kind: string;                 // "codeSent" | "success" | "needPassword" | "tfa"
+  tfaKey?: string;
+}
+function cloud_login_request_code(req: CloudLoginRequest): Promise<CloudLoginChallenge>;
+
+interface CloudLoginSubmit { account: string; code: string; }
+interface CloudAccountStatus {
+  signedIn: boolean;
+  account?: string;
+  region?: CloudRegion;
+  expiresAt?: number;           // unix seconds (JWT exp)
+  needsReauth: boolean;
+}
+function cloud_login_submit_code(req: CloudLoginSubmit, region?: CloudRegion): Promise<CloudAccountStatus>;
+function cloud_account_status(): Promise<CloudAccountStatus>;
+function cloud_logout(): Promise<void>;
+function printer_discover_cloud(): Promise<PrinterCard[]>;
 ```
 
 #### Projects
@@ -428,6 +470,8 @@ function app_prereq_check(): Promise<PrereqCheck>;
 interface AppSettings {
   defaultFilament: "PLA" | "PETG" | "TPU";
   slicerBinaryPath: string;     // empty = bundled
+  slicerSettingsProfile?: string;   // OrcaSlicer --load-settings (machine;process), ;-joined paths; empty = default
+  slicerFilamentProfile?: string;   // OrcaSlicer --load-filaments path; empty = none
   usePandaCloud: boolean;       // v2 hook; default false
   pandaToken?: string;          // v2 hook
   hasOnboarded: boolean;        // gates the first-run wizard (added during Track E merge)
@@ -456,6 +500,25 @@ interface InstalledClaude {
   binaryPath: string;
 }
 function app_install_claude_code(): Promise<InstalledClaude>;
+
+// Auto-install OrcaSlicer from the first-run wizard (step 2 of 4).
+//
+// Downloads the pinned OrcaSlicer release (scripts/build/SLICER_VERSION.txt)
+// from GitHub, installs it into a user-writable location
+// (~/Applications/OrcaSlicer.app on macOS, ~/.local/bin/orcaslicer on Linux),
+// then re-runs the same detection used by app_prereq_check. Resolves with the
+// pinned version + resolved binary path; rejects with one of:
+//   - "PLATFORM_UNSUPPORTED"      — Windows (portable zip has no installer)
+//   - "INSTALLER_CLIENT_ERROR"    — could not build the HTTP client
+//   - "INSTALLER_FETCH_FAILED"    — network or non-2xx response
+//   - "INSTALL_FAILED"            — mount/copy/permission step failed
+//   - "INSTALL_VERIFIED_MISSING"  — installer finished but no OrcaSlicer
+//                                   binary was resolvable afterward
+interface InstalledSlicer {
+  version: string;
+  binaryPath: string;
+}
+function app_install_orcaslicer(): Promise<InstalledSlicer>;
 
 // Auto-update (tauri-plugin-updater). Event-driven: all three commands emit
 // "update_event" (below). update_check is check-only; the UI calls it on
@@ -503,6 +566,17 @@ interface PrintProgressEvent { printerId: string; state: string; progress: numbe
 type ClaudeInstallProgress =
   | { stage: "downloading"; receivedBytes?: number; totalBytes?: number }
   | { stage: "running" }
+  | { stage: "verifying" }
+  | { stage: "done"; version: string; binaryPath: string }
+  | { stage: "error"; message: string };
+
+// "slicer_install_progress" — streams during app_install_orcaslicer.
+// Downloading carries byte counts; extracting/installing cover the
+// platform mount+copy (macOS) or AppImage drop (Linux).
+type SlicerInstallProgress =
+  | { stage: "downloading"; receivedBytes?: number; totalBytes?: number }
+  | { stage: "extracting" }
+  | { stage: "installing" }
   | { stage: "verifying" }
   | { stage: "done"; version: string; binaryPath: string }
   | { stage: "error"; message: string };

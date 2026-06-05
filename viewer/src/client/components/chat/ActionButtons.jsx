@@ -3,7 +3,7 @@ import { Printer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/ui/utils";
 import { getTransport } from "@/lib/transport";
-import { selectLatestGcode, useChatStore } from "@/store/chat";
+import { selectLatestGcode, selectLatestGcode3mf, useChatStore } from "@/store/chat";
 import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
 import PreflightModal from "./PreflightModal";
 import { basename, pickPrinterForSlice } from "./actionButtonsHelpers";
@@ -16,6 +16,7 @@ export default function ActionButtons({
   transport = getTransport(),
 }) {
   const gcodeFile = useChatStore(selectLatestGcode);
+  const gcode3mfFile = useChatStore(selectLatestGcode3mf);
   const turnInProgress = useChatStore((state) => state.turnInProgress);
 
   const [printing, setPrinting] = useState(false);
@@ -60,14 +61,21 @@ export default function ActionButtons({
     if (!gcodeFile || !targetPrinter) return;
     setPrinting(true);
     try {
+      // Cloud print prefers the sliced `.3mf` (when the toolbar slice produced
+      // one); fall back to the plain gcode. LAN always uses the gcode. Upload
+      // and start reference the SAME file so their names agree.
+      const sendFile =
+        targetPrinter.transport === "cloud" && gcode3mfFile
+          ? gcode3mfFile
+          : gcodeFile;
       // Upload, then start with confirmed=true (contract §2).
       await transport.printer_upload_gcode({
         printerId: targetPrinter.id,
-        gcodeFile,
+        gcodeFile: sendFile,
       });
       await transport.printer_start_print({
         printerId: targetPrinter.id,
-        remoteName: basename(gcodeFile),
+        remoteName: basename(sendFile),
         confirmed: true,
       });
       setPreflightOpen(false);
@@ -77,7 +85,7 @@ export default function ActionButtons({
     } finally {
       setPrinting(false);
     }
-  }, [gcodeFile, targetPrinter, transport]);
+  }, [gcodeFile, gcode3mfFile, targetPrinter, transport]);
 
   const showPrint = Boolean(gcodeFile);
 

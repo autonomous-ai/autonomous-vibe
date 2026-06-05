@@ -97,6 +97,13 @@ export const INITIAL_CHAT_STATE = Object.freeze({
   // streamed conversation instead of losing what arrived before/while away. The
   // active project's slice lives at the top level; this only holds others.
   sessions: {},
+  // The most recent toolbar "Slice for Bambu" result for the active project.
+  // Unlike chat-driven slices (which arrive as `artifact_changed` blocks in
+  // `history`), the toolbar `slice_run` is a direct IPC with no chat turn, so
+  // we stash its output here to surface the Print button + the cloud `.3mf`.
+  // Reset on project switch (via INITIAL_CHAT_STATE) and on `turn_start` (a
+  // new chat turn may supersede it with a freshly generated/sliced model).
+  lastSlice: { gcodeFile: "", gcode3mfFile: "" },
 });
 
 // ---------------------------------------------------------------------------
@@ -365,6 +372,15 @@ export function chatReducer(state, action, now = Date.now()) {
       if (file === state.selectedMeshFile) return state;
       return { ...state, selectedMeshFile: file };
     }
+    case "set_last_slice": {
+      return {
+        ...state,
+        lastSlice: {
+          gcodeFile: String(action.gcodeFile || ""),
+          gcode3mfFile: String(action.gcode3mfFile || ""),
+        },
+      };
+    }
     case "hydrate_session": {
       const history = action.session.history.map((item, index) => ({
         id: `hydrated-${index}`,
@@ -436,12 +452,16 @@ export function chatReducer(state, action, now = Date.now()) {
       }
 
       // Owned by (or just started in) the project on screen → advance the
-      // visible session.
+      // visible session. A new turn supersedes a stale toolbar slice — clear
+      // it so a chat-produced gcode (arriving as an artifact) wins.
       if (!ownerProject || ownerProject === state.currentProjectId) {
         return {
           ...state,
           ...applyChatEventToSession(sessionSlice(state), event, now),
           turnOwners,
+          ...(event.kind === "turn_start"
+            ? { lastSlice: INITIAL_CHAT_STATE.lastSlice }
+            : {}),
         };
       }
 
@@ -533,11 +553,27 @@ export function selectLatestStl(state) {
 
 /** @param {ChatState} state */
 export function selectLatestGcode(state) {
+  // A toolbar `slice_run` (no chat turn) stashes its gcode in `lastSlice`; it
+  // wins until a new chat turn clears it. Otherwise fall back to the latest
+  // chat-produced `.gcode` artifact.
+  const fromSlice = String(state.lastSlice?.gcodeFile || "");
+  if (fromSlice) return fromSlice;
   const artifacts = selectArtifactFiles(state);
   for (let i = artifacts.length - 1; i >= 0; i -= 1) {
     if (endsWith(artifacts[i].file, ".gcode")) return artifacts[i].file;
   }
   return "";
+}
+
+/**
+ * The sliced `.gcode.3mf` (cloud upload artifact) from the most recent toolbar
+ * slice, or "" when none. Only the toolbar `slice_run` produces a 3mf; the
+ * chat `gcode` skill emits plain gcode only.
+ *
+ * @param {ChatState} state
+ */
+export function selectLatestGcode3mf(state) {
+  return String(state.lastSlice?.gcode3mfFile || "");
 }
 
 /**
@@ -769,6 +805,15 @@ export async function hydrateSession(projectId, transport = getTransport()) {
  */
 export function setSelectedMeshFile(file) {
   dispatch({ type: "set_selected_mesh_file", file });
+}
+
+/**
+ * Record the output of a toolbar "Slice for Bambu" (`slice_run`) so the Print
+ * button surfaces it even though no chat turn produced it. `gcode3mfFile` is
+ * the cloud upload artifact (may be "" if the slicer didn't emit one).
+ */
+export function recordSlice(gcodeFile, gcode3mfFile = "") {
+  dispatch({ type: "set_last_slice", gcodeFile, gcode3mfFile });
 }
 
 export function setPendingTokens(tokens) {

@@ -18,8 +18,8 @@
 //! responses). The path comes from `paths::printers_path()`.
 
 use crate::ipc::types::{
-    AddPrinterRequest, PrinterCard, PrinterJob, PrinterState, PrinterStatus, StartPrintRequest,
-    UploadGcodeRequest,
+    AddPrinterRequest, PrintProgressEvent, PrinterCard, PrinterJob, PrinterState, PrinterStatus,
+    PrinterTransport, StartPrintRequest, UploadGcodeRequest,
 };
 use crate::ipc::{IpcError, IpcResult};
 use crate::paths;
@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 // ---------------------------------------------------------------------------
 // Constants from `skills/bambu-labs/references/local-lan-protocol.md`
@@ -39,6 +39,9 @@ const BAMBU_USERNAME: &str = "bblp";
 const FTPS_PORT: u16 = 990;
 const MQTT_PORT: u16 = 8883;
 const REMOTE_DIR: &str = "cache";
+
+/// Tauri event the frontend subscribes to for live print progress (contract §2).
+const PRINT_PROGRESS_EVENT: &str = "print_progress";
 
 // SSDP discovery — this is what Bambu printers actually answer on. They
 // periodically broadcast `NOTIFY` to the SSDP multicast group on ports 1990
@@ -66,23 +69,65 @@ const MDNS_SERVICE_TYPES: &[&str] = &["_bambu._tcp.local.", "_bambulab._tcp.loca
 pub(crate) struct PrinterRecord {
     pub id: String,
     pub model: String,
-    pub ip_address: String,
+    /// LAN vs cloud. Defaults to `Lan` so records written before cloud
+    /// support (no `transport` key) keep working.
+    #[serde(default)]
+    pub transport: PrinterTransport,
+    /// LAN IP. `None` for cloud-only devices. Optional rather than `String`
+    /// for the same back-compat reason — legacy records always carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip_address: Option<String>,
     pub host_name: String,
-    /// Bambu LAN access code (printer-screen value, ~8 digits).
-    pub access_code: String,
-    /// Serial number (TLS-cert Common Name). Used for the MQTT topic.
+    /// Bambu LAN access code (printer-screen value, ~8 digits). `None` for
+    /// cloud devices, which authenticate via the account token instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_code: Option<String>,
+    /// Serial number — TLS-cert Common Name (LAN) or `dev_id` (cloud). Used
+    /// for the MQTT topic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serial: Option<String>,
+    /// Last-known online flag from the cloud bind list. `None` for LAN.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub online: Option<bool>,
 }
 
 impl PrinterRecord {
-    fn to_card(&self) -> PrinterCard {
+    pub(crate) fn to_card(&self) -> PrinterCard {
         PrinterCard {
             id: self.id.clone(),
             model: self.model.clone(),
+            transport: self.transport,
             ip_address: self.ip_address.clone(),
             host_name: self.host_name.clone(),
+            online: self.online,
         }
+    }
+
+    /// LAN IP, or a typed error when missing (cloud-only record misrouted to
+    /// a LAN code path).
+    pub(crate) fn lan_ip(&self) -> IpcResult<&str> {
+        self.ip_address
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| IpcError::new("PRINTER_NO_IP", "printer has no LAN IP address"))
+    }
+
+    /// LAN access code, or a typed error when missing.
+    pub(crate) fn lan_access_code(&self) -> IpcResult<&str> {
+        self.access_code
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                IpcError::new("PRINTER_NO_ACCESS_CODE", "printer has no LAN access code")
+            })
+    }
+
+    /// The `dev_id`/serial, or a typed error when missing.
+    pub(crate) fn serial_or_err(&self) -> IpcResult<&str> {
+        self.serial
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| IpcError::new("PRINTER_NO_SERIAL", "printer has no serial"))
     }
 }
 
@@ -152,10 +197,12 @@ pub async fn printer_add(
     let record = PrinterRecord {
         id: id.clone(),
         model: infer_model_from_serial(serial.as_deref()).to_string(),
-        ip_address: ip.clone(),
+        transport: PrinterTransport::Lan,
+        ip_address: Some(ip.clone()),
         host_name: ip.clone(),
-        access_code,
+        access_code: Some(access_code),
         serial,
+        online: None,
     };
 
     persist_add_record(&record).await?;
@@ -189,7 +236,13 @@ pub async fn printer_status(printer_id: String) -> IpcResult<PrinterStatus> {
             ));
         }
     };
-    match poll_printer_status(&record, Duration::from_secs(5)).await {
+    let polled = match record.transport {
+        PrinterTransport::Lan => poll_printer_status(&record, Duration::from_secs(5)).await,
+        PrinterTransport::Cloud => {
+            crate::commands::cloud::cloud_printer_status(&record, Duration::from_secs(5)).await
+        }
+    };
+    match polled {
         Ok(s) => Ok(s),
         Err(_) => Ok(PrinterStatus {
             online: false,
@@ -233,12 +286,28 @@ pub async fn printer_upload_gcode(
         })
         .to_string();
 
-    upload_via_ftps(&record, &local_path, &remote_name).await
+    match record.transport {
+        PrinterTransport::Lan => upload_via_ftps(&record, &local_path, &remote_name).await,
+        PrinterTransport::Cloud => {
+            crate::commands::cloud::cloud_upload_file(&record, &local_path, &remote_name).await
+        }
+    }
 }
 
 #[tauri::command]
-pub async fn printer_start_print(req: StartPrintRequest) -> IpcResult<()> {
+pub async fn printer_start_print(req: StartPrintRequest, app: AppHandle) -> IpcResult<()> {
     // untested against real printer — verify in field test before v1 ship
+    let record = run_start_print(&req).await?;
+    // The print is now running. There is no push channel for progress, so spawn
+    // a background poller that emits `print_progress` events until the job ends.
+    spawn_print_monitor(app, record);
+    Ok(())
+}
+
+/// Validate the request and issue the start command, returning the targeted
+/// record (so the caller can monitor it). Split out from the command so it is
+/// testable without an `AppHandle`.
+async fn run_start_print(req: &StartPrintRequest) -> IpcResult<PrinterRecord> {
     if !req.confirmed {
         return Err(IpcError::new(
             "CONFIRMATION_REQUIRED",
@@ -260,19 +329,85 @@ pub async fn printer_start_print(req: StartPrintRequest) -> IpcResult<()> {
             ));
         }
     };
-    let serial = match record.serial.as_deref() {
-        Some(s) if !s.is_empty() => s.to_string(),
-        _ => fetch_printer_serial(&record.ip_address).await?,
-    };
-    let payload = build_start_print_payload(&req.remote_name);
-    publish_start_command(&record, &serial, &payload, Duration::from_secs(5)).await
+    match record.transport {
+        PrinterTransport::Lan => {
+            let serial = lan_serial(&record).await?;
+            let target = lan_mqtt_target(&record, &serial)?;
+            let payload = build_start_print_payload(&req.remote_name);
+            publish_start_command(&target, &payload, Duration::from_secs(5)).await?;
+        }
+        PrinterTransport::Cloud => {
+            crate::commands::cloud::cloud_start_print(&record, &req.remote_name).await?;
+        }
+    }
+    Ok(record)
+}
+
+/// Map the typed `PrinterState` to the lowercase wire string carried by
+/// `PrintProgressEvent` / `PrinterStatus` (matches the serde `rename_all`).
+fn print_state_str(state: PrinterState) -> &'static str {
+    match state {
+        PrinterState::Idle => "idle",
+        PrinterState::Printing => "printing",
+        PrinterState::Paused => "paused",
+        PrinterState::Error => "error",
+    }
+}
+
+/// Poll `printer_status` in the background and emit `print_progress` events so
+/// the frontend gets live progress without polling itself. Self-terminating:
+/// stops on a terminal state (error, or idle after the job was seen active) or
+/// after a cap of idle polls if the job never registers. Best-effort — a poll
+/// failure is skipped, and the task is dropped when the app shuts down.
+fn spawn_print_monitor(app: AppHandle, record: PrinterRecord) {
+    const INTERVAL: Duration = Duration::from_secs(6);
+    const POLL_TIMEOUT: Duration = Duration::from_secs(5);
+    const MAX_IDLE_POLLS: u32 = 20; // ~2 min of "never started" before giving up
+    tauri::async_runtime::spawn(async move {
+        let mut saw_active = false;
+        let mut polls: u32 = 0;
+        // Brief delay so the printer can register the freshly-started job.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        loop {
+            polls += 1;
+            let polled = match record.transport {
+                PrinterTransport::Lan => poll_printer_status(&record, POLL_TIMEOUT).await,
+                PrinterTransport::Cloud => {
+                    crate::commands::cloud::cloud_printer_status(&record, POLL_TIMEOUT).await
+                }
+            };
+            if let Ok(status) = polled {
+                let progress = status.job.as_ref().map(|j| j.progress).unwrap_or(0.0);
+                let _ = app.emit(
+                    PRINT_PROGRESS_EVENT,
+                    PrintProgressEvent {
+                        printer_id: record.id.clone(),
+                        state: print_state_str(status.state).to_string(),
+                        progress,
+                    },
+                );
+                match status.state {
+                    PrinterState::Printing | PrinterState::Paused => saw_active = true,
+                    PrinterState::Error => break,
+                    PrinterState::Idle => {
+                        if saw_active || polls >= MAX_IDLE_POLLS {
+                            break;
+                        }
+                    }
+                }
+            } else if !saw_active && polls >= MAX_IDLE_POLLS {
+                break;
+            }
+            tokio::time::sleep(INTERVAL).await;
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
 // Persistence
 // ---------------------------------------------------------------------------
 
-async fn load_printers_file() -> IpcResult<PrintersFile> {
+pub(crate) async fn load_printers_file() -> IpcResult<PrintersFile> {
     load_printers_file_at(&paths::printers_path()).await
 }
 
@@ -289,7 +424,7 @@ async fn load_printers_file_at(path: &Path) -> IpcResult<PrintersFile> {
     Ok(parsed)
 }
 
-async fn save_printers_file(file: &PrintersFile) -> IpcResult<()> {
+pub(crate) async fn save_printers_file(file: &PrintersFile) -> IpcResult<()> {
     save_printers_file_at(file, &paths::printers_path()).await
 }
 
@@ -308,12 +443,12 @@ async fn persist_add_record(record: &PrinterRecord) -> IpcResult<()> {
     save_printers_file(&file).await
 }
 
-async fn find_record(printer_id: &str) -> IpcResult<Option<PrinterRecord>> {
+pub(crate) async fn find_record(printer_id: &str) -> IpcResult<Option<PrinterRecord>> {
     let file = load_printers_file().await?;
     Ok(file.printers.into_iter().find(|p| p.id == printer_id))
 }
 
-fn upsert_record(file: &mut PrintersFile, record: PrinterRecord) {
+pub(crate) fn upsert_record(file: &mut PrintersFile, record: PrinterRecord) {
     if let Some(existing) = file.printers.iter_mut().find(|p| p.id == record.id) {
         *existing = record;
     } else {
@@ -439,8 +574,10 @@ fn card_from_ssdp_payload(text: &str) -> Option<PrinterCard> {
     Some(PrinterCard {
         id,
         model,
-        ip_address: ip.clone(),
+        transport: PrinterTransport::Lan,
+        ip_address: Some(ip.clone()),
         host_name: name.unwrap_or(ip),
+        online: None,
     })
 }
 
@@ -531,8 +668,10 @@ fn card_from_mdns_info(info: &mdns_sd::ServiceInfo) -> Option<PrinterCard> {
     Some(PrinterCard {
         id,
         model,
-        ip_address: ip,
+        transport: PrinterTransport::Lan,
+        ip_address: Some(ip),
         host_name: host,
+        online: None,
     })
 }
 
@@ -573,9 +712,9 @@ async fn upload_via_ftps(
     local: &Path,
     remote_name: &str,
 ) -> IpcResult<()> {
-    let host = record.ip_address.clone();
+    let host = record.lan_ip()?.to_string();
     let user = BAMBU_USERNAME.to_string();
-    let pass = record.access_code.clone();
+    let pass = record.lan_access_code()?.to_string();
     let remote_name = remote_name.to_string();
     let local_buf = local.to_path_buf();
     tokio::task::spawn_blocking(move || ftps_upload_blocking(&host, &user, &pass, &local_buf, &remote_name))
@@ -735,6 +874,20 @@ fn no_verify_rustls_config_mqtt() -> rumqttc::tokio_rustls::rustls::ClientConfig
         .with_no_client_auth()
 }
 
+/// rustls `ClientConfig` for the **cloud** MQTT broker, which presents a
+/// real CA-signed certificate. Unlike the LAN printer, this path verifies
+/// the chain against the webpki root store — the cloud token is an
+/// internet-facing bearer credential, so a no-verify config here would be a
+/// MITM exposure.
+fn verify_rustls_config_mqtt() -> rumqttc::tokio_rustls::rustls::ClientConfig {
+    use rumqttc::tokio_rustls::rustls::{ClientConfig, RootCertStore};
+    let mut roots = RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth()
+}
+
 fn validate_upload_fields(req: &UploadGcodeRequest) -> IpcResult<()> {
     if req.printer_id.trim().is_empty() {
         return Err(IpcError::invalid_argument("printerId is required"));
@@ -792,7 +945,7 @@ pub(crate) fn build_status_request_payload() -> serde_json::Value {
     })
 }
 
-fn sequence_id() -> String {
+pub(crate) fn sequence_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -800,42 +953,104 @@ fn sequence_id() -> String {
         .unwrap_or_else(|_| "0".to_string())
 }
 
+// ---------------------------------------------------------------------------
+// MqttTarget — one descriptor, two transports
+// ---------------------------------------------------------------------------
+
+/// Which TLS posture an MQTT connection uses. LAN printers ship self-signed
+/// certs (`NoVerify`); the cloud broker presents a real CA cert (`Verify`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MqttTls {
+    NoVerify,
+    Verify,
+}
+
+/// Everything needed to open an MQTT session, independent of LAN vs cloud.
+/// Topics are derived from `serial` (`device/{serial}/{report,request}`),
+/// identical on both transports.
+pub(crate) struct MqttTarget {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+    pub serial: String,
+    pub tls: MqttTls,
+    /// Broker client id — Bambu's broker drops duplicate ids, so callers make
+    /// this unique per connection.
+    pub client_id: String,
+}
+
+impl MqttTarget {
+    fn report_topic(&self) -> String {
+        format!("device/{}/report", self.serial)
+    }
+    fn request_topic(&self) -> String {
+        format!("device/{}/request", self.serial)
+    }
+    fn tls_config(&self) -> rumqttc::tokio_rustls::rustls::ClientConfig {
+        match self.tls {
+            MqttTls::NoVerify => no_verify_rustls_config_mqtt(),
+            MqttTls::Verify => verify_rustls_config_mqtt(),
+        }
+    }
+}
+
+/// LAN MQTT target for a printer record (host=IP, `bblp` + access code,
+/// self-signed TLS).
+fn lan_mqtt_target(record: &PrinterRecord, serial: &str) -> IpcResult<MqttTarget> {
+    Ok(MqttTarget {
+        host: record.lan_ip()?.to_string(),
+        port: MQTT_PORT,
+        username: BAMBU_USERNAME.to_string(),
+        password: record.lan_access_code()?.to_string(),
+        serial: serial.to_string(),
+        tls: MqttTls::NoVerify,
+        client_id: format!("panda-desktop-{}", sequence_id()),
+    })
+}
+
+/// Resolve a LAN printer's serial: prefer the cached value, else scrape it
+/// from the printer's TLS cert.
+async fn lan_serial(record: &PrinterRecord) -> IpcResult<String> {
+    match record.serial.as_deref() {
+        Some(s) if !s.is_empty() => Ok(s.to_string()),
+        _ => fetch_printer_serial(record.lan_ip()?).await,
+    }
+}
+
 async fn poll_printer_status(
     record: &PrinterRecord,
     timeout: Duration,
 ) -> IpcResult<PrinterStatus> {
-    let serial = match record.serial.as_deref() {
-        Some(s) if !s.is_empty() => s.to_string(),
-        _ => fetch_printer_serial(&record.ip_address).await?,
-    };
-    let topic_report = format!("device/{serial}/report");
-    let topic_request = format!("device/{serial}/request");
-    let report = mqtt_request_status(record, &topic_request, &topic_report, timeout).await?;
+    let serial = lan_serial(record).await?;
+    let target = lan_mqtt_target(record, &serial)?;
+    let report = mqtt_request_status(&target, timeout).await?;
     Ok(parse_status_report(&report))
 }
 
-async fn mqtt_request_status(
-    record: &PrinterRecord,
-    request_topic: &str,
-    report_topic: &str,
+/// Connect, request a `pushall`, and return the first status report JSON.
+/// Shared by the LAN and cloud status paths — they differ only in the
+/// `MqttTarget` (host / credentials / TLS).
+pub(crate) async fn mqtt_request_status(
+    target: &MqttTarget,
     timeout: Duration,
 ) -> IpcResult<serde_json::Value> {
     use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, TlsConfiguration, Transport};
-    let mut opts = MqttOptions::new("panda-desktop", record.ip_address.clone(), MQTT_PORT);
-    opts.set_credentials(BAMBU_USERNAME, &record.access_code);
+    let mut opts = MqttOptions::new(target.client_id.clone(), target.host.clone(), target.port);
+    opts.set_credentials(target.username.clone(), target.password.clone());
     opts.set_keep_alive(Duration::from_secs(30));
     opts.set_transport(Transport::Tls(TlsConfiguration::Rustls(Arc::new(
-        no_verify_rustls_config_mqtt(),
+        target.tls_config(),
     ))));
 
     let (client, mut eventloop) = AsyncClient::new(opts, 16);
     client
-        .subscribe(report_topic, QoS::AtMostOnce)
+        .subscribe(target.report_topic(), QoS::AtMostOnce)
         .await
         .map_err(|e| IpcError::new("MQTT_FAILED", e.to_string()))?;
     let push_all = serde_json::to_vec(&build_status_request_payload())?;
     client
-        .publish(request_topic, QoS::AtMostOnce, false, push_all)
+        .publish(target.request_topic(), QoS::AtMostOnce, false, push_all)
         .await
         .map_err(|e| IpcError::new("MQTT_FAILED", e.to_string()))?;
 
@@ -866,24 +1081,28 @@ async fn mqtt_request_status(
     ))
 }
 
-async fn publish_start_command(
-    record: &PrinterRecord,
-    serial: &str,
+/// Publish a single command to the printer's request topic and flush it.
+/// Shared by LAN and cloud start paths.
+pub(crate) async fn publish_start_command(
+    target: &MqttTarget,
     payload: &serde_json::Value,
     timeout: Duration,
 ) -> IpcResult<()> {
     use rumqttc::{AsyncClient, MqttOptions, QoS, TlsConfiguration, Transport};
-    let topic = format!("device/{serial}/request");
-    let mut opts = MqttOptions::new("panda-desktop-start", record.ip_address.clone(), MQTT_PORT);
-    opts.set_credentials(BAMBU_USERNAME, &record.access_code);
+    let mut opts = MqttOptions::new(
+        format!("{}-start", target.client_id),
+        target.host.clone(),
+        target.port,
+    );
+    opts.set_credentials(target.username.clone(), target.password.clone());
     opts.set_keep_alive(Duration::from_secs(30));
     opts.set_transport(Transport::Tls(TlsConfiguration::Rustls(Arc::new(
-        no_verify_rustls_config_mqtt(),
+        target.tls_config(),
     ))));
     let (client, mut eventloop) = AsyncClient::new(opts, 16);
     let body = serde_json::to_vec(payload)?;
     client
-        .publish(topic, QoS::AtLeastOnce, false, body)
+        .publish(target.request_topic(), QoS::AtLeastOnce, false, body)
         .await
         .map_err(|e| IpcError::new("MQTT_FAILED", e.to_string()))?;
 
@@ -1057,7 +1276,8 @@ mod tests {
             DevConnect.bambu.com: lan\r\n\r\n";
         let card = card_from_ssdp_payload(notify).expect("should parse a Bambu NOTIFY");
         assert_eq!(card.id, "0309CA4C0901107");
-        assert_eq!(card.ip_address, "192.168.1.42");
+        assert_eq!(card.transport, PrinterTransport::Lan);
+        assert_eq!(card.ip_address.as_deref(), Some("192.168.1.42"));
         assert_eq!(card.model, "A1 Mini");
         assert_eq!(card.host_name, "Kitchen A1 Mini");
     }
@@ -1069,7 +1289,7 @@ mod tests {
             NT: urn:bambulab-com:device:3dprinter:1\r\n\
             USN: 00M00A000000000\r\n\r\n";
         let card = card_from_ssdp_payload(notify).expect("should parse");
-        assert_eq!(card.ip_address, "192.168.0.7");
+        assert_eq!(card.ip_address.as_deref(), Some("192.168.0.7"));
         // No DevModel header -> serial-prefix heuristic (00M = A1 Mini).
         assert_eq!(card.model, "A1 Mini");
         // No DevName -> host_name falls back to the IP.
@@ -1105,6 +1325,31 @@ mod tests {
         let payload = build_status_request_payload();
         assert_eq!(payload["pushing"]["command"], "pushall");
         assert!(payload["pushing"]["sequence_id"].is_string());
+    }
+
+    #[test]
+    fn legacy_record_without_transport_defaults_to_lan() {
+        // Records written before cloud support have no `transport` key (and
+        // string `ipAddress`/`accessCode`). They must still deserialize.
+        let legacy = r#"{
+            "printers": [
+                {
+                    "id": "00M00A000000",
+                    "model": "A1 Mini",
+                    "ipAddress": "192.168.1.34",
+                    "hostName": "Bambu-A1M.local",
+                    "accessCode": "12345678",
+                    "serial": "00M00A000000"
+                }
+            ]
+        }"#;
+        let file: PrintersFile = serde_json::from_str(legacy).expect("legacy parses");
+        assert_eq!(file.printers.len(), 1);
+        let rec = &file.printers[0];
+        assert_eq!(rec.transport, PrinterTransport::Lan);
+        assert_eq!(rec.ip_address.as_deref(), Some("192.168.1.34"));
+        assert_eq!(rec.access_code.as_deref(), Some("12345678"));
+        assert!(rec.online.is_none());
     }
 
     #[test]
@@ -1152,10 +1397,12 @@ mod tests {
         let record = PrinterRecord {
             id: "00M00A000000".into(),
             model: "A1 Mini".into(),
-            ip_address: "192.168.1.34".into(),
+            transport: PrinterTransport::Lan,
+            ip_address: Some("192.168.1.34".into()),
             host_name: "Bambu-A1M.local".into(),
-            access_code: "12345678".into(),
+            access_code: Some("12345678".into()),
             serial: Some("00M00A000000".into()),
+            online: None,
         };
         let mut file = PrintersFile::default();
         upsert_record(&mut file, record.clone());
@@ -1174,16 +1421,18 @@ mod tests {
         let mut rec = PrinterRecord {
             id: "x1".into(),
             model: "X1C".into(),
-            ip_address: "10.0.0.10".into(),
+            transport: PrinterTransport::Lan,
+            ip_address: Some("10.0.0.10".into()),
             host_name: "x1".into(),
-            access_code: "AAA".into(),
+            access_code: Some("AAA".into()),
             serial: Some("x1".into()),
+            online: None,
         };
         upsert_record(&mut file, rec.clone());
-        rec.access_code = "BBB".into();
+        rec.access_code = Some("BBB".into());
         upsert_record(&mut file, rec.clone());
         assert_eq!(file.printers.len(), 1);
-        assert_eq!(file.printers[0].access_code, "BBB");
+        assert_eq!(file.printers[0].access_code.as_deref(), Some("BBB"));
     }
 
     #[test]
@@ -1196,7 +1445,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_print_requires_confirmation() {
-        let err = printer_start_print(StartPrintRequest {
+        let err = run_start_print(&StartPrintRequest {
             printer_id: "x1c".into(),
             remote_name: "model.gcode".into(),
             confirmed: false,

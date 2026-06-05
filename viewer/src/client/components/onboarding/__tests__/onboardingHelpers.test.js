@@ -3,27 +3,31 @@ import test from "node:test";
 import {
   buildClaudeLoginFlow,
   describeClaudeLoginProgress,
+  describeSlicerInstallProgress,
   evaluateAuthCheck,
   evaluateClaudeCheck,
+  evaluateSlicerCheck,
   isOnboardingComplete,
   nextOnboardingStep,
   ONBOARDING_STEPS,
   previousOnboardingStep,
 } from "../onboardingHelpers.js";
 
-test("ONBOARDING_STEPS exposes the five-step machine with sign-in", () => {
+test("ONBOARDING_STEPS exposes the six-step machine with sign-in and slicer", () => {
   assert.deepEqual(ONBOARDING_STEPS, [
     "claude",
     "login",
+    "orca",
     "printer",
     "filament",
     "done",
   ]);
 });
 
-test("nextOnboardingStep advances through sign-in and clamps at done", () => {
+test("nextOnboardingStep advances through sign-in and slicer and clamps at done", () => {
   assert.equal(nextOnboardingStep("claude"), "login");
-  assert.equal(nextOnboardingStep("login"), "printer");
+  assert.equal(nextOnboardingStep("login"), "orca");
+  assert.equal(nextOnboardingStep("orca"), "printer");
   assert.equal(nextOnboardingStep("printer"), "filament");
   assert.equal(nextOnboardingStep("filament"), "done");
   assert.equal(nextOnboardingStep("done"), "done");
@@ -35,7 +39,8 @@ test("nextOnboardingStep maps unknown labels back to the first step", () => {
 
 test("previousOnboardingStep clamps at the first step", () => {
   assert.equal(previousOnboardingStep("login"), "claude");
-  assert.equal(previousOnboardingStep("printer"), "login");
+  assert.equal(previousOnboardingStep("orca"), "login");
+  assert.equal(previousOnboardingStep("printer"), "orca");
   assert.equal(previousOnboardingStep("claude"), "claude");
 });
 
@@ -144,4 +149,56 @@ test("buildClaudeLoginFlow treats a non-authenticated resolve as failure", async
   });
   await flow.start();
   assert.equal(flow.state, "error");
+});
+
+test("evaluateSlicerCheck proceeds when slicer.found is true", () => {
+  const result = evaluateSlicerCheck({
+    slicer: { found: true, binaryPath: "/Applications/OrcaSlicer.app" },
+  });
+  assert.deepEqual(result, {
+    proceed: true,
+    binaryPath: "/Applications/OrcaSlicer.app",
+  });
+});
+
+test("evaluateSlicerCheck reports missing when found is false", () => {
+  assert.deepEqual(evaluateSlicerCheck({ slicer: { found: false, binaryPath: "" } }), {
+    proceed: false,
+    reason: "slicer_missing",
+  });
+});
+
+test("evaluateSlicerCheck guards against missing payloads", () => {
+  assert.deepEqual(evaluateSlicerCheck(undefined), {
+    proceed: false,
+    reason: "slicer_missing",
+  });
+});
+
+test("describeSlicerInstallProgress labels each stage", () => {
+  assert.equal(
+    describeSlicerInstallProgress({ stage: "downloading" }),
+    "Downloading OrcaSlicer…",
+  );
+  assert.equal(
+    describeSlicerInstallProgress({ stage: "extracting" }),
+    "Preparing installer…",
+  );
+  assert.equal(
+    describeSlicerInstallProgress({ stage: "installing" }),
+    "Installing OrcaSlicer…",
+  );
+  assert.equal(
+    describeSlicerInstallProgress({ stage: "verifying" }),
+    "Verifying install…",
+  );
+  assert.equal(
+    describeSlicerInstallProgress({ stage: "done", version: "v2.3.2", binaryPath: "/x" }),
+    "Installed",
+  );
+  assert.equal(
+    describeSlicerInstallProgress({ stage: "error", message: "boom" }),
+    "boom",
+  );
+  assert.equal(describeSlicerInstallProgress(undefined), "Working…");
 });

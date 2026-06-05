@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import CadViewer from "../CadViewer";
 import DxfViewer from "../DxfViewer";
+import GcodePreviewPane from "./GcodePreviewPane";
 import ImplicitCadViewer from "../ImplicitCadViewer";
 import { CircleAlert, X } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
@@ -50,6 +51,11 @@ export default function CadRenderPane({
   selectedDxfMeshData,
   selectedKey,
   selectedDxfKey,
+  gcodeUrl = "",
+  gcodeTopLayer = null,
+  gcodeShowTravel = false,
+  gcodeRenderTubes = false,
+  onGcodeReady,
   missingFileRef = "",
   viewerPerspective,
   viewerPerspectiveRef,
@@ -203,6 +209,17 @@ export default function CadRenderPane({
           ref={viewerRef}
           dxfData={selectedDxfData}
           modelKey={selectedDxfKey}
+          onViewerAlertChange={handleViewerAlertChange}
+        />
+      ) : gcodeMode ? (
+        <GcodePreviewPane
+          ref={viewerRef}
+          gcodeUrl={gcodeUrl}
+          modelKey={selectedKey}
+          topLayer={gcodeTopLayer}
+          showTravel={gcodeShowTravel}
+          renderTubes={gcodeRenderTubes}
+          onReady={onGcodeReady}
           onViewerAlertChange={handleViewerAlertChange}
         />
       ) : (

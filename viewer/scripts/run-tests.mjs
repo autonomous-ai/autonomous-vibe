@@ -59,10 +59,11 @@ if (!tests.length) {
 
 // Node 22+ supports `--experimental-strip-types` for plain `.ts` files
 // (no decorators, no `enum`, no `namespace`). Our transport.test.ts
-// stays inside that subset.
+// stays inside that subset. `--experimental-default-type=module` is not
+// passed: it was removed in Node 23, and the viewer package is already
+// `"type": "module"`, so the default is module regardless.
 const nodeFlags = [
   "--test",
-  "--experimental-default-type=module",
   "--experimental-strip-types",
   "--no-warnings=ExperimentalWarning",
 ];

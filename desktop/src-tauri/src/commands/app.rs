@@ -840,12 +840,30 @@ fn strip_ansi(input: &str) -> String {
         if b == 0x1b && i + 1 < bytes.len() {
             match bytes[i + 1] {
                 b'[' => {
-                    // CSI: consume until a final byte in 0x40..=0x7e.
+                    // CSI: consume params until a final byte in 0x40..=0x7e.
                     i += 2;
                     while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
                         i += 1;
                     }
+                    let final_byte = bytes.get(i).copied();
                     i += 1; // skip the final byte
+                    // The Ink TUI we scan renders inter-word spaces as cursor-
+                    // forward (`ESC[<n>C`) and positions text via absolute moves
+                    // (`ESC[<r>;<c>H`). Dropping those with no replacement fuses
+                    // neighbouring text — the scanned OAuth URL would run straight
+                    // into the trailing "Paste code here…" prompt and swallow it
+                    // into the URL's `state` param. Emit one space for any cursor-
+                    // movement final byte so segments stay separated; copyable
+                    // values (the URL, the token) print as a single contiguous run
+                    // with no interior moves, so they're never split. Color/style
+                    // (`m`), erase (`J`/`K`), and private modes (`h`/`l`) carry no
+                    // spatial meaning → drop silently.
+                    if matches!(
+                        final_byte,
+                        Some(b'A' | b'B' | b'C' | b'D' | b'E' | b'F' | b'G' | b'H' | b'd' | b'f')
+                    ) {
+                        out.push(' ');
+                    }
                     continue;
                 }
                 b']' => {
@@ -887,7 +905,9 @@ fn find_login_url(text: &str) -> Option<String> {
     for start in find_all(text, "https://") {
         let rest = &text[start..];
         let end = rest
-            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ')' || c == '<')
+            .find(|c: char| {
+                c.is_whitespace() || c == '"' || c == '\'' || c == ')' || c == '<' || c == '>'
+            })
             .unwrap_or(rest.len());
         let url = &rest[..end];
         let lower = url.to_ascii_lowercase();
@@ -1168,6 +1188,37 @@ mod tests {
         // Colored text + an OSC title sequence.
         let raw = "\x1b[32mhello\x1b[0m \x1b]0;title\x07world\n";
         assert_eq!(strip_ansi(raw), "hello world\n");
+    }
+
+    #[test]
+    fn strip_ansi_keeps_cursor_moves_as_spaces_but_not_color() {
+        // Claude Code's Ink TUI renders inter-word spaces as cursor-forward
+        // (`ESC[1C`), so dropping CSI silently fused words. Movement → space.
+        assert_eq!(
+            strip_ansi("Welcome\x1b[1Cto\x1b[1CClaude\x1b[1CCode"),
+            "Welcome to Claude Code",
+        );
+        // Absolute positioning (`ESC[r;cH`) also separates segments.
+        assert_eq!(strip_ansi("end\x1b[23;2HPaste"), "end Paste");
+        // SGR color/style must NOT inject a space (would split colored runs).
+        assert_eq!(strip_ansi("\x1b[38;2;1;2;3mred\x1b[mtext"), "redtext");
+    }
+
+    #[test]
+    fn find_login_url_not_fused_with_paste_prompt() {
+        // Faithful to captured `claude setup-token` output: the URL is one
+        // contiguous run placed via CUP, then `ESC[m`, then the prompt on a new
+        // line (CUP) whose spaces are CUF moves. Before the strip_ansi fix this
+        // yielded `...state=ABC123Pastecodehereifprompted>`.
+        let raw = "\x1b[20;1Hhttps://claude.com/cai/oauth/authorize?code=true&state=ABC123\
+\x1b[m\x1b[23;2HPaste\x1b[1Ccode\x1b[1Chere\x1b[1Cif\x1b[1Cprompted\x1b[1C>";
+        let stripped = strip_ansi(raw);
+        let url = find_login_url(&stripped).expect("url found");
+        assert_eq!(
+            url,
+            "https://claude.com/cai/oauth/authorize?code=true&state=ABC123",
+        );
+        assert!(!url.contains("Paste"), "url fused with prompt text: {url}");
     }
 
     #[test]

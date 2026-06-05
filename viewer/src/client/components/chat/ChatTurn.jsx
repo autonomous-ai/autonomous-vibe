@@ -82,9 +82,9 @@ export default function ChatTurn({ turn, onOpenArtifact, onRestoreVersion, resto
   // User prompts stick to the top of the scroll container; once pinned (a
   // response has scrolled underneath) they collapse to a couple of lines with a
   // "Show more" toggle. Assistant turns scroll normally and never stick.
-  const articleRef = useRef(null);
+  const sentinelRef = useRef(null);
   const contentRef = useRef(null);
-  const stuck = useStuck(isUser ? articleRef : null, scrollRootRef);
+  const stuck = useStuck(isUser ? sentinelRef : null, scrollRootRef);
   const [expanded, setExpanded] = useState(false);
   const [overflowing, setOverflowing] = useState(false);
   const condensed = isUser && stuck && !expanded;
@@ -117,8 +117,24 @@ export default function ChatTurn({ turn, onOpenArtifact, onRestoreVersion, resto
   const showRestore =
     !isUser && turn.status === "complete" && !!turn.checkpointId && !!onRestoreVersion;
   return (
+    <>
+      {isUser ? (
+        // Zero-impact marker at the prompt's natural top. It's absolutely
+        // positioned (adds no height or flex gap to the group) and lives
+        // OUTSIDE the sticky <article> so it scrolls away while the article
+        // pins. useStuck observes it to detect pinning — because it sits above
+        // the article and moves independently of it, condensing the pinned
+        // prompt never shifts the sentinel, so there's no
+        // height→reflow→re-measure feedback loop (the old flicker on tall
+        // prompts). Requires the enclosing group to be `position: relative`.
+        <div
+          ref={sentinelRef}
+          aria-hidden
+          data-slot="chat-sticky-sentinel"
+          className="pointer-events-none absolute left-0 top-0 h-px w-px"
+        />
+      ) : null}
     <article
-      ref={articleRef}
       data-slot="chat-turn"
       data-role={turn.role}
       data-turn-id={turn.id}
@@ -249,5 +265,6 @@ export default function ChatTurn({ turn, onOpenArtifact, onRestoreVersion, resto
         </button>
       ) : null}
     </article>
+    </>
   );
 }

@@ -69,7 +69,11 @@ export default function ChatHistory({
           // space below — instead of the prompt landing at the bottom under the
           // previous turn. `shrink-0` keeps the spacer from collapsing in flex.
           className={cn(
-            "flex shrink-0 flex-col gap-3",
+            // `relative` anchors each user prompt's sticky sentinel (an
+            // absolutely-positioned marker at the group's top, see ChatTurn) to
+            // this group. It doesn't affect the sticky prompt's scroll
+            // container (the outer overflow-y-auto div), only the sentinel.
+            "relative flex shrink-0 flex-col gap-3",
             index === 0 && "mt-3",
             index === groups.length - 1 && "min-h-full",
           )}

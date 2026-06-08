@@ -207,12 +207,15 @@ export default function ChatSidebar({
       <div className="min-h-0 flex-1">
         {isEmpty ? (
           <div
-            data-slot="chat-empty-intro"
-            className="flex h-full flex-col items-center justify-center gap-1 px-3.5 text-center text-xs text-muted-foreground"
+            data-slot="chat-empty-composer"
+            className="flex h-full flex-col items-center justify-center gap-4 px-3.5"
           >
-            <p>Describe what you want to print.</p>
-            <p className="opacity-70">I'll draft a plan first — you can edit and approve it before I build.</p>
-            <p className="opacity-70">Click a face on the model to refer to it in your message.</p>
+            <div className="flex flex-col items-center gap-1 text-center text-xs text-muted-foreground">
+              <p>Describe what you want to print.</p>
+              <p className="opacity-70">I'll draft a plan first — you can edit and approve it before I build.</p>
+              <p className="opacity-70">Click a face on the model to refer to it in your message.</p>
+            </div>
+            <ChatInput ref={chatInputRef} className="w-full bg-transparent px-0 py-0" />
           </div>
         ) : (
           <ChatHistory
@@ -232,7 +235,7 @@ export default function ChatSidebar({
         </div>
       ) : null}
 
-      <ChatInput ref={chatInputRef} />
+      {isEmpty ? null : <ChatInput ref={chatInputRef} />}
     </aside>
   );
 }

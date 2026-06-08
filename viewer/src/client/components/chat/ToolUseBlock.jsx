@@ -1,23 +1,23 @@
 import { useState } from "react";
-import { ChevronRight, ChevronDown, Wrench, CheckCircle2, XCircle, Loader2 } from "lucide-react";
+import { ChevronRight, ChevronDown, Wrench, Check, XCircle, Loader2 } from "lucide-react";
 import { cn } from "@/ui/utils";
-import ChatCopyButton from "./ChatCopyButton";
+import ChatCodeBlock from "./ChatCodeBlock";
 
 const STATUS_PILL = {
   ok: {
-    icon: <CheckCircle2 className="size-3" aria-hidden />,
-    label: "Ok",
-    cls: "border-emerald-500/30 bg-emerald-500/10 text-emerald-600",
+    icon: <Check className="size-3" aria-hidden />,
+    label: "OK",
+    cls: "border-emerald-400/35 bg-emerald-500/20 text-emerald-400",
   },
   error: {
     icon: <XCircle className="size-3" aria-hidden />,
     label: "Error",
-    cls: "border-destructive/30 bg-destructive/10 text-destructive",
+    cls: "border-destructive/35 bg-destructive/15 text-destructive",
   },
   running: {
     icon: <Loader2 className="size-3 animate-spin" aria-hidden />,
     label: "Running",
-    cls: "border-border/60 bg-muted/50 text-muted-foreground",
+    cls: "border-white/10 bg-white/5 text-zinc-400",
   },
 };
 
@@ -26,7 +26,7 @@ function StatusPill({ status }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
+        "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium leading-none",
         s.cls,
       )}
     >
@@ -56,37 +56,35 @@ export default function ToolUseBlock({ tool, label, input, status }) {
       data-tool={tool}
       data-status={status}
       className={cn(
-        "rounded-lg border border-border/60 bg-muted/20 px-2.5 py-1.5 text-xs text-muted-foreground transition-colors",
+        "rounded-lg border border-white/10 bg-[#17181b] px-4 py-3 text-xs text-zinc-400 shadow-sm transition-colors",
       )}
     >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-1.5 rounded-md text-left transition-colors hover:text-foreground"
+        className="flex w-full items-center gap-1.5 rounded-md text-left transition-colors hover:text-zinc-200"
         aria-expanded={open ? "true" : "false"}
       >
-        {open ? <ChevronDown className="size-3 shrink-0 opacity-70" aria-hidden /> : <ChevronRight className="size-3 shrink-0 opacity-70" aria-hidden />}
-        <Wrench className="size-3 shrink-0 opacity-70" aria-hidden />
-        <span className="truncate font-medium text-foreground">{primary}</span>
-        {showRaw ? <span className="shrink-0 text-[10px] text-muted-foreground/70">{tool}</span> : null}
-        <span className="ml-auto shrink-0">
+        <Wrench className="size-3 shrink-0 text-zinc-500" aria-hidden />
+        <span className="truncate font-semibold text-zinc-100">{primary}</span>
+        {showRaw ? <span className="shrink-0 text-xs text-zinc-500">{tool}</span> : null}
+        <span className="ml-auto flex shrink-0 items-center gap-1.5">
           <StatusPill status={status} />
+          {open ? (
+            <ChevronDown className="size-4 text-zinc-500" aria-hidden />
+          ) : (
+            <ChevronRight className="size-4 text-zinc-500" aria-hidden />
+          )}
         </span>
       </button>
       {open && detail ? (
-        <div className="mt-2 overflow-hidden rounded-lg border border-white/10 bg-[#2f2f2f] text-[#f4f4f5]">
-          <div className="flex h-8 items-center justify-between border-b border-white/5 px-2.5 text-[11px] text-zinc-300">
-            <span className="font-medium">json</span>
-            <ChatCopyButton
-              value={detail}
-              label="Copy input"
-              className="size-6 text-zinc-300 hover:bg-white/10 hover:text-white"
-            />
-          </div>
-          <pre className="max-h-48 overflow-auto px-2.5 py-2 text-[11px] leading-relaxed">
-            <code className="font-mono text-[#f4f4f5]">{detail}</code>
-          </pre>
-        </div>
+        <ChatCodeBlock
+          code={detail}
+          lang="json"
+          copyLabel="Copy input"
+          className="mt-2"
+          maxHeightClassName="max-h-48"
+        />
       ) : null}
     </div>
   );

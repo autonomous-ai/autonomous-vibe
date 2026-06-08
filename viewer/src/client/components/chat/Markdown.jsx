@@ -1,93 +1,11 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/ui/utils";
-import ChatCopyButton from "./ChatCopyButton";
+import ChatCodeBlock from "./ChatCodeBlock";
 import QuestionCard from "./QuestionCard";
 
 function flattenText(children) {
   return Array.isArray(children) ? children.join("") : String(children || "");
-}
-
-function isKeyword(token, lang) {
-  const lower = String(token || "").toLowerCase();
-  const language = String(lang || "").toLowerCase();
-  if (language === "powershell" || language === "ps1") {
-    return /^[a-z][a-z0-9]*-[a-z][a-z0-9-]*$/i.test(token) ||
-      [
-        "if",
-        "else",
-        "elseif",
-        "foreach",
-        "function",
-        "param",
-        "return",
-        "switch",
-        "while",
-      ].includes(lower);
-  }
-  return [
-    "async",
-    "await",
-    "class",
-    "const",
-    "def",
-    "else",
-    "export",
-    "for",
-    "from",
-    "function",
-    "if",
-    "import",
-    "let",
-    "return",
-    "var",
-    "while",
-  ].includes(lower);
-}
-
-function highlightedCode(raw, lang) {
-  const parts = String(raw || "").split(/("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`|#[^\n]*|\/\/[^\n]*|\b\d+(?:\.\d+)?\b|\b[A-Za-z_][\w-]*\b)/g);
-  return parts.map((part, index) => {
-    if (!part) return null;
-    let className = "";
-    if (/^["'`]/.test(part)) {
-      className = "text-emerald-400";
-    } else if (/^(#|\/\/)/.test(part)) {
-      className = "text-zinc-500";
-    } else if (/^\d/.test(part)) {
-      className = "text-sky-300";
-    } else if (isKeyword(part, lang)) {
-      className = "text-amber-400";
-    }
-    return className ? (
-      <span key={index} className={className}>{part}</span>
-    ) : (
-      <span key={index}>{part}</span>
-    );
-  });
-}
-
-function CodeBlock({ lang, children }) {
-  const raw = flattenText(children).replace(/\n$/, "");
-  const label = String(lang || "text").toLowerCase();
-  return (
-    <div
-      data-slot="chat-code-block"
-      className="group/code my-2 overflow-hidden rounded-lg border border-white/10 bg-[#2f2f2f] text-[#f4f4f5] shadow-sm"
-    >
-      <div className="flex h-9 items-center justify-between border-b border-white/5 px-3 text-xs text-zinc-300">
-        <span className="truncate font-medium">{label}</span>
-        <ChatCopyButton
-          value={raw}
-          label="Copy code"
-          className="size-6 text-zinc-300 opacity-80 hover:bg-white/10 hover:text-white"
-        />
-      </div>
-      <pre className="max-h-72 overflow-auto px-3 py-2.5 text-[12px] leading-relaxed">
-        <code className="font-mono text-[#f4f4f5]">{highlightedCode(raw, label)}</code>
-      </pre>
-    </div>
-  );
 }
 
 // Tailwind v4 preflight resets headings/lists, so we style each element
@@ -128,7 +46,7 @@ const COMPONENTS = {
       }
     }
     if (lang || flattenText(children).includes("\n")) {
-      return <CodeBlock lang={lang} children={children} />;
+      return <ChatCodeBlock lang={lang} code={flattenText(children)} />;
     }
     return <code className="rounded bg-muted/60 px-1 py-0.5 text-[12px] font-mono">{children}</code>;
   },

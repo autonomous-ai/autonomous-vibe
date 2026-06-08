@@ -3,10 +3,8 @@ import { ArrowDown } from "lucide-react";
 import { cn } from "@/ui/utils";
 import ChatTurn from "./ChatTurn";
 
-// Group each user prompt with the assistant turns that answer it. The user
-// prompt sticks within its group's container (see ChatTurn), so it pins only
-// while its own response is on screen and scrolls away once the next group
-// begins — instead of every prompt stacking at the top.
+// Group each user prompt with the assistant turns that answer it so related
+// messages keep their spacing as a unit in the history.
 function groupTurns(history) {
   const groups = [];
   for (const turn of history) {
@@ -22,6 +20,7 @@ function groupTurns(history) {
 export default function ChatHistory({
   history,
   onOpenArtifact,
+  onRequestInputFocus,
   className,
 }) {
   const ref = useRef(null);
@@ -50,7 +49,8 @@ export default function ChatHistory({
     const node = ref.current;
     if (!node) return;
     node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
-  }, []);
+    onRequestInputFocus?.();
+  }, [onRequestInputFocus]);
 
   const groups = groupTurns(history);
 
@@ -76,36 +76,19 @@ export default function ChatHistory({
         ref={ref}
         data-slot="chat-history"
         onScroll={handleScroll}
-        // No top padding: a sticky prompt pins to the scrollport's top edge, so
-        // any top padding leaves a band where scrolled content shows above it.
-        // The first group carries the top breathing room as a margin instead,
-        // which scrolls away and doesn't offset the pin.
-        className="scrollbar-thin flex h-full flex-col gap-3 overflow-y-auto px-3.5 pb-3"
+        className="scrollbar-thin flex h-full flex-col gap-3 overflow-y-auto px-3.5 py-3"
       >
-        {groups.map((group, index) => (
+        {groups.map((group) => (
           <div
             key={group[0].id}
             data-slot="chat-turn-group"
-            // The last group is at least a viewport tall so its (sticky) user
-            // prompt can rest at the top with the streaming response filling the
-            // space below — instead of the prompt landing at the bottom under the
-            // previous turn. `shrink-0` keeps the spacer from collapsing in flex.
-            className={cn(
-              // `relative` anchors each user prompt's sticky sentinel (an
-              // absolutely-positioned marker at the group's top, see ChatTurn) to
-              // this group. It doesn't affect the sticky prompt's scroll
-              // container (the outer overflow-y-auto div), only the sentinel.
-              "relative flex shrink-0 flex-col gap-3",
-              index === 0 && "mt-3",
-              index === groups.length - 1 && "min-h-full",
-            )}
+            className="flex shrink-0 flex-col gap-3"
           >
             {group.map((turn) => (
               <ChatTurn
                 key={turn.id}
                 turn={turn}
                 onOpenArtifact={onOpenArtifact}
-                scrollRootRef={ref}
               />
             ))}
           </div>

@@ -11,6 +11,7 @@
 //! v2 hook — wired via [`build_env`] so the v2 settings toggle is a
 //! purely additive change.
 
+use crate::commands::claude_stream_debug;
 use crate::ipc::types::{ArtifactReason, ChatEvent, TurnPhaseTag};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -192,7 +193,11 @@ pub const PLAN_SYSTEM_PROMPT: &str = concat!(
     "\"multiSelect\":false,\"options\":[{\"label\":\"...\",\"description\":",
     "\"...\"}]}]}, then STOP — do not call ExitPlanMode in the same turn. ",
     "When the design is settled, finish by calling the ExitPlanMode tool ",
-    "with the full plan (markdown) in its `plan` field.",
+    "with the COMPLETE plan markdown in its `plan` field — restate the entire ",
+    "plan in that call even if you already wrote it earlier in the ",
+    "conversation, and even when resuming a prior session. NEVER call ",
+    "ExitPlanMode with an empty or partial `plan`: the user sees only what is ",
+    "in that field, so an empty `plan` shows them a blank approval card.",
 );
 
 /// Implementation-phase system prompt. The plan is approved; the model
@@ -740,6 +745,11 @@ pub struct StreamState {
     /// it after each parsed line to deterministically end the plan turn
     /// (kill the child) and enter the awaiting-approval state.
     plan_proposed: bool,
+    /// Set when the model called the built-in `AskUserQuestion` tool. Like
+    /// `plan_proposed`, the driver ends the turn on it so the user can answer
+    /// the question chips — headless `-p` would otherwise auto-answer and race
+    /// ahead to a plan, defeating the interactive prompt.
+    questions_asked: bool,
 }
 
 /// Parse one line of `claude -p --output-format stream-json` output and
@@ -807,6 +817,92 @@ fn from_stream_event(o: &Value, turn_id: &str, state: &mut StreamState) -> Vec<C
     Vec::new()
 }
 
+/// Extract the plan markdown from an `ExitPlanMode` tool input. Newer Claude
+/// Code writes the plan to a file (`~/.claude/plans/*.md`) and exposes its
+/// path as `planFilePath`, sometimes leaving the inline `plan` field empty —
+/// which used to surface as a blank plan card. Prefer the inline `plan` when
+/// present; otherwise read the file the model just wrote. The file is reliably
+/// on disk by the time `ExitPlanMode` fires (the model `Write`s it earlier in
+/// the same turn).
+fn plan_from_exit_plan_mode(input: Option<&Value>) -> String {
+    let inline = input
+        .and_then(|i| i.get("plan"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !inline.trim().is_empty() {
+        return inline.to_string();
+    }
+    input
+        .and_then(|i| i.get("planFilePath"))
+        .and_then(Value::as_str)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default()
+}
+
+/// Last-resort plan recovery. When `ExitPlanMode` arrives with an empty
+/// `plan` AND no `planFilePath` (common on a resumed session — the model treats
+/// ExitPlanMode as a bare "approve the plan we already discussed" signal and
+/// doesn't restate it), recover the plan from the persisted transcript: the
+/// most recent *substantial* assistant text block, which is the plan the model
+/// wrote out before exiting plan mode. Returns "" when nothing qualifies.
+fn recover_plan_from_transcript(contents: &str) -> String {
+    // Plans run to hundreds/thousands of chars; this filters out chatter like
+    // "your plan is ready" without matching a short acknowledgement.
+    const MIN_PLAN_CHARS: usize = 200;
+    let mut best = String::new();
+    for line in contents.lines() {
+        let Ok(obj) = serde_json::from_str::<Value>(line) else {
+            continue; // skip blanks / partial trailing writes
+        };
+        if obj.get("type").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let Some(content) = obj
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for block in content {
+            if block.get("type").and_then(Value::as_str) != Some("text") {
+                continue;
+            }
+            if let Some(text) = block.get("text").and_then(Value::as_str) {
+                if text.trim().chars().count() >= MIN_PLAN_CHARS {
+                    best = text.to_string(); // keep the last (most recent) one
+                }
+            }
+        }
+    }
+    best
+}
+
+/// Resolve and read this project's session transcript, then recover the plan
+/// from it (see [`recover_plan_from_transcript`]). Best-effort: missing home
+/// dir / unreadable JSONL yields "".
+fn recover_plan_from_session(workspace: &Path, session_id: &str) -> String {
+    session_jsonl_path(workspace, session_id)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|c| recover_plan_from_transcript(&c))
+        .unwrap_or_default()
+}
+
+/// Build the synthetic `panda-questions` fenced block the chat renders as
+/// clickable choice chips, from an `AskUserQuestion` tool input. Newer Claude
+/// Code asks preference forks via the built-in `AskUserQuestion` tool instead
+/// of the prompt's `panda-questions` fence; its input shape is identical, so
+/// re-emitting it as that fence reuses the existing `QuestionCard` path with no
+/// IPC change. Returns `None` when the tool carried no questions.
+fn questions_fence_from_ask_user_question(input: Option<&Value>) -> Option<String> {
+    let questions = input.and_then(|i| i.get("questions"))?;
+    if !questions.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
+        return None;
+    }
+    let json = serde_json::to_string(&serde_json::json!({ "questions": questions })).ok()?;
+    Some(format!("\n\n```panda-questions\n{json}\n```\n"))
+}
+
 fn from_assistant(o: &Value, turn_id: &str, state: &mut StreamState) -> Vec<ChatEvent> {
     let mut out: Vec<ChatEvent> = Vec::new();
     // The consolidated `assistant` message arrives *after* its own
@@ -851,18 +947,29 @@ fn from_assistant(o: &Value, turn_id: &str, state: &mut StreamState) -> Vec<Chat
                 // `PlanProposed` event (not a generic tool chip) and flag
                 // the turn so the driver can end it deterministically.
                 if name == "ExitPlanMode" {
-                    let plan = block
-                        .get("input")
-                        .and_then(|i| i.get("plan"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
+                    let plan = plan_from_exit_plan_mode(block.get("input"));
                     state.any_text_emitted = true;
                     state.plan_proposed = true;
                     out.push(ChatEvent::PlanProposed {
                         turn_id: turn_id.to_string(),
                         plan,
                     });
+                    continue;
+                }
+                // `AskUserQuestion` is the CLI's built-in preference-fork
+                // prompt. Convert it to the `panda-questions` fence the chat
+                // already renders as choice chips (not a generic tool chip) and
+                // flag the turn so the driver ends it for the user to answer.
+                if name == "AskUserQuestion" {
+                    if let Some(fence) = questions_fence_from_ask_user_question(block.get("input"))
+                    {
+                        state.any_text_emitted = true;
+                        state.questions_asked = true;
+                        out.push(ChatEvent::TextDelta {
+                            turn_id: turn_id.to_string(),
+                            text: fence,
+                        });
+                    }
                     continue;
                 }
                 let tu_id = block
@@ -1039,6 +1146,35 @@ where
     let argv = build_command(&cfg);
     let env = build_env(&cfg);
 
+    let debug_stream = claude_stream_debug::enabled();
+    let raw_stream = claude_stream_debug::raw();
+    let color = debug_stream && !raw_stream && claude_stream_debug::color();
+    if debug_stream {
+        if raw_stream {
+            // Flags only — the trailing prompt/system-prompt are large.
+            let flags = argv[1..argv.len().saturating_sub(1)].join(" ");
+            eprintln!("[claude:out] spawn {} {}", claude_path.display(), flags);
+        } else {
+            let resume = argv.iter().any(|a| a == "--resume");
+            let sid = claude_stream_debug::short_id(cfg.claude_session_id.as_deref().unwrap_or(""));
+            eprintln!(
+                "{} {}",
+                claude_stream_debug::paint(color, "2", "[claude]"),
+                claude_stream_debug::paint(
+                    color,
+                    "35",
+                    &format!(
+                        "▶ turn {:?}  model={}  mode={}  session={sid} ({})",
+                        phase,
+                        cfg.model.as_deref().unwrap_or("opus"),
+                        phase.permission_mode(),
+                        if resume { "resume" } else { "new" },
+                    ),
+                ),
+            );
+        }
+    }
+
     // argv[0] is "claude"; the rest are flags + the prompt. We spawn the
     // resolved absolute path (argv[0] is kept for build_command parity).
     // A Windows `claude.cmd` is run directly — std handles batch wrappers
@@ -1089,6 +1225,9 @@ where
                 match r.read_line(&mut l).await {
                     Ok(0) | Err(_) => break,
                     Ok(_) => {
+                        if debug_stream {
+                            eprint!("[claude:err] {l}");
+                        }
                         if let Ok(mut g) = sink.lock() {
                             if g.len() < 8192 {
                                 g.push_str(&l);
@@ -1147,18 +1286,45 @@ where
                 if n == 0 {
                     break; // EOF
                 }
+                if debug_stream {
+                    if raw_stream {
+                        // `line` keeps its trailing newline; eprint! avoids
+                        // doubling it. Raw stream-json from claude.
+                        eprint!("[claude:out] {line}");
+                    } else if let Some(s) = claude_stream_debug::pretty_line(&line, "claude", color) {
+                        eprintln!("{s}");
+                    }
+                }
                 let events = parse_stream_line(&line, turn_id, &mut state);
-                let saw_plan = state.plan_proposed;
+                // Either `ExitPlanMode` (plan ready) or `AskUserQuestion`
+                // (preference fork) ends the plan turn deterministically.
+                let stop_turn = state.plan_proposed || state.questions_asked;
                 for ev in events {
                     saw_output = true;
+                    // A `PlanProposed` with an empty plan means the model exited
+                    // plan mode without restating it (typical on resume) — and
+                    // there was no `planFilePath` to read either. Recover the
+                    // plan from the persisted transcript so the card isn't blank.
+                    let ev = match ev {
+                        ChatEvent::PlanProposed { turn_id: tid, plan } if plan.trim().is_empty() => {
+                            ChatEvent::PlanProposed {
+                                turn_id: tid,
+                                plan: recover_plan_from_session(
+                                    workspace_dir,
+                                    &session_id.to_string(),
+                                ),
+                            }
+                        }
+                        other => other,
+                    };
                     on_event(ev);
                 }
-                // `ExitPlanMode` ends the plan turn deterministically: kill
-                // the child rather than relying on headless `-p` exiting on its
-                // own after the tool call. The post-turn diff finds nothing new:
-                // the plan turn may run read-only analysis but produces no final
-                // artifacts (the prompt bars writing source / generating parts).
-                if saw_plan {
+                // Kill the child rather than relying on headless `-p` exiting on
+                // its own after the tool call. The post-turn diff finds nothing
+                // new: the plan turn may run read-only analysis but produces no
+                // final artifacts (the prompt bars writing source / generating
+                // parts), and a question is asked before any plan file is written.
+                if stop_turn {
                     let _ = child.start_kill();
                     break;
                 }
@@ -1419,6 +1585,10 @@ async fn drain_review_child(
         Err(_) => return, // best-effort; a build that can't be reviewed just ends
     };
 
+    let debug_stream = claude_stream_debug::enabled();
+    let raw_stream = claude_stream_debug::raw();
+    let color = debug_stream && !raw_stream && claude_stream_debug::color();
+
     // Drain stderr so a full pipe can't deadlock the child.
     if let Some(cerr) = child.stderr.take() {
         tokio::spawn(async move {
@@ -1428,13 +1598,18 @@ async fn drain_review_child(
                 l.clear();
                 match r.read_line(&mut l).await {
                     Ok(0) | Err(_) => break,
-                    Ok(_) => {}
+                    Ok(_) => {
+                        if debug_stream {
+                            eprint!("[claude:review:err] {l}");
+                        }
+                    }
                 }
             }
         });
     }
 
-    // Drain stdout to EOF without parsing — the review runs silent.
+    // Drain stdout to EOF without parsing — the review runs silent (except
+    // when PANDA_DEBUG_CLAUDE mirrors the stream for debugging).
     if let Some(cout) = child.stdout.take() {
         let mut reader = BufReader::with_capacity(STDOUT_BUFFER_BYTES, cout);
         let mut line = String::new();
@@ -1449,7 +1624,17 @@ async fn drain_review_child(
                 read = reader.read_line(&mut line) => {
                     match read {
                         Ok(0) | Err(_) => break,
-                        Ok(_) => {}
+                        Ok(_) => {
+                            if debug_stream {
+                                if raw_stream {
+                                    eprint!("[claude:review:out] {line}");
+                                } else if let Some(s) =
+                                    claude_stream_debug::pretty_line(&line, "claude:review", color)
+                                {
+                                    eprintln!("{s}");
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1986,6 +2171,114 @@ mod tests {
         // ExitPlanMode must not be tracked as a pending tool (no tool_result
         // is expected once the driver kills the child).
         assert!(state.pending_tools.is_empty());
+    }
+
+    #[test]
+    fn exit_plan_mode_reads_plan_file_when_inline_empty() {
+        // Newer Claude Code writes the plan to a file and may leave the inline
+        // `plan` field empty; the driver must fall back to `planFilePath` so
+        // the plan card is never blank.
+        let tmp = tempfile::tempdir().unwrap();
+        let plan_path = tmp.path().join("plan.md");
+        std::fs::write(&plan_path, "# Plan from file\n- base\n- lid").unwrap();
+        let asst = format!(
+            r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"tu_p","name":"ExitPlanMode","input":{{"plan":"","planFilePath":{}}}}}]}}}}"#,
+            serde_json::to_string(&plan_path.to_string_lossy().to_string()).unwrap(),
+        );
+        let evs = parse_one(&asst);
+        assert_eq!(evs.len(), 1);
+        match &evs[0] {
+            ChatEvent::PlanProposed { plan, .. } => {
+                assert!(plan.contains("Plan from file"));
+                assert!(plan.contains("base") && plan.contains("lid"));
+            }
+            other => panic!("expected PlanProposed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exit_plan_mode_prefers_inline_plan_over_file() {
+        // When both are present, the inline `plan` wins — no file read needed.
+        let asst = r##"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_p","name":"ExitPlanMode","input":{"plan":"# Inline plan","planFilePath":"/nonexistent/plan.md"}}]}}"##;
+        let evs = parse_one(asst);
+        match &evs[0] {
+            ChatEvent::PlanProposed { plan, .. } => assert_eq!(plan, "# Inline plan"),
+            other => panic!("expected PlanProposed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ask_user_question_becomes_panda_questions_fence_and_ends_turn() {
+        // Newer Claude Code asks preference forks via the built-in
+        // `AskUserQuestion` tool. The driver converts it to the
+        // `panda-questions` fence the chat renders as choice chips, and flags
+        // the turn so it ends for the user to answer.
+        let mut state = StreamState::default();
+        let asst = r##"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_q","name":"AskUserQuestion","input":{"questions":[{"question":"Orientation?","header":"Orient","multiSelect":false,"options":[{"label":"Portrait","description":"tall"},{"label":"Landscape","description":"wide"}]}]}}]}}"##;
+        let evs = parse_stream_line(asst, "T1", &mut state);
+        assert_eq!(evs.len(), 1);
+        match &evs[0] {
+            ChatEvent::TextDelta { text, .. } => {
+                assert!(text.contains("```panda-questions"), "must emit the fence");
+                assert!(text.contains("Orientation?"));
+                assert!(text.contains("Portrait") && text.contains("Landscape"));
+                // The fenced JSON the chat parses must be `{"questions":[...]}`.
+                let start = text.find('{').unwrap();
+                let end = text.rfind('}').unwrap();
+                let json: serde_json::Value =
+                    serde_json::from_str(&text[start..=end]).expect("valid questions JSON");
+                assert!(json["questions"].is_array());
+            }
+            other => panic!("expected TextDelta with fence, got {other:?}"),
+        }
+        assert!(state.questions_asked, "questions_asked flag must be set");
+        // Not tracked as a pending tool (no tool_result once the child is killed).
+        assert!(state.pending_tools.is_empty());
+    }
+
+    #[test]
+    fn ask_user_question_without_questions_is_dropped() {
+        // An empty/malformed AskUserQuestion emits nothing and does not end the
+        // turn (no choice chips to show).
+        let mut state = StreamState::default();
+        let asst = r##"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_q","name":"AskUserQuestion","input":{"questions":[]}}]}}"##;
+        let evs = parse_stream_line(asst, "T1", &mut state);
+        assert!(evs.is_empty());
+        assert!(!state.questions_asked);
+    }
+
+    #[test]
+    fn recover_plan_picks_most_recent_substantial_assistant_text() {
+        let long_a = "A".repeat(400);
+        // The real plan, written as text in a later turn (with a newline that
+        // must round-trip through JSON escaping).
+        let plan = format!("# Fridge magnet plan\n{}", "B".repeat(400));
+        let assistant_text = |text: &str| {
+            serde_json::json!({
+                "type": "assistant",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}
+            })
+            .to_string()
+        };
+        let transcript = [
+            r#"{"type":"user","message":{"role":"user","content":"what can you do?"}}"#.to_string(),
+            assistant_text(&long_a),
+            assistant_text(&plan),
+            assistant_text("On it!"), // short chatter after the plan must not win
+            "not json".to_string(),   // partial/blank lines are skipped
+        ]
+        .join("\n");
+        assert_eq!(recover_plan_from_transcript(&transcript), plan);
+    }
+
+    #[test]
+    fn recover_plan_returns_empty_when_only_chatter() {
+        let transcript = concat!(
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hi!"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Your plan is ready."}]}}"#,
+        );
+        assert_eq!(recover_plan_from_transcript(transcript), "");
     }
 
     #[test]

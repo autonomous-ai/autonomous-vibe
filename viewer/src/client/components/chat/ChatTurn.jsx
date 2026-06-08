@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from "react";
-import { Loader2, ChevronDown, ChevronUp } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { cn } from "@/ui/utils";
 import ToolUseBlock from "./ToolUseBlock";
 import ArtifactBadge from "./ArtifactBadge";
@@ -7,11 +6,6 @@ import PlanBlock from "./PlanBlock";
 import Markdown from "./Markdown";
 import ChatCopyButton from "./ChatCopyButton";
 import { phaseLabel, toolLabel } from "./activityLabels";
-import { useStuck } from "./useStuck";
-
-// Height (px) the pinned user prompt collapses to (~2 lines of text-sm). Above
-// this the prompt is considered overflowing and gets a "Show more" toggle.
-const CONDENSED_MAX_PX = 44;
 
 function TextBlock({ text }) {
   return (
@@ -101,35 +95,8 @@ function StatusLine({ turn }) {
   return null;
 }
 
-export default function ChatTurn({ turn, onOpenArtifact, scrollRootRef }) {
+export default function ChatTurn({ turn, onOpenArtifact }) {
   const isUser = turn.role === "user";
-  // User prompts stick to the top of the scroll container; once pinned (a
-  // response has scrolled underneath) they collapse to a couple of lines with a
-  // "Show more" toggle. Assistant turns scroll normally and never stick.
-  const sentinelRef = useRef(null);
-  const contentRef = useRef(null);
-  const stuck = useStuck(isUser ? sentinelRef : null, scrollRootRef);
-  const [expanded, setExpanded] = useState(false);
-  const [overflowing, setOverflowing] = useState(false);
-  const condensed = isUser && stuck && !expanded;
-
-  // Re-collapse once the prompt unsticks so the next pin starts condensed.
-  useEffect(() => {
-    if (!stuck) setExpanded(false);
-  }, [stuck]);
-
-  // Measure the full prompt height (contentRef is never clamped — the clamp
-  // lives on its wrapper) to decide whether a "Show more" toggle is warranted.
-  useEffect(() => {
-    if (!isUser) {
-      setOverflowing(false);
-      return;
-    }
-    const el = contentRef.current;
-    if (!el) return;
-    setOverflowing(el.scrollHeight > CONDENSED_MAX_PX + 1);
-  }, [isUser, turn, stuck]);
-
   const showModifyHint =
     !isUser &&
     turn.phase === "implement" &&
@@ -137,32 +104,11 @@ export default function ChatTurn({ turn, onOpenArtifact, scrollRootRef }) {
     turn.blocks.some((block) => block.kind === "artifact");
   const copyText = turnCopyText(turn);
   return (
-    <>
-      {isUser ? (
-        // Zero-impact marker at the prompt's natural top. It's absolutely
-        // positioned (adds no height or flex gap to the group) and lives
-        // OUTSIDE the sticky <article> so it scrolls away while the article
-        // pins. useStuck observes it to detect pinning — because it sits above
-        // the article and moves independently of it, condensing the pinned
-        // prompt never shifts the sentinel, so there's no
-        // height→reflow→re-measure feedback loop (the old flicker on tall
-        // prompts). Requires the enclosing group to be `position: relative`.
-        <div
-          ref={sentinelRef}
-          aria-hidden
-          data-slot="chat-sticky-sentinel"
-          className="pointer-events-none absolute left-0 top-0 h-px w-px"
-        />
-      ) : null}
     <article
       data-slot="chat-turn"
       data-role={turn.role}
       data-turn-id={turn.id}
       data-status={turn.status}
-      data-stuck={isUser && stuck ? "true" : undefined}
-      // The user prompt is always sticky, so it must stay opaque even before
-      // `stuck` flips — an opaque surface keeps the response from bleeding
-      // through while still matching the compact Codex-style prompt bubble.
       style={
         isUser
           ? { backgroundColor: "color-mix(in srgb, var(--foreground) 7%, var(--ui-surface-solid))" }
@@ -171,7 +117,7 @@ export default function ChatTurn({ turn, onOpenArtifact, scrollRootRef }) {
       className={cn(
         "group/turn relative rounded-xl px-3.5 py-2.5 shadow-(--ui-shadow-soft) transition-colors",
         isUser
-          ? cn("sticky top-0 z-20 ml-auto mb-7 w-fit max-w-[85%] rounded-2xl", stuck && "shadow-md")
+          ? "ml-auto mb-7 w-fit max-w-[85%] rounded-2xl"
           : "bg-card/65",
       )}
     >
@@ -188,8 +134,8 @@ export default function ChatTurn({ turn, onOpenArtifact, scrollRootRef }) {
           <StatusLine turn={turn} />
         </header>
       )}
-      <div className={cn("relative", condensed && "max-h-11 overflow-hidden")}>
-        <div ref={isUser ? contentRef : null} className="flex flex-col gap-2">
+      <div className="relative">
+        <div className="flex flex-col gap-2">
         {isUser && turn.images?.length ? (
           <div data-slot="chat-turn-images" className="flex flex-wrap gap-1.5">
             {turn.images.map((image, index) => (
@@ -255,36 +201,13 @@ export default function ChatTurn({ turn, onOpenArtifact, scrollRootRef }) {
           </p>
         ) : null}
         </div>
-        {condensed && overflowing ? (
-          <div
-            data-slot="chat-prompt-fade"
-            aria-hidden
-            className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-linear-to-t from-(--ui-surface-solid) to-transparent"
-          />
-        ) : null}
       </div>
-      {isUser && stuck && overflowing ? (
-        <button
-          type="button"
-          data-slot="chat-prompt-toggle"
-          onClick={() => setExpanded((value) => !value)}
-          className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground transition-colors hover:text-primary"
-        >
-          {expanded ? (
-            <ChevronUp className="size-3" aria-hidden />
-          ) : (
-            <ChevronDown className="size-3" aria-hidden />
-          )}
-          {expanded ? "Show less" : "Show more"}
-        </button>
-      ) : null}
       {!isUser ? (
         <ChatCopyButton
           value={copyText}
-          className="absolute left-1 top-full z-10 mt-1 opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100"
+          className="absolute bottom-1 right-1 z-10 opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100"
         />
       ) : null}
     </article>
-    </>
   );
 }

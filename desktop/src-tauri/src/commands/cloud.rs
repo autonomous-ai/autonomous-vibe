@@ -3,9 +3,11 @@
 //!
 //! Flow:
 //!   1. `cloud_login_request_code(account)` → Bambu emails a 6-digit code.
-//!   2. `cloud_login_submit_code(account, code)` → access token; we decode
-//!      the JWT for the MQTT username (`u_<uid>`) + expiry and persist the
-//!      account to `bambu-cloud.json` (sensitive — never returned to JS).
+//!   2. `cloud_login_submit_code(account, code)` → access token; we derive the
+//!      MQTT username (`u_<uid>`) from the JWT when the token is one, else from
+//!      the `/my/profile` endpoint (newer Bambu tokens are opaque), plus the
+//!      expiry, and persist the account to `bambu-cloud.json` (sensitive —
+//!      never returned to JS).
 //!   3. `printer_discover_cloud()` → `GET .../user/bind` lists the account's
 //!      printers; each upserts into the shared `bambu-printers.json` tagged
 //!      `transport: cloud`, so `printer_list`/`printer_status`/… stay one path.
@@ -20,8 +22,8 @@
 
 use crate::commands::printer::{self, MqttTarget, MqttTls, PrinterRecord};
 use crate::ipc::types::{
-    CloudAccountStatus, CloudLoginChallenge, CloudLoginRequest, CloudLoginSubmit, CloudRegion,
-    PrinterCard, PrinterStatus, PrinterTransport,
+    CloudAccountStatus, CloudLoginChallenge, CloudLoginRequest, CloudLoginSubmit,
+    CloudPasswordLogin, CloudRegion, PrinterCard, PrinterStatus, PrinterTransport,
 };
 use crate::ipc::{IpcError, IpcResult};
 use crate::paths;
@@ -101,7 +103,18 @@ pub async fn cloud_login_request_code(req: CloudLoginRequest) -> IpcResult<Cloud
     if account.is_empty() {
         return Err(IpcError::invalid_argument("account is required"));
     }
-    let url = format!("{}/v1/user-service/user/sendemail/code", api_base(req.region));
+    send_login_code(&account, req.region).await?;
+    Ok(CloudLoginChallenge {
+        kind: "codeSent".to_string(),
+        tfa_key: None,
+    })
+}
+
+/// Ask Bambu to email a 6-digit login code to `account`. Shared by the
+/// code-login command and the password path (when Bambu demands a code as a
+/// second factor).
+async fn send_login_code(account: &str, region: CloudRegion) -> IpcResult<()> {
+    let url = format!("{}/v1/user-service/user/sendemail/code", api_base(region));
     let body = serde_json::json!({ "email": account, "type": "codeLogin" });
     let resp = http_client()?
         .post(url)
@@ -115,10 +128,7 @@ pub async fn cloud_login_request_code(req: CloudLoginRequest) -> IpcResult<Cloud
             format!("send-code returned HTTP {}", resp.status().as_u16()),
         ));
     }
-    Ok(CloudLoginChallenge {
-        kind: "codeSent".to_string(),
-        tfa_key: None,
-    })
+    Ok(())
 }
 
 #[tauri::command]
@@ -143,8 +153,69 @@ pub async fn cloud_login_submit_code(
         .json()
         .await
         .map_err(|e| IpcError::new("CLOUD_LOGIN_FAILED", e.to_string()))?;
+    finish_login(account, region, &json, "verification code was not accepted").await
+}
 
-    let challenge = classify_login_response(&json);
+/// Direct email + password sign-in. Same `/user/login` endpoint as the code
+/// flow, just with a `password` body. Returns a `CloudLoginChallenge`:
+/// - `success` — a token came back; the account is persisted, sign-in is done.
+/// - `codeSent` — Bambu mandates an emailed verification code as a second
+///   factor (common now). We trigger the email; the UI then collects the code
+///   and finishes via `cloud_login_submit_code`.
+/// 2FA and bad credentials surface as typed errors.
+#[tauri::command]
+pub async fn cloud_login_password(req: CloudPasswordLogin) -> IpcResult<CloudLoginChallenge> {
+    let account = req.account.trim().to_string();
+    if account.is_empty() || req.password.is_empty() {
+        return Err(IpcError::invalid_argument("account and password are required"));
+    }
+    let region = req.region;
+    let url = format!("{}/v1/user-service/user/login", api_base(region));
+    let body = serde_json::json!({ "account": account, "password": req.password });
+    let json: serde_json::Value = http_client()?
+        .post(url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| IpcError::new("CLOUD_LOGIN_FAILED", e.to_string()))?
+        .json()
+        .await
+        .map_err(|e| IpcError::new("CLOUD_LOGIN_FAILED", e.to_string()))?;
+    match classify_login_response(&json).kind.as_str() {
+        "success" => {
+            finish_login(account, region, &json, "email or password was not accepted").await?;
+            Ok(CloudLoginChallenge { kind: "success".to_string(), tfa_key: None })
+        }
+        "tfa" => Err(IpcError::new(
+            "CLOUD_TFA_REQUIRED",
+            "account requires two-factor authentication, which is not supported yet",
+        )),
+        // Bambu requires an emailed code as a second factor — send it and ask
+        // the UI to collect it.
+        "codeSent" => {
+            send_login_code(&account, region).await?;
+            Ok(CloudLoginChallenge {
+                kind: "codeSent".to_string(),
+                tfa_key: None,
+            })
+        }
+        _ => Err(IpcError::new(
+            "CLOUD_LOGIN_FAILED",
+            "email or password was not accepted",
+        )),
+    }
+}
+
+/// Shared login-response handler: classify the `/user/login` JSON, persist the
+/// account on success, and return a typed error for any challenge. `bad_creds`
+/// is the message used when the response is a plain rejection.
+async fn finish_login(
+    account: String,
+    region: CloudRegion,
+    json: &serde_json::Value,
+    bad_creds: &str,
+) -> IpcResult<CloudAccountStatus> {
+    let challenge = classify_login_response(json);
     let access_token = match challenge.kind.as_str() {
         "success" => json
             .get("accessToken")
@@ -157,11 +228,16 @@ pub async fn cloud_login_submit_code(
                 "account requires two-factor authentication, which is not supported yet",
             ));
         }
-        _ => {
+        // Bambu wants an emailed verification code — password sign-in alone
+        // can't proceed for this account.
+        "codeSent" => {
             return Err(IpcError::new(
                 "CLOUD_LOGIN_FAILED",
-                "verification code was not accepted",
+                "Bambu requires an email verification code for this account; password sign-in is unavailable",
             ));
+        }
+        _ => {
+            return Err(IpcError::new("CLOUD_LOGIN_FAILED", bad_creds.to_string()));
         }
     };
     if access_token.is_empty() {
@@ -181,11 +257,15 @@ pub async fn cloud_login_submit_code(
     // expiry from the response's `expiresIn` (reliable) and the MQTT uid from
     // the JWT when possible — an absent uid only degrades cloud *status*
     // polling, surfaced later by `cloud_mqtt_target`.
-    let jwt = decode_uid_exp(&access_token).ok();
-    let mqtt_username = mqtt_username_from(&json, jwt.as_ref());
-    let expires_at = response_expiry(&json)
-        .or_else(|| jwt.map(|(_, e)| e))
-        .unwrap_or_else(|| now_secs() + DEFAULT_TTL_SECS);
+    let (mut mqtt_username, expires_at) = derive_identity_and_expiry(&access_token, json);
+    // Newer Bambu access tokens are opaque (not JWTs), so the uid can't be
+    // decoded from the token. Fall back to the authenticated profile endpoint;
+    // best-effort, so a profile outage never blocks an otherwise-valid sign-in.
+    if mqtt_username.is_empty() {
+        if let Some(u) = fetch_mqtt_username(api_base(region), &access_token).await {
+            mqtt_username = u;
+        }
+    }
     let account_rec = CloudAccount {
         account,
         region,
@@ -254,99 +334,394 @@ pub(crate) async fn cloud_printer_status(
     Ok(printer::parse_status_report(&report))
 }
 
-/// Upload a local print file to the account's cloud storage via a presigned
-/// S3 URL. The object is named `remote_name` (the same name
-/// `cloud_start_print` references), so upload and start always agree.
-///
-/// The file uploaded is whatever the caller hands us: today the chat slice
-/// path produces plain `.gcode`, so that's what goes up; a `.gcode.3mf`
-/// (from the toolbar slice) works too if the frontend passes it. We do NOT
-/// silently substitute a sibling file, because the separate `start` call
-/// can't observe that choice and would reference a different name.
-///
-/// untested against a real account — verify in field test before v1 ship
+/// Clamp an API response body to a sane length for inclusion in an error
+/// message — responses can be large, and we only want a diagnostic peek at what
+/// the (undocumented) endpoint actually returned. Char-boundary safe.
+fn truncate_body(body: &str) -> String {
+    const MAX_CHARS: usize = 500;
+    let trimmed = body.trim();
+    let out: String = trimmed.chars().take(MAX_CHARS).collect();
+    if out.len() < trimmed.len() {
+        format!("{out}…")
+    } else {
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cloud print: the real project-based upload + start flow
+// ---------------------------------------------------------------------------
+//
+// Bambu cloud printing is NOT a single presigned PUT. It mirrors what Studio's
+// closed `bambu_networking` plugin does, reconstructed from the open-source
+// drop-in `ClusterM/open-bambu-networking` (`src/cloud_print.cpp`):
+//
+//   [A] POST  /v1/iot-service/api/user/project        {"name": <job>}
+//        -> { project_id, model_id, profile_id, upload_url, upload_ticket }
+//   [B] PUT   <upload_url>                             config 3mf (presigned S3)
+//   [C] PUT   /v1/iot-service/api/user/notification    {"upload":{"origin_file_name":..}}
+//   [D] GET   /v1/iot-service/api/user/notification?action=upload&ticket=<t>   (poll)
+//   [E] PATCH /v1/iot-service/api/user/project/<pid>   placeholder ftp:// url
+//   [F] GET   /v1/iot-service/api/user/upload?models=<mid>_<pid>_<plate>.3mf
+//        -> { urls: [{ url }] }                        second presigned S3 PUT
+//   [G] PUT   <second url>                             print-ready 3mf
+//   [H] PATCH /v1/iot-service/api/user/project/<pid>   real url
+//   [I] POST  /v1/user-service/my/task                 (MakerWorld history; soft-fail)
+//   [J] MQTT  publish `project_file` to device/<serial>/request — THIS starts it.
+//
+// Mapped onto Panda's two-call surface like LAN (upload = put bytes, start =
+// command the printer): `cloud_upload_file` runs [A]-[H] and stashes the ids it
+// produced; `cloud_start_print` runs [I]-[J]. We upload the same `.gcode.3mf`
+// for both the config (B) and main (G) objects — OrcaSlicer's export already
+// carries `Metadata/plate_1.gcode`, which the `project_file` command references
+// via `param`. No URL encryption (`url_enc`/RSA) is needed (the reference omits
+// it; the firmware re-computes md5 on download, so a placeholder md5 is the
+// documented fallback). Still untested against a real account — every step
+// folds its HTTP status + body into the error so it is field-correctable.
+
+/// Identifiers produced by the upload phase ([A]-[H]) that the start phase
+/// ([I]-[J]) needs in order to reference the uploaded object.
+#[derive(Clone)]
+struct PendingCloudPrint {
+    project_id: String,
+    profile_id: String,
+    model_id: String,
+    main_url: String,
+    md5: String,
+    remote_name: String,
+    plate_index: u32,
+}
+
+/// Bridges the upload and start IPC calls (keyed by printer id). Best-effort
+/// in-memory hand-off; a stale entry is simply overwritten by the next upload.
+fn pending_cloud_prints(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, PendingCloudPrint>> {
+    static MAP: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, PendingCloudPrint>>,
+    > = std::sync::OnceLock::new();
+    MAP.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// The printer re-computes the digest on download, and the reference plugin uses
+/// this exact 32-zero fallback when Studio doesn't supply one — so we avoid
+/// bundling an md5 implementation while keeping the server schema happy.
+const MD5_PLACEHOLDER: &str = "00000000000000000000000000000000";
+
+/// Send a bearer-authed JSON request to a Bambu API endpoint and parse the
+/// response. On any non-2xx, fold the HTTP status + body into a typed error
+/// tagged with `step`, so a field tester sees exactly which call broke. A 2xx
+/// with an empty / non-JSON body (some PUT/PATCH steps) resolves to `Null`.
+async fn bbl_send_json(
+    builder: reqwest::RequestBuilder,
+    token: &str,
+    step: &str,
+) -> IpcResult<serde_json::Value> {
+    let resp = builder
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| IpcError::new("CLOUD_UPLOAD_FAILED", format!("{step}: {e}")))?;
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| IpcError::new("CLOUD_UPLOAD_FAILED", format!("{step}: {e}")))?;
+    if !status.is_success() {
+        return Err(IpcError::new(
+            "CLOUD_UPLOAD_FAILED",
+            format!(
+                "{step} returned HTTP {}: {}",
+                status.as_u16(),
+                truncate_body(&body)
+            ),
+        ));
+    }
+    Ok(serde_json::from_str(&body).unwrap_or(serde_json::Value::Null))
+}
+
+/// PUT raw bytes to a presigned S3 URL. No bearer auth (the signature is in the
+/// query string; an extra Authorization header breaks it) and no Content-Type /
+/// Expect headers — reqwest adds neither for a raw `.body()`, which is what the
+/// V2 presigned signature canonicalizes against.
+async fn s3_put(url: &str, bytes: Vec<u8>, step: &str) -> IpcResult<()> {
+    let resp = http_client()?
+        .put(url)
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|e| IpcError::new("CLOUD_UPLOAD_FAILED", format!("{step}: {e}")))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(IpcError::new(
+            "CLOUD_UPLOAD_FAILED",
+            format!(
+                "{step}: S3 PUT returned HTTP {}: {}",
+                status.as_u16(),
+                truncate_body(&body)
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// PATCH the project with the `profile_print_3mf` descriptor pointing at `url`
+/// (a placeholder `ftp://` before the real upload [E], the real S3 url after [H]).
+async fn patch_project(
+    api: &str,
+    token: &str,
+    project_id: &str,
+    profile_id: &str,
+    url: &str,
+) -> IpcResult<()> {
+    bbl_send_json(
+        http_client()?
+            .patch(format!("{api}/v1/iot-service/api/user/project/{project_id}"))
+            .json(&serde_json::json!({
+                "profile_id": profile_id,
+                "profile_print_3mf": [ { "md5": MD5_PLACEHOLDER, "plate_idx": 1, "url": url } ],
+            })),
+        token,
+        "patch_project",
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Poll the notification endpoint until the config upload is acknowledged. In
+/// captured traffic the first GET already returns success, so we return on the
+/// first 2xx and only loop as a guard.
+async fn poll_upload(api: &str, token: &str, ticket: &str) -> IpcResult<()> {
+    let url = reqwest::Url::parse_with_params(
+        &format!("{api}/v1/iot-service/api/user/notification"),
+        &[("action", "upload"), ("ticket", ticket)],
+    )
+    .map_err(|e| IpcError::new("CLOUD_UPLOAD_FAILED", format!("poll_upload url: {e}")))?;
+    for _ in 0..20 {
+        let resp = http_client()?
+            .get(url.clone())
+            .bearer_auth(token)
+            .send()
+            .await;
+        if let Ok(r) = resp {
+            if r.status().is_success() {
+                return Ok(());
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    Err(IpcError::new(
+        "CLOUD_UPLOAD_FAILED",
+        "upload notification poll timed out",
+    ))
+}
+
+/// [A]-[H]: create the cloud project, upload the `.gcode.3mf` to the two
+/// presigned slots, and stash the ids the start phase needs. `remote_name` is
+/// the object name both phases agree on.
 pub(crate) async fn cloud_upload_file(
     record: &PrinterRecord,
     local: &Path,
     remote_name: &str,
 ) -> IpcResult<()> {
     let account = require_fresh_account().await?;
-    let _ = record; // device is referenced at print-job time, not upload time
-
+    let api = api_base(account.region);
+    let token = account.access_token.as_str();
     let bytes = tokio::fs::read(local).await.map_err(IpcError::from)?;
-    let size_str = bytes.len().to_string();
 
-    // 1. Ask Bambu for a presigned upload URL.
-    let url = reqwest::Url::parse_with_params(
-        &format!(
-            "{}/v1/iot-service/api/user/file/upload_url",
-            api_base(account.region)
-        ),
-        &[("filename", remote_name), ("size", size_str.as_str())],
+    // [A] Create the project + first presigned URL.
+    let a = bbl_send_json(
+        http_client()?
+            .post(format!("{api}/v1/iot-service/api/user/project"))
+            .json(&serde_json::json!({ "name": remote_name })),
+        token,
+        "create_project",
     )
-    .map_err(|e| IpcError::new("CLOUD_UPLOAD_FAILED", e.to_string()))?;
-    let json: serde_json::Value = http_client()?
-        .get(url)
-        .bearer_auth(&account.access_token)
-        .send()
-        .await
-        .map_err(|e| IpcError::new("CLOUD_UPLOAD_FAILED", e.to_string()))?
-        .json()
-        .await
-        .map_err(|e| IpcError::new("CLOUD_UPLOAD_FAILED", e.to_string()))?;
-    let upload_url = json
-        .get("upload_url")
-        .or_else(|| json.get("url"))
+    .await?;
+    let get = |k: &str| a.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let project_id = get("project_id");
+    let model_id = get("model_id");
+    let profile_id = get("profile_id");
+    let config_url = get("upload_url");
+    let ticket = get("upload_ticket");
+    if project_id.is_empty() || config_url.is_empty() {
+        return Err(IpcError::new(
+            "CLOUD_UPLOAD_FAILED",
+            format!(
+                "create_project missing project_id/upload_url: {}",
+                truncate_body(&a.to_string())
+            ),
+        ));
+    }
+
+    // [B] config 3mf, [C] notify, [D] poll.
+    s3_put(&config_url, bytes.clone(), "upload_config_3mf").await?;
+    bbl_send_json(
+        http_client()?
+            .put(format!("{api}/v1/iot-service/api/user/notification"))
+            .json(&serde_json::json!({
+                "upload": { "origin_file_name": remote_name, "ticket": ticket }
+            })),
+        token,
+        "notify_upload",
+    )
+    .await?;
+    poll_upload(api, token, &ticket).await?;
+
+    // [E] placeholder PATCH.
+    patch_project(api, token, &project_id, &profile_id, &format!("ftp://{remote_name}")).await?;
+
+    // [F] second presigned URL for the print-ready 3mf.
+    let plate_index: u32 = 1;
+    let model_slot = format!("{model_id}_{profile_id}_{plate_index}.3mf");
+    let upload_query = reqwest::Url::parse_with_params(
+        &format!("{api}/v1/iot-service/api/user/upload"),
+        &[("models", model_slot.as_str())],
+    )
+    .map_err(|e| IpcError::new("CLOUD_UPLOAD_FAILED", format!("get_upload_url url: {e}")))?;
+    let f = bbl_send_json(http_client()?.get(upload_query), token, "get_upload_url").await?;
+    let main_url = f
+        .pointer("/urls/0/url")
+        .or_else(|| f.get("upload_url"))
+        .or_else(|| f.get("url"))
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            IpcError::new("CLOUD_UPLOAD_FAILED", "no upload_url in presign response")
+            IpcError::new(
+                "CLOUD_UPLOAD_FAILED",
+                format!("get_upload_url has no url: {}", truncate_body(&f.to_string())),
+            )
         })?
         .to_string();
 
-    // 2. PUT the raw bytes to S3 with minimal headers (the bearer token must
-    //    NOT be forwarded to the presigned URL, or the signature mismatches).
-    let put = http_client()?
-        .put(&upload_url)
-        .body(bytes)
-        .send()
-        .await
-        .map_err(|e| IpcError::new("CLOUD_UPLOAD_FAILED", e.to_string()))?;
-    if !put.status().is_success() {
-        return Err(IpcError::new(
-            "CLOUD_UPLOAD_FAILED",
-            format!("S3 PUT returned HTTP {}", put.status().as_u16()),
-        ));
-    }
+    // [G] main 3mf, [H] real-url PATCH.
+    s3_put(&main_url, bytes, "upload_main_3mf").await?;
+    patch_project(api, token, &project_id, &profile_id, &main_url).await?;
+
+    // Hand the ids to the start phase (keyed by printer; same printer, same turn).
+    pending_cloud_prints().lock().unwrap().insert(
+        record.id.clone(),
+        PendingCloudPrint {
+            project_id,
+            profile_id,
+            model_id,
+            main_url,
+            md5: MD5_PLACEHOLDER.to_string(),
+            remote_name: remote_name.to_string(),
+            plate_index,
+        },
+    );
     Ok(())
 }
 
-/// Start a print of an already-uploaded cloud file on the device.
+/// POST the MakerWorld task record [I]. Returns the new task id. The caller
+/// treats failure as non-fatal: the print is actually started by the MQTT
+/// `project_file` command [J], and `/my/task` only feeds MakerWorld history.
+async fn create_task(api: &str, token: &str, serial: &str, p: &PendingCloudPrint) -> IpcResult<String> {
+    let profile_id = if p.profile_id.is_empty() { "0".to_string() } else { p.profile_id.clone() };
+    let body = serde_json::json!({
+        "amsMapping": [-1],
+        "amsMapping2": [],
+        "bedLeveling": true,
+        "bedType": "auto",
+        "cfg": "0",
+        "cover": "",
+        "deviceId": serial,
+        "mode": "cloud_file",
+        "modelId": p.model_id,
+        "plateIndex": p.plate_index,
+        "profileId": profile_id,
+        "projectId": p.project_id,
+        "sequence_id": "20000",
+        "title": p.remote_name,
+        "url": p.main_url,
+    });
+    let resp = bbl_send_json(
+        http_client()?
+            .post(format!("{api}/v1/user-service/my/task"))
+            .json(&body),
+        token,
+        "create_task",
+    )
+    .await?;
+    let id = match resp.get("id") {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Number(n)) => n.to_string(),
+        _ => String::new(),
+    };
+    if id.is_empty() {
+        return Err(IpcError::new("CLOUD_PRINT_FAILED", "create_task missing id"));
+    }
+    Ok(id)
+}
+
+/// Build the MQTT `project_file` command [J] — the message the firmware acts on
+/// to fetch the 3mf from S3 and start the job. Mirrors the reference plugin's
+/// `build_project_file_json`, trimmed to a single-plate, no-AMS print with
+/// conservative calibration defaults.
+fn build_project_file_payload(p: &PendingCloudPrint, task_id: &str) -> serde_json::Value {
+    let param = format!("Metadata/plate_{}.gcode", p.plate_index.max(1));
+    serde_json::json!({
+        "print": {
+            "sequence_id": printer::sequence_id(),
+            "command": "project_file",
+            "param": param,
+            "project_id": p.project_id,
+            "profile_id": p.profile_id,
+            "task_id": task_id,
+            "subtask_id": "0",
+            "subtask_name": p.remote_name,
+            "file": p.remote_name,
+            "url": p.main_url,
+            "md5": p.md5,
+            "bed_type": "auto",
+            "bed_leveling": true,
+            "flow_cali": false,
+            "vibration_cali": false,
+            "layer_inspect": false,
+            "timelapse": false,
+            "use_ams": false,
+            "ams_mapping": "",
+            "ams_mapping2": [],
+            "cfg": "0",
+        }
+    })
+}
+
+/// [I]-[J]: create the task record, then publish the `project_file` command that
+/// starts the job. Consumes the ids stashed by `cloud_upload_file`.
 ///
 /// untested against a real account — verify in field test before v1 ship
 pub(crate) async fn cloud_start_print(record: &PrinterRecord, remote_name: &str) -> IpcResult<()> {
+    let _ = remote_name; // upload + start agree by construction (same turn)
     let account = require_fresh_account().await?;
-    let serial = record.serial_or_err()?;
-    let url = format!(
-        "{}/v1/iot-service/api/user/print/job",
-        api_base(account.region)
-    );
-    let body = serde_json::json!({
-        "device_id": serial,
-        "file_name": remote_name,
-    });
-    let resp = http_client()?
-        .post(url)
-        .bearer_auth(&account.access_token)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| IpcError::new("CLOUD_PRINT_FAILED", e.to_string()))?;
-    if !resp.status().is_success() {
-        return Err(IpcError::new(
-            "CLOUD_PRINT_FAILED",
-            format!("print-job returned HTTP {}", resp.status().as_u16()),
-        ));
-    }
+    let api = api_base(account.region);
+    let token = account.access_token.as_str();
+    let serial = record.serial_or_err()?.to_string();
+
+    let pending = pending_cloud_prints()
+        .lock()
+        .unwrap()
+        .remove(&record.id)
+        .ok_or_else(|| {
+            IpcError::new(
+                "CLOUD_PRINT_FAILED",
+                "no uploaded cloud file for this printer — upload must run before start",
+            )
+        })?;
+
+    // [I] Task record — soft-fail, since [J] is what actually starts the print.
+    let task_id = match create_task(api, token, &serial, &pending).await {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("cloud_start_print: create_task soft-fail ({}); continuing", e.message);
+            "0".to_string()
+        }
+    };
+
+    // [J] Publish `project_file` to device/<serial>/request over the cloud broker.
+    let payload = build_project_file_payload(&pending, &task_id);
+    let target = cloud_mqtt_target(&account, record)?;
+    printer::publish_start_command(&target, &payload, Duration::from_secs(5)).await?;
     Ok(())
 }
 
@@ -421,20 +796,21 @@ async fn refresh_token(account: &CloudAccount) -> IpcResult<CloudAccount> {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .or_else(|| account.refresh_token.clone());
-    // Same resilience as login: don't fail on a non-JWT token. Prefer the
-    // existing uid if the refreshed token can't be decoded.
-    let jwt = decode_uid_exp(&access_token).ok();
-    let mqtt_username = {
-        let derived = mqtt_username_from(&json, jwt.as_ref());
-        if derived.is_empty() {
-            account.mqtt_username.clone()
-        } else {
-            derived
-        }
+    // Same resilience as login: don't fail on a non-JWT token. Prefer a freshly
+    // derived identity, but keep the existing one if the refreshed token yields
+    // nothing (so a refresh never strips a working MQTT identity).
+    let (derived_username, expires_at) = derive_identity_and_expiry(&access_token, &json);
+    let mqtt_username = if !derived_username.is_empty() {
+        derived_username
+    } else if !account.mqtt_username.is_empty() {
+        account.mqtt_username.clone()
+    } else {
+        // Opaque token and no stored identity yet (e.g. signed in before this
+        // fix): fetch it from the profile endpoint so the refresh self-heals.
+        fetch_mqtt_username(api_base(account.region), &access_token)
+            .await
+            .unwrap_or_default()
     };
-    let expires_at = response_expiry(&json)
-        .or_else(|| jwt.map(|(_, e)| e))
-        .unwrap_or_else(|| now_secs() + DEFAULT_TTL_SECS);
     Ok(CloudAccount {
         account: account.account.clone(),
         region: account.region,
@@ -454,21 +830,111 @@ fn response_expiry(json: &serde_json::Value) -> Option<i64> {
         .map(|secs| now_secs() + secs)
 }
 
-/// Derive the MQTT username (`u_<uid>`). Prefer the JWT `username` claim;
-/// fall back to a `uid`/`userId` carried directly on the login response.
-/// Empty string when neither is available (cloud status then degrades, but
-/// the bearer-only REST path keeps working).
-fn mqtt_username_from(json: &serde_json::Value, jwt: Option<&(String, i64)>) -> String {
-    if let Some((u, _)) = jwt {
-        if !u.is_empty() {
-            return u.clone();
+/// MQTT username from the login response body's own `uid`/`userId` field.
+fn uid_from_response(json: &serde_json::Value) -> Option<String> {
+    match json.get("uid").or_else(|| json.get("userId")) {
+        Some(serde_json::Value::String(s)) if !s.is_empty() => Some(format!("u_{s}")),
+        Some(serde_json::Value::Number(n)) => Some(format!("u_{n}")),
+        _ => None,
+    }
+}
+
+/// Decode the JWT payload (middle segment) into its claims object. No signature
+/// check — we're reading our own token, not trusting a third party. `None` when
+/// the token isn't a decodable 3-part JWT (e.g. an opaque token).
+fn decode_jwt_claims(token: &str) -> Option<serde_json::Value> {
+    let payload_b64 = token.split('.').nth(1)?;
+    let raw = decode_b64url(payload_b64).ok()?;
+    serde_json::from_slice(&raw).ok()
+}
+
+/// MQTT username (`u_<uid>`) from JWT claims, tolerant of claim shape: a
+/// `username` already in `u_…` form, a digit-only `username`, or a numeric
+/// `uid`/`userId`/`user_id`/`userid`/`sub` claim. Decoupled from `exp` so a
+/// missing/odd expiry never costs us the identity.
+fn mqtt_username_from_claims(claims: &serde_json::Value) -> Option<String> {
+    if let Some(s) = claims.get("username").and_then(|v| v.as_str()) {
+        if s.starts_with("u_") {
+            return Some(s.to_string());
+        }
+        if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) {
+            return Some(format!("u_{s}"));
         }
     }
-    match json.get("uid").or_else(|| json.get("userId")) {
-        Some(serde_json::Value::String(s)) if !s.is_empty() => format!("u_{s}"),
-        Some(serde_json::Value::Number(n)) => format!("u_{n}"),
-        _ => String::new(),
+    for key in ["uid", "userId", "user_id", "userid", "sub"] {
+        match claims.get(key) {
+            Some(serde_json::Value::String(s)) if !s.is_empty() => return Some(format!("u_{s}")),
+            Some(serde_json::Value::Number(n)) => return Some(format!("u_{n}")),
+            _ => {}
+        }
     }
+    None
+}
+
+/// `exp` (unix seconds) from JWT claims, tolerant of integer or float encodings
+/// (some issuers serialize it as a float).
+fn jwt_exp(claims: &serde_json::Value) -> Option<i64> {
+    let e = claims.get("exp")?;
+    e.as_i64().or_else(|| e.as_f64().map(|f| f as i64))
+}
+
+/// Derive the MQTT identity + expiry that get stored on the account, robustly:
+/// the username comes from the JWT claims (or the response `uid`), the expiry
+/// from `expiresIn` (or the JWT `exp`), and the two are independent so one
+/// failing never discards the other. Logs the available claim keys when no
+/// identity can be derived, to aid field diagnosis.
+fn derive_identity_and_expiry(access_token: &str, json: &serde_json::Value) -> (String, i64) {
+    let claims = decode_jwt_claims(access_token);
+    let mqtt_username = claims
+        .as_ref()
+        .and_then(mqtt_username_from_claims)
+        .or_else(|| uid_from_response(json))
+        .unwrap_or_default();
+    if mqtt_username.is_empty() {
+        eprintln!(
+            "cloud login: no MQTT identity derived — jwt claim keys={:?}, response keys={:?}",
+            claims
+                .as_ref()
+                .and_then(|c| c.as_object())
+                .map(|o| o.keys().cloned().collect::<Vec<_>>()),
+            json.as_object()
+                .map(|o| o.keys().cloned().collect::<Vec<_>>()),
+        );
+    }
+    let expires_at = response_expiry(json)
+        .or_else(|| claims.as_ref().and_then(jwt_exp))
+        .unwrap_or_else(|| now_secs() + DEFAULT_TTL_SECS);
+    (mqtt_username, expires_at)
+}
+
+/// Extract `u_<uid>` from a `/my/profile` response body, preferring the string
+/// `uidStr` (avoids any large-integer JSON pitfalls) and falling back to the
+/// numeric `uid`/`userId`.
+fn mqtt_username_from_profile(json: &serde_json::Value) -> Option<String> {
+    json.get("uidStr")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("u_{s}"))
+        .or_else(|| uid_from_response(json))
+}
+
+/// Fetch the account uid from the authenticated profile endpoint and format it
+/// as the MQTT username `u_<uid>`. Bambu's newer access tokens are opaque (not
+/// JWTs), so the uid is no longer embedded in the token and must be fetched.
+/// Best-effort: any failure yields `None` (cloud status/print then degrade,
+/// surfaced by `cloud_mqtt_target`, but the REST upload path still works).
+async fn fetch_mqtt_username(api: &str, token: &str) -> Option<String> {
+    let json: serde_json::Value = http_client()
+        .ok()?
+        .get(format!("{api}/v1/user-service/my/profile"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    mqtt_username_from_profile(&json)
 }
 
 // ---------------------------------------------------------------------------
@@ -536,37 +1002,16 @@ fn decode_b64url(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
 /// Decode the middle (payload) segment of the JWT access token and pull the
 /// MQTT username (`u_<uid>`) + `exp`. We never verify the signature — we're
 /// reading our own token's claims, not trusting a third party's.
+/// Test-only convenience composing the production claim helpers (kept so the
+/// existing JWT-decoding tests read against one call).
+#[cfg(test)]
 fn decode_uid_exp(token: &str) -> IpcResult<(String, i64)> {
-    let payload_b64 = token
-        .split('.')
-        .nth(1)
+    let claims = decode_jwt_claims(token)
         .ok_or_else(|| IpcError::new("CLOUD_TOKEN_INVALID", "access token is not a JWT"))?;
-    let raw = decode_b64url(payload_b64)
-        .map_err(|e| IpcError::new("CLOUD_TOKEN_INVALID", e.to_string()))?;
-    let claims: serde_json::Value = serde_json::from_slice(&raw)
-        .map_err(|e| IpcError::new("CLOUD_TOKEN_INVALID", e.to_string()))?;
-
-    // Bambu tokens carry the MQTT username directly as the `username` claim
-    // (already `u_<uid>`). Fall back to building it from a `uid`/`userId`.
-    let mqtt_username = claims
-        .get("username")
-        .and_then(|v| v.as_str())
-        .filter(|s| s.starts_with("u_"))
-        .map(|s| s.to_string())
-        .or_else(|| {
-            claims
-                .get("uid")
-                .or_else(|| claims.get("userId"))
-                .map(|v| match v {
-                    serde_json::Value::String(s) => format!("u_{s}"),
-                    other => format!("u_{other}"),
-                })
-        })
+    let mqtt_username = mqtt_username_from_claims(&claims)
         .ok_or_else(|| IpcError::new("CLOUD_TOKEN_INVALID", "token has no uid/username claim"))?;
-    let exp = claims
-        .get("exp")
-        .and_then(|v| v.as_i64())
-        .ok_or_else(|| IpcError::new("CLOUD_TOKEN_INVALID", "token has no exp claim"))?;
+    let exp =
+        jwt_exp(&claims).ok_or_else(|| IpcError::new("CLOUD_TOKEN_INVALID", "token has no exp claim"))?;
     Ok((mqtt_username, exp))
 }
 
@@ -752,23 +1197,57 @@ mod tests {
     }
 
     #[test]
-    fn mqtt_username_prefers_jwt_then_uid_field() {
-        let jwt = ("u_jwt".to_string(), 1i64);
+    fn derives_mqtt_username_from_claims_or_response() {
+        // From JWT claims: a `username` already in `u_` form, a digit-only
+        // `username`, or a numeric `uid`/`sub` claim.
         assert_eq!(
-            mqtt_username_from(&serde_json::json!({ "uid": 999 }), Some(&jwt)),
-            "u_jwt"
-        );
-        // No JWT → fall back to a uid carried on the response.
-        assert_eq!(
-            mqtt_username_from(&serde_json::json!({ "uid": 12345 }), None),
-            "u_12345"
+            mqtt_username_from_claims(&serde_json::json!({ "username": "u_jwt" })),
+            Some("u_jwt".to_string())
         );
         assert_eq!(
-            mqtt_username_from(&serde_json::json!({ "userId": "777" }), None),
-            "u_777"
+            mqtt_username_from_claims(&serde_json::json!({ "username": "12345" })),
+            Some("u_12345".to_string())
         );
-        // Nothing derivable → empty (status degrades, REST still works).
-        assert_eq!(mqtt_username_from(&serde_json::json!({}), None), "");
+        assert_eq!(
+            mqtt_username_from_claims(&serde_json::json!({ "uid": 999 })),
+            Some("u_999".to_string())
+        );
+        assert_eq!(
+            mqtt_username_from_claims(&serde_json::json!({ "sub": "abc" })),
+            Some("u_abc".to_string())
+        );
+        assert_eq!(mqtt_username_from_claims(&serde_json::json!({})), None);
+
+        // Fallback: a uid carried directly on the login response body.
+        assert_eq!(
+            uid_from_response(&serde_json::json!({ "uid": 12345 })),
+            Some("u_12345".to_string())
+        );
+        assert_eq!(
+            uid_from_response(&serde_json::json!({ "userId": "777" })),
+            Some("u_777".to_string())
+        );
+        assert_eq!(uid_from_response(&serde_json::json!({})), None);
+
+        // `exp` tolerates int and float encodings.
+        assert_eq!(jwt_exp(&serde_json::json!({ "exp": 1700 })), Some(1700));
+        assert_eq!(jwt_exp(&serde_json::json!({ "exp": 1700.0 })), Some(1700));
+        assert_eq!(jwt_exp(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn extracts_mqtt_username_from_profile_response() {
+        // Opaque-token path: the uid comes from `/my/profile`. Prefer `uidStr`.
+        assert_eq!(
+            mqtt_username_from_profile(&serde_json::json!({ "uidStr": "1378062920", "uid": 1378062920 })),
+            Some("u_1378062920".to_string())
+        );
+        // No string form → fall back to the numeric `uid`.
+        assert_eq!(
+            mqtt_username_from_profile(&serde_json::json!({ "uid": 1378062920_i64 })),
+            Some("u_1378062920".to_string())
+        );
+        assert_eq!(mqtt_username_from_profile(&serde_json::json!({})), None);
     }
 
     #[test]

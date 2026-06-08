@@ -273,6 +273,18 @@
   --ui-glass-saturation: 1.44;
 }
 
+/* The chat sidebar pins itself to the dark palette (see ChatSidebar's `dark`
+   class) even when the app runs a light theme. The base `.dark` block only
+   re-declares the shadcn tokens, not the derived `--ui-*` ones — those live on
+   :root as `var(--base)` and a nested `.dark` would otherwise inherit their
+   light-resolved value. Re-anchor the two the chat consumes so `var(--card)` /
+   `var(--accent)` resolve against the (dark) base tokens on the sidebar itself.
+   Placed after the token blocks (and unlayered) so it wins by source order. */
+[data-slot="chat-sidebar"] {
+  --ui-surface-solid: var(--card);
+  --ui-accent-soft: var(--accent);
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

@@ -3,6 +3,7 @@ import { Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/ui/utils";
 import { startTurn, useChatStore } from "@/store/chat";
+import { BLOCK_CARD } from "./chatTheme";
 
 /**
  * Renders a set of preference questions the model asked during planning
@@ -55,18 +56,15 @@ export default function QuestionCard({ questions }) {
   if (!list.length) return null;
 
   return (
-    <div
-      data-slot="chat-questions"
-      className="rounded-lg border border-primary/30 bg-primary/[0.06] p-3 text-sm shadow-[var(--ui-shadow-soft)]"
-    >
-      <div className="flex flex-col gap-3.5">
+    <div data-slot="chat-questions" className={cn(BLOCK_CARD, "p-3.5 text-sm")}>
+      <div className="flex flex-col gap-4">
         {list.map((q, qi) => {
           const multi = !!q.multiSelect;
           const picks = selected[qi] || [];
           return (
-            <div key={qi} data-slot="chat-question" className="flex flex-col gap-1.5">
-              <p className="font-medium text-foreground/90">{q.question}</p>
-              <div className="flex flex-wrap gap-1.5">
+            <div key={qi} data-slot="chat-question" className="flex flex-col gap-2">
+              <p className="text-sm font-semibold text-foreground">{q.question}</p>
+              <div className="flex flex-wrap gap-2">
                 {(q.options || []).map((opt) => {
                   const active = picks.includes(opt.label);
                   return (
@@ -79,13 +77,19 @@ export default function QuestionCard({ questions }) {
                       data-slot="chat-question-option"
                       data-active={active ? "true" : "false"}
                       className={cn(
-                        "rounded-full border px-3 py-1.5 text-xs transition-colors",
+                        "inline-flex h-[34px] items-center rounded-full border px-3.5 text-[13px] transition-colors",
                         active
-                          ? "border-primary bg-primary/15 text-foreground ring-1 ring-primary/40"
-                          : "border-border/60 bg-background/60 text-muted-foreground hover:border-primary/50 hover:text-foreground",
+                          ? "border-primary/40 bg-primary/15 font-medium text-foreground"
+                          : "border-border bg-muted text-muted-foreground hover:bg-muted/70 hover:text-foreground",
                         submitted && !active && "opacity-50",
                       )}
                     >
+                      {active ? (
+                        <span
+                          aria-hidden
+                          className="mr-2 size-1.5 shrink-0 rounded-full bg-primary shadow-[0_0_0_3px_var(--ui-accent-soft)]"
+                        />
+                      ) : null}
                       {opt.label}
                     </button>
                   );

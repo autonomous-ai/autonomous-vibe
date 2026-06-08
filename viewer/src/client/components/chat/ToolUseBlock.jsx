@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { ChevronRight, ChevronDown, Wrench, CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import { cn } from "@/ui/utils";
-import ChatCopyButton from "./ChatCopyButton";
+import ChatCodeBlock from "./ChatCodeBlock";
+import { BLOCK_CARD, BLOCK_HEAD } from "./chatTheme";
 
 const STATUS_PILL = {
   ok: {
@@ -55,37 +56,30 @@ export default function ToolUseBlock({ tool, label, input, status }) {
       data-slot="chat-tool-use"
       data-tool={tool}
       data-status={status}
-      className={cn(
-        "rounded-lg border border-border/60 bg-muted/20 px-2.5 py-1.5 text-xs text-muted-foreground transition-colors",
-      )}
+      className={cn(BLOCK_CARD, "text-xs text-muted-foreground")}
     >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-1.5 rounded-md text-left transition-colors hover:text-foreground"
+        className={cn(BLOCK_HEAD, "hover:text-foreground")}
         aria-expanded={open ? "true" : "false"}
       >
-        {open ? <ChevronDown className="size-3 shrink-0 opacity-70" aria-hidden /> : <ChevronRight className="size-3 shrink-0 opacity-70" aria-hidden />}
-        <Wrench className="size-3 shrink-0 opacity-70" aria-hidden />
-        <span className="truncate font-medium text-foreground">{primary}</span>
+        {open ? <ChevronDown className="size-3.5 shrink-0 opacity-70" aria-hidden /> : <ChevronRight className="size-3.5 shrink-0 opacity-70" aria-hidden />}
+        <Wrench className="size-3.5 shrink-0 opacity-70" aria-hidden />
+        <span className="truncate text-[13px] font-semibold text-foreground">{primary}</span>
         {showRaw ? <span className="shrink-0 text-[10px] text-muted-foreground/70">{tool}</span> : null}
         <span className="ml-auto shrink-0">
           <StatusPill status={status} />
         </span>
       </button>
       {open && detail ? (
-        <div className="mt-2 overflow-hidden rounded-lg border border-white/10 bg-[#2f2f2f] text-[#f4f4f5]">
-          <div className="flex h-8 items-center justify-between border-b border-white/5 px-2.5 text-[11px] text-zinc-300">
-            <span className="font-medium">json</span>
-            <ChatCopyButton
-              value={detail}
-              label="Copy input"
-              className="size-6 text-zinc-300 hover:bg-white/10 hover:text-white"
-            />
-          </div>
-          <pre className="max-h-48 overflow-auto px-2.5 py-2 text-[11px] leading-relaxed">
-            <code className="font-mono text-[#f4f4f5]">{detail}</code>
-          </pre>
+        <div className="px-3 pb-3">
+          <ChatCodeBlock
+            code={detail}
+            lang="json"
+            copyLabel="Copy input"
+            maxHeightClassName="max-h-48"
+          />
         </div>
       ) : null}
     </div>

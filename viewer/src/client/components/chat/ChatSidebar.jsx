@@ -65,6 +65,7 @@ export default function ChatSidebar({
 }) {
   const lastError = useChatStore((state) => state.lastError);
   const history = useChatStore((state) => state.history);
+  const turnInProgress = useChatStore((state) => state.turnInProgress);
   const projectId = useChatStore((state) => state.currentProjectId);
   const currentProjectName = useProjectsStore((state) => {
     const current = state.projects.find((project) => project.id === state.currentProjectId);
@@ -165,7 +166,10 @@ export default function ChatSidebar({
       data-slot="chat-sidebar"
       data-project-id={projectId || ""}
       className={cn(
-        "pointer-events-auto fixed right-0 top-0 z-30 flex h-svh flex-col border-l border-border/60 bg-background/95 shadow-xl backdrop-blur",
+        // `dark` pins the whole chat subtree to the dark palette per the design
+        // handoff, regardless of the app's active theme; `text-foreground`
+        // re-resolves the (now dark) foreground so inherited text isn't dark-on-dark.
+        "dark pointer-events-auto fixed right-0 top-0 z-30 flex h-svh flex-col border-l border-border/60 bg-background/95 text-foreground shadow-xl backdrop-blur",
         className,
       )}
       style={{ width }}
@@ -179,10 +183,18 @@ export default function ChatSidebar({
         className="absolute left-0 top-0 z-40 h-full w-1.5 -translate-x-1/2 cursor-col-resize touch-none bg-transparent transition-colors hover:bg-primary/30"
       />
 
-      <header className="flex min-h-12 items-center gap-2.5 border-b border-border/60 px-3.5 py-2">
+      <header className="flex min-h-14 items-center gap-2.5 border-b border-border/60 px-4 py-2">
+        {/* Brand/activity dot (design top-bar dot): pulses while a turn runs so
+            the header doubles as a quiet liveness signal. */}
+        <span className="relative flex size-2.5 shrink-0" aria-hidden>
+          {turnInProgress ? (
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60" />
+          ) : null}
+          <span className="relative inline-flex size-2.5 rounded-full bg-primary shadow-[0_0_0_4px_var(--ui-accent-soft)]" />
+        </span>
         <div className="min-w-0 flex-1">
           <div
-            className="truncate text-sm font-semibold leading-normal tracking-tight "
+            className="truncate text-sm font-semibold leading-normal tracking-tight"
             title={summaryTitle}
           >
             {summaryTitle}

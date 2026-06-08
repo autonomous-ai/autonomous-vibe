@@ -287,6 +287,8 @@ export default function ChatInput({ className }) {
             </Button>
             {notice ? (
               <span className="truncate pl-1 text-[11px] text-muted-foreground">{notice}</span>
+            ) : !turnInProgress ? (
+              <span className="truncate pl-1.5 text-[11px] text-muted-foreground/80">Press ⏎ to send</span>
             ) : null}
           </div>
           {turnInProgress ? (

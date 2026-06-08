@@ -72,7 +72,7 @@ export default function PlanBlock({ plan, status }) {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           rows={Math.min(20, Math.max(6, draft.split("\n").length + 1))}
-          className="border-white/10 bg-black/20 text-sm text-zinc-100"
+          className="scrollbar-thin border-white/10 bg-black/20 text-sm text-zinc-100"
           data-slot="chat-plan-editor"
         />
       ) : (
@@ -91,7 +91,7 @@ export default function PlanBlock({ plan, status }) {
                 onChange={(e) => setFeedback(e.target.value)}
                 placeholder="What should change? e.g. add 4 screw bosses, make it 5 mm taller…"
                 rows={2}
-                className="border-white/10 bg-black/20 text-sm text-zinc-100 placeholder:text-zinc-500"
+                className="scrollbar-thin border-white/10 bg-black/20 text-sm text-zinc-100 placeholder:text-zinc-500"
                 data-slot="chat-plan-feedback"
               />
               <div className="flex justify-end gap-2">

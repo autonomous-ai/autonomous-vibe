@@ -16,8 +16,17 @@
 # Env overrides:
 #   VIEWER_PORT   force the Vite port (default: parsed from devUrl)
 #   PANDA_DEVTOOLS=1   dock the webview inspector (see CLAUDE.md)
+#   PANDA_DEBUG_CLAUDE   mirror the spawned `claude` CLI to this console.
+#                        Default in dev: pretty one-line summaries. Set to
+#                        `raw` for the full stream-json, or `0` to mute.
 
 set -euo pipefail
+
+# Stream the spawned `claude` subprocess into this dev console so you can watch
+# each turn as it runs — a compact, colorized line per event (▶ turn, ◆ init,
+# » text, ⚙ tool + input, ■ result; an empty ExitPlanMode is flagged in red).
+# Default on (pretty) in dev; `=raw` shows the full stream-json, `=0` mutes.
+export PANDA_DEBUG_CLAUDE="${PANDA_DEBUG_CLAUDE:-1}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TAURI_CONF="${REPO_ROOT}/desktop/src-tauri/tauri.conf.json"
@@ -69,5 +78,12 @@ done
 
 # Run the app in the foreground. Flag order matters: this cargo rejects
 # `cargo --manifest-path ... run`; the flag must follow the subcommand.
+if [ "${PANDA_DEBUG_CLAUDE}" != "0" ] && [ -n "${PANDA_DEBUG_CLAUDE}" ]; then
+  if [ "${PANDA_DEBUG_CLAUDE}" = "raw" ]; then
+    echo "[panda dev] streaming claude stdio (raw stream-json); PANDA_DEBUG_CLAUDE=0 to mute"
+  else
+    echo "[panda dev] streaming claude (pretty); PANDA_DEBUG_CLAUDE=raw for full JSON, =0 to mute"
+  fi
+fi
 echo "[panda dev] launching app (cargo run)"
 cargo run --manifest-path "${REPO_ROOT}/desktop/src-tauri/Cargo.toml" "$@"

@@ -205,7 +205,7 @@ export default function ChatTurn({ turn, onOpenArtifact }) {
       {!isUser ? (
         <ChatCopyButton
           value={copyText}
-          className="absolute left-1 top-full z-10 mt-1 opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100"
+          className="absolute bottom-1 right-1 z-10 opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100"
         />
       ) : null}
     </article>

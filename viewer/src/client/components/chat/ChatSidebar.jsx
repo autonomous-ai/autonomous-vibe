@@ -189,7 +189,7 @@ export default function ChatSidebar({
         className="absolute left-0 top-0 z-40 h-full w-1.5 -translate-x-1/2 cursor-col-resize touch-none bg-transparent transition-colors hover:bg-primary/30"
       />
 
-      <header className="flex items-center gap-2 border-b border-border/60 px-4 py-2.5">
+      <header className="flex h-11 shrink-0 items-center gap-2.5 border-b border-border/60 px-3.5">
         <MessageSquare className="size-4 text-muted-foreground" aria-hidden />
         <div className="min-w-0 flex-1">
           <div

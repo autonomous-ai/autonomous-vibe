@@ -29,6 +29,9 @@ const SKIPPED_DIRECTORIES: &[&str] = &[
     "build",
     "coverage",
     "dist",
+    // Reference images the chat composer persists per turn; they are model
+    // inputs, not CAD deliverables, so the Models rail must never list them.
+    "inputs",
     "node_modules",
     // Belt-and-suspenders: a bundled app dir (e.g. OrcaSlicer.app under
     // `resources/`) must never surface as a "model" even if a scan root

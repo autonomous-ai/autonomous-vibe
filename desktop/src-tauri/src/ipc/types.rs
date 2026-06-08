@@ -187,6 +187,26 @@ pub enum StepSourceKind {
 pub struct StartTurnRequest {
     pub project_id: String,
     pub user_message: String,
+    /// Reference images the user attached to this turn (additive, input-only).
+    /// `#[serde(default)]` keeps existing callers and the browser HTTP stub
+    /// valid when the field is absent. The chat handler persists each into the
+    /// project's `inputs/` dir and points the model at them — see
+    /// `commands/chat.rs`.
+    #[serde(default)]
+    pub images: Vec<ImageAttachment>,
+}
+
+/// One user-attached reference image. `data_base64` is the raw file bytes,
+/// base64-encoded (no `data:` URI prefix); `media_type` is the MIME type
+/// (e.g. `image/png`). `name` is the original filename for display only — it is
+/// never trusted as a path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageAttachment {
+    #[serde(default)]
+    pub name: String,
+    pub media_type: String,
+    pub data_base64: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

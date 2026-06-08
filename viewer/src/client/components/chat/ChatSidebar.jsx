@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
-import { MessageSquare } from "lucide-react";
 import { cn } from "@/ui/utils";
 import { attachChatEventStream, useChatStore } from "@/store/chat";
+import { useProjectsStore } from "@/store/projects.ts";
 import { CHAT_MIN_WIDTH, clampChatWidth } from "@/workbench/chatLayout";
 import ChatHistory from "./ChatHistory";
 import ChatInput from "./ChatInput";
@@ -66,6 +66,12 @@ export default function ChatSidebar({
   const lastError = useChatStore((state) => state.lastError);
   const history = useChatStore((state) => state.history);
   const projectId = useChatStore((state) => state.currentProjectId);
+  const currentProjectName = useProjectsStore((state) => {
+    const current = state.projects.find((project) => project.id === state.currentProjectId);
+    return current?.name || "";
+  });
+  const isEmpty = history.length === 0;
+  const summaryTitle = currentProjectName.trim() || (history.length ? "Untitled chat" : "New chat");
 
   const resizeStateRef = useRef(null);
   // The window-level pointer handlers below are installed once; these refs keep
@@ -173,16 +179,36 @@ export default function ChatSidebar({
         className="absolute left-0 top-0 z-40 h-full w-1.5 -translate-x-1/2 cursor-col-resize touch-none bg-transparent transition-colors hover:bg-primary/30"
       />
 
-      <header className="flex items-center gap-2 border-b border-border/60 px-4 py-2.5">
-        <MessageSquare className="size-4 text-muted-foreground" aria-hidden />
-        <span className="text-sm font-semibold tracking-tight">Chat</span>
+      <header className="flex min-h-12 items-center gap-2.5 border-b border-border/60 px-3.5 py-2">
+        <div className="min-w-0 flex-1">
+          <div
+            className="truncate text-sm font-semibold leading-normal tracking-tight "
+            title={summaryTitle}
+          >
+            {summaryTitle}
+          </div>
+        </div>
       </header>
 
       <div className="min-h-0 flex-1">
-        <ChatHistory
-          history={history}
-          onOpenArtifact={onOpenArtifact}
-        />
+        {isEmpty ? (
+          <div
+            data-slot="chat-empty-composer"
+            className="flex h-full flex-col items-center justify-center gap-4 px-3.5"
+          >
+            <div className="flex flex-col items-center gap-1 text-center text-xs text-muted-foreground">
+              <p>Describe what you want to print.</p>
+              <p className="opacity-70">I'll draft a plan first — you can edit and approve it before I build.</p>
+              <p className="opacity-70">Click a face on the model to refer to it in your message.</p>
+            </div>
+            <ChatInput className="w-full bg-transparent px-0 py-0" />
+          </div>
+        ) : (
+          <ChatHistory
+            history={history}
+            onOpenArtifact={onOpenArtifact}
+          />
+        )}
       </div>
 
       {lastError ? (
@@ -194,7 +220,7 @@ export default function ChatSidebar({
         </div>
       ) : null}
 
-      <ChatInput />
+      {isEmpty ? null : <ChatInput />}
     </aside>
   );
 }

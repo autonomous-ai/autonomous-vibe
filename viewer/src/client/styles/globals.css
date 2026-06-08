@@ -359,6 +359,29 @@
     width: 100% !important;
   }
 
+  .scrollbar-thin {
+    scrollbar-color: color-mix(in srgb, var(--muted-foreground) 26%, transparent) transparent;
+    scrollbar-width: thin;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--muted-foreground) 22%, transparent);
+    border-radius: 999px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--muted-foreground) 38%, transparent);
+  }
+
   ::selection {
     background: var(--accent);
     color: var(--accent-foreground);

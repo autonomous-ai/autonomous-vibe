@@ -238,6 +238,21 @@ function AppRoot() {
     [manifest.entries],
   );
 
+  // The workspace still needs to *resolve and preview* one intermediate file the
+  // rail hides: the `.gcode` a toolbar slice produces, which auto-opens as a
+  // toolpath the moment slicing finishes. Thread it through a second list the
+  // selection/viewer machinery reads, so a gcode can be selected and rendered
+  // without ever showing up in the rail/home/breadcrumb.
+  const selectableEntries = useMemo(
+    () =>
+      manifest.entries.filter(
+        (entry) =>
+          isPrintableModelEntry(entry) ||
+          String(entry?.kind || "").toLowerCase() === "gcode",
+      ),
+    [manifest.entries],
+  );
+
   if (needsOnboarding === null) {
     return null;
   }
@@ -255,6 +270,7 @@ function AppRoot() {
         <CadWorkspace
           manifestRevision={revision}
           manifestEntries={modelEntries}
+          selectableEntries={selectableEntries}
           generationStatus={generationStatus}
           catalogHydrated={catalogHydrated}
           catalogRefreshing={catalogRefreshing}

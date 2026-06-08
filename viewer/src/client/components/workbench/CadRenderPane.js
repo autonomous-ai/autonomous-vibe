@@ -10,7 +10,8 @@ import { cn } from "@/ui/utils";
 import { RENDER_FORMAT } from "@/workbench/constants";
 import {
   isMeshRenderFormat,
-  isRobotRenderFormat
+  isRobotRenderFormat,
+  renderFormatFromPath
 } from "cadjs/lib/fileFormats";
 import { VIEWER_SCENE_SCALE } from "cadjs/lib/viewer/sceneScale";
 import { VIEWER_PICK_MODE } from "cadjs/lib/viewer/constants";
@@ -56,6 +57,7 @@ export default function CadRenderPane({
   gcodeShowTravel = false,
   gcodeRenderTubes = false,
   onGcodeReady,
+  onGcodeViewerAlertChange,
   missingFileRef = "",
   viewerPerspective,
   viewerPerspectiveRef,
@@ -107,7 +109,17 @@ export default function CadRenderPane({
   const viewerAlertIconLabel = "Viewer error. See the Issues section for details.";
   const dxfMode = renderFormat === RENDER_FORMAT.DXF;
   const implicitMode = renderFormat === RENDER_FORMAT.IMPLICIT;
-  const gcodeMode = renderFormat === RENDER_FORMAT.GCODE;
+  // Belt-and-suspenders: route to the gcode-preview pane whenever the asset is a
+  // `.gcode`, not only when entrySourceFormat resolved renderFormat to GCODE.
+  // That format is derived from the catalog entry's `kind`; if a `.gcode` ever
+  // reaches the viewer without `kind: "gcode"` (resolved straight from a
+  // URL/path), match on the URL/file extension so the toolpath never falls
+  // through to the mesh CadViewer. renderFormatFromPath strips the `?v=` cache
+  // token, and returns "" for empty input so non-gcode views are unaffected.
+  const gcodeMode =
+    renderFormat === RENDER_FORMAT.GCODE ||
+    renderFormatFromPath(gcodeUrl) === RENDER_FORMAT.GCODE ||
+    renderFormatFromPath(selectedKey) === RENDER_FORMAT.GCODE;
   const urdfMode = isRobotRenderFormat(renderFormat);
   const meshOnlyMode = isMeshRenderFormat(renderFormat);
   const pathPreviewMode = meshOnlyMode || gcodeMode;
@@ -220,7 +232,7 @@ export default function CadRenderPane({
           showTravel={gcodeShowTravel}
           renderTubes={gcodeRenderTubes}
           onReady={onGcodeReady}
-          onViewerAlertChange={handleViewerAlertChange}
+          onViewerAlertChange={onGcodeViewerAlertChange || handleViewerAlertChange}
         />
       ) : (
         <CadViewer

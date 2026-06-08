@@ -1,14 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, FolderPlus, Printer, Trash2 } from "lucide-react";
+import { ChevronDown, FolderPlus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useProjectsStore } from "@/store/projects.ts";
@@ -114,12 +113,6 @@ export default function ProjectMenu() {
           >
             <Trash2 className="size-4" aria-hidden />
             Delete project
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuLabel>Printer</DropdownMenuLabel>
-          <DropdownMenuItem onSelect={() => setAddPrinterOpen(true)}>
-            <Printer className="size-4" aria-hidden />
-            Add printer
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

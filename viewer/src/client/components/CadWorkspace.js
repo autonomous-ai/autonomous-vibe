@@ -446,6 +446,7 @@ function mergeStepSourceStatusIntoEntry(entry, stepSourceStatus) {
 
 export default function CadWorkspace({
   manifestEntries: manifestEntriesProp = [],
+  selectableEntries: selectableEntriesProp = [],
   generationStatus = null,
   manifestRevision = 0,
   catalogHydrated = false,
@@ -458,6 +459,18 @@ export default function CadWorkspace({
 }) {
   const manifestEntries = Array.isArray(manifestEntriesProp) ? manifestEntriesProp : [];
   const catalogEntries = manifestEntries;
+  // `catalogEntries` lists only printable models — that is what the rail, home,
+  // breadcrumb and directory tree render. Selection + the 3D viewer, however,
+  // must also resolve intermediate files the rail hides, notably the `.gcode` a
+  // toolbar slice produces (auto-opened as a toolpath preview). The parent
+  // supplies those extra entries via `selectableEntries`; the entry lookup map
+  // and URL→entry resolution read from `lookupEntries` so a gcode can be
+  // selected and rendered without ever appearing in the rail. Falls back to the
+  // display list for the browser/dev + test paths that don't pass it.
+  const lookupEntries = useMemo(() => {
+    const extra = Array.isArray(selectableEntriesProp) ? selectableEntriesProp : null;
+    return extra && extra.length ? extra : catalogEntries;
+  }, [selectableEntriesProp, catalogEntries]);
   const activeGeneratorFiles = useMemo(() => (
     Object.entries(generationStatus?.files || {})
       .filter(([, status]) => status?.running === true)
@@ -501,7 +514,18 @@ export default function CadWorkspace({
   const [dxfBendSettings, setDxfBendSettings] = useState([]);
   const [gcodeShowTravel, setGcodeShowTravel] = useState(false);
   const [gcodeMaxLayer, setGcodeMaxLayer] = useState(null);
-  const [gcodeRenderTubes, setGcodeRenderTubes] = useState(false);
+  // Tube rendering on by default — the toolpath reads as solid extruded beads
+  // (closer to the printed part) rather than thin lines. Users can toggle it off
+  // in the G-code file sheet.
+  const [gcodeRenderTubes, setGcodeRenderTubes] = useState(true);
+  // True once the gcode-preview pane has actually rendered the current toolpath
+  // (or reported a load error). The pane (GcodePreviewPane) draws straight from
+  // the gcode URL, independent of the parallel `loadRenderGcode` metadata parse
+  // that feeds the file sheet — so the viewer's loading overlay must lift on
+  // THIS signal, not on the parse. Otherwise a parse that early-returns (no
+  // synthesized hash) or simply lags leaves the spinner stuck over an
+  // already-rendered toolpath ("gcode never opens").
+  const [gcodePreviewReady, setGcodePreviewReady] = useState(false);
   const [referenceQuery, setReferenceQuery] = useState("");
   const [selectedReferenceIds, setSelectedReferenceIds] = useState([]);
   const [largeFileState, setLargeFileState] = useState(() => normalizeLargeFileState(DEFAULT_LARGE_FILE_STATE));
@@ -647,7 +671,9 @@ export default function CadWorkspace({
 
   const entryMap = useMemo(() => {
     const map = new Map();
-    for (const entry of catalogEntries) {
+    // Built from `lookupEntries`, not `catalogEntries`, so selecting/rendering a
+    // rail-hidden file (e.g. a freshly sliced `.gcode`) resolves to its entry.
+    for (const entry of lookupEntries) {
       map.set(fileKey(entry), entry);
       // Per-part STLs ride on their integrated model as `entry.parts` (kept out
       // of the rail); register them so selecting one resolves + renders.
@@ -656,7 +682,7 @@ export default function CadWorkspace({
       }
     }
     return map;
-  }, [catalogEntries]);
+  }, [lookupEntries]);
   const fileSessionNamespace = useMemo(
     () => normalizeFileSessionNamespace(catalogRootDir),
     [catalogRootDir]
@@ -759,7 +785,7 @@ export default function CadWorkspace({
 
   const catalogSelectedEntry = entryMap.get(selectedKey) ?? null;
   const explicitFileParam = readCadParam();
-  const explicitFileEntry = explicitFileParam ? findEntryByUrlPath(catalogEntries, explicitFileParam) : null;
+  const explicitFileEntry = explicitFileParam ? findEntryByUrlPath(lookupEntries, explicitFileParam) : null;
   const fileParamSelectionPending = shouldDeferFileParamSelection({
     explicitFileParam,
     matchingEntry: explicitFileEntry,
@@ -1268,15 +1294,30 @@ export default function CadWorkspace({
   const selectedGcodeLayerCount = Array.isArray(selectedGcodeData?.layers)
     ? selectedGcodeData.layers.length
     : 0;
+  // Whether the user has explicitly chosen a visible-layer ceiling. The default
+  // state is `null`; guard with `!= null` BEFORE coercing, because `Number(null)`
+  // is `0` (finite), not `NaN` — so a plain `Number.isFinite(Number(...))` check
+  // treats the untouched default as "layer 0" and pins the slider to 1 / N.
+  const gcodeMaxLayerChosen =
+    gcodeMaxLayer != null && Number.isFinite(Number(gcodeMaxLayer));
+  // The slider's value. Default (no explicit choice) is the TOP layer so every
+  // layer shows; otherwise the user's clamped pick. `null` when there's no parse
+  // data yet, which the file sheet renders as a disabled/empty slider.
   const selectedGcodeMaxLayer = selectedGcodeLayerCount > 0
     ? Math.min(
         Math.max(
-          Number.isFinite(Number(gcodeMaxLayer)) ? Math.trunc(Number(gcodeMaxLayer)) : selectedGcodeLayerCount - 1,
+          gcodeMaxLayerChosen ? Math.trunc(Number(gcodeMaxLayer)) : selectedGcodeLayerCount - 1,
           0
         ),
         selectedGcodeLayerCount - 1
       )
-    : 0;
+    : null;
+  // Ceiling handed to gcode-preview itself. Until the user picks one, pass `null`
+  // so the pane shows EVERY layer it parsed — the default is the full toolpath at
+  // maximum height. We can't reuse `selectedGcodeMaxLayer` here because it's
+  // bounded by the cadjs parse's layer count, which can undercount vs
+  // gcode-preview's own parser and clip the top.
+  const gcodePaneTopLayer = gcodeMaxLayerChosen ? selectedGcodeMaxLayer : null;
   // Rendering is delegated to the gcode-preview library (GcodePreviewPane), so
   // the workspace only needs the gcode asset URL plus the native display
   // options; the parsed `selectedGcodeData` is still used for the file panel's
@@ -1284,9 +1325,12 @@ export default function CadWorkspace({
   const selectedGcodeUrl = isGcodeView && selectedEntry
     ? entryAssetUrl(selectedEntry, "gcode")
     : "";
-  // Reset the visible-layer ceiling to "all layers" whenever the file changes.
+  // Reset the visible-layer ceiling to "all layers" whenever the file changes,
+  // and mark the new toolpath not-yet-rendered so the loading overlay shows
+  // until gcode-preview reports it has drawn the new file.
   useEffect(() => {
     setGcodeMaxLayer(null);
+    setGcodePreviewReady(false);
   }, [selectedGcodeFileRef]);
   const selectedMeshData = isRobotRenderFormat(selectedEntrySourceFormat)
     ? selectedUrdfPreview.meshData
@@ -1748,10 +1792,19 @@ export default function CadWorkspace({
     !!selectedEntry &&
     dxfStatus !== ASSET_STATUS.ERROR &&
     (!selectedDxfMatches || dxfStatus === ASSET_STATUS.LOADING);
+  // The toolpath is drawn by GcodePreviewPane straight from `selectedGcodeUrl`,
+  // so the overlay lifts the moment the pane reports it has rendered
+  // (`gcodePreviewReady`) — NOT when the parallel `loadRenderGcode` metadata
+  // parse finishes. Tying it to the parse left the spinner stuck whenever the
+  // parse early-returned (no synthesized hash) or simply lagged a big file,
+  // masking an already-rendered toolpath. `selectedGcodeMatches` and the error
+  // state stay as belt-and-suspenders lift conditions.
   const gcodeViewerLoading =
     !!selectedEntry &&
+    Boolean(selectedGcodeUrl) &&
     gcodeStatus !== ASSET_STATUS.ERROR &&
-    (!selectedGcodeMatches || gcodeStatus === ASSET_STATUS.LOADING);
+    !gcodePreviewReady &&
+    !selectedGcodeMatches;
   const urdfViewerLoading =
     !!selectedEntry &&
     urdfStatus !== ASSET_STATUS.ERROR &&
@@ -2138,6 +2191,20 @@ export default function CadWorkspace({
   const handleViewerAlertChange = useCallback((nextAlert) => {
     setViewerRuntimeAlert(nextAlert || null);
   }, []);
+
+  // The gcode-preview pane drives the loading overlay. `onReady` fires once it
+  // has parsed + drawn the toolpath; a load error is also "done loading" so the
+  // spinner can't outlive the pane and mask the error it surfaces. Both flip the
+  // same flag — the overlay only needs to know the pane reached a terminal state.
+  const handleGcodeReady = useCallback(() => {
+    setGcodePreviewReady(true);
+  }, []);
+  const handleGcodeViewerAlertChange = useCallback((alert) => {
+    if (alert && alert.severity === "error") {
+      setGcodePreviewReady(true);
+    }
+    handleViewerAlertChange(alert);
+  }, [handleViewerAlertChange]);
 
   const endPanelResize = useCallback(() => {
     document.querySelector("[data-slot='sidebar-wrapper']")?.removeAttribute("data-sidebar-resizing");
@@ -2856,7 +2923,10 @@ export default function CadWorkspace({
   ]);
 
   useCadWorkspaceSession({
-    manifestEntries,
+    // The session hook only reads these to resolve a URL `?file=` param back to
+    // an entry key, so feed it `lookupEntries` — otherwise a gcode URL fails to
+    // resolve on deep-link/popstate and the selection gets reset.
+    manifestEntries: lookupEntries,
     fileKey,
     cadWorkspaceSessionBootstrappedRef,
     setOpenTabs,
@@ -2873,7 +2943,7 @@ export default function CadWorkspace({
     selectedKey,
     entryMap,
     buildActiveTabSnapshot,
-    catalogEntries,
+    catalogEntries: lookupEntries,
     manifestRevision,
     defaultSidebarWidth: DEFAULT_SIDEBAR_WIDTH,
     sidebarMinWidth: DESKTOP_SIDEBAR_MIN_WIDTH,
@@ -5603,12 +5673,14 @@ export default function CadWorkspace({
   // auto-select above). `findEntryByUrlPath` handles path normalization/aliases.
   useEffect(() => {
     if (!autoSelectGcodePath) return;
-    const match = findEntryByUrlPath(catalogEntries, autoSelectGcodePath);
+    // The gcode is rail-hidden, so resolve it against `lookupEntries` (which
+    // includes it), not the printable `catalogEntries`.
+    const match = findEntryByUrlPath(lookupEntries, autoSelectGcodePath);
     if (match) {
       handleSelectEntry(fileKey(match));
       setAutoSelectGcodePath("");
     }
-  }, [autoSelectGcodePath, catalogEntries, handleSelectEntry]);
+  }, [autoSelectGcodePath, lookupEntries, handleSelectEntry]);
 
   const handleRevealEntryInExplorerView = useCallback((entry) => {
     const targetKey = fileKey(entry);
@@ -6260,9 +6332,11 @@ export default function CadWorkspace({
           selectedKey={selectedKey}
           selectedDxfKey={selectedDxfPreviewKey}
           gcodeUrl={selectedGcodeUrl}
-          gcodeTopLayer={selectedGcodeMaxLayer}
+          gcodeTopLayer={gcodePaneTopLayer}
           gcodeShowTravel={gcodeShowTravel}
           gcodeRenderTubes={gcodeRenderTubes}
+          onGcodeReady={handleGcodeReady}
+          onGcodeViewerAlertChange={handleGcodeViewerAlertChange}
           missingFileRef={missingFileRef}
           viewerPerspective={viewerPerspective}
           viewerPerspectiveRef={activePerspectiveRef}

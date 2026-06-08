@@ -7,6 +7,7 @@ import ChatHistory from "./ChatHistory";
 import ChatInput from "./ChatInput";
 // import ActionButtons from "./ActionButtons";
 import AuthModeControl from "./AuthModeControl";
+import { MessageSquare } from "lucide-react";
 
 const SIDEBAR_WIDTH = 440;
 const SIDEBAR_WIDTH_STORAGE_KEY = "panda.chatSidebar.width";

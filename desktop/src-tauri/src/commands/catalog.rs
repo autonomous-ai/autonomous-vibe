@@ -29,6 +29,9 @@ const SKIPPED_DIRECTORIES: &[&str] = &[
     "build",
     "coverage",
     "dist",
+    // Reference images the chat composer persists per turn; they are model
+    // inputs, not CAD deliverables, so the Models rail must never list them.
+    "inputs",
     "node_modules",
     // Belt-and-suspenders: a bundled app dir (e.g. OrcaSlicer.app under
     // `resources/`) must never surface as a "model" even if a scan root
@@ -174,10 +177,13 @@ pub fn scan_workspace(root: &Path) -> IpcResult<Vec<CatalogEntry>> {
         };
         let source_kind = classify_source_kind(kind, absolute, &path_index);
         let artifact = sidecar_artifact(kind, absolute, root);
-        // Renderable meshes (`.stl`) get a cache-bust token so the viewer
-        // refetches a regenerated, same-path mesh instead of serving stale
-        // bytes from cadjs's URL-keyed cache (see `versioned_asset_uri`).
-        let url = if matches!(kind, CatalogKind::Stl) {
+        // Renderable artifacts (`.stl` mesh, `.gcode` toolpath) get a cache-bust
+        // token so the viewer refetches a regenerated, same-path file instead of
+        // serving stale bytes from cadjs's URL-keyed cache (see
+        // `versioned_asset_uri`). A re-slice overwrites the same `.gcode` path, so
+        // without the token GcodePreviewPane (which reloads on `gcodeUrl` change)
+        // and the `gcodeCache`/`textCache` would keep showing the old toolpath.
+        let url = if matches!(kind, CatalogKind::Stl | CatalogKind::Gcode) {
             versioned_asset_uri(&rel, absolute)
         } else {
             tauri_asset_uri(&rel)
@@ -579,6 +585,22 @@ mod tests {
 
         let step = entries.iter().find(|e| e.file == "model.step").unwrap();
         assert!(!step.url.contains("?v="), "non-mesh url stays plain: {}", step.url);
+    }
+
+    #[test]
+    fn standalone_gcode_entry_url_is_versioned() {
+        // A re-slice overwrites the same `.gcode` path; the URL must carry a
+        // cache-bust token so GcodePreviewPane (which reloads on `gcodeUrl`
+        // change) and cadjs's URL-keyed text/gcode caches refetch the new
+        // toolpath instead of serving stale bytes.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("model.gcode"), b"; gcode\n").unwrap();
+
+        let entries = scan_workspace(root).unwrap();
+        let gcode = entries.iter().find(|e| e.file == "model.gcode").unwrap();
+        assert!(gcode.url.contains("model.gcode"), "url was {}", gcode.url);
+        assert!(gcode.url.contains("?v="), "gcode url should be versioned: {}", gcode.url);
     }
 
     #[test]

@@ -55,6 +55,11 @@ open = "5"
 # Percent-decode/-encode the custom `pandaasset://` URI scheme paths used to
 # stream the open project's files to the webview (see src/asset_protocol.rs).
 percent-encoding = "2"
+# Decode base64 reference images the chat composer attaches over IPC, before
+# persisting them into the project workspace (see commands/chat.rs). Also used
+# in commands/cloud.rs to decode the `uid`/`exp` claims out of the cloud
+# accessToken JWT payload (own token's middle segment, signature never verified).
+base64 = "0.22"
 
 # Track G: real slicer + printer wiring.
 # SSDP (UDP multicast) discovery — the path Bambu Studio/OrcaSlicer use and
@@ -84,10 +89,6 @@ x509-parser = "0.16"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 
 # Bambu cloud printing (commands/cloud.rs).
-# Decode the `uid`/`exp` claims out of the cloud accessToken JWT payload — we
-# read our own token's middle segment, never verify the signature (we don't
-# have Bambu's key and don't need it).
-base64 = "0.22"
 # Real CA trust anchors for the *cloud* MQTT broker (us.mqtt.bambulab.com),
 # which — unlike the LAN printer — presents a normal CA-signed cert. The LAN
 # path keeps its no-verify config for self-signed printer certs.

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef } from "react";
-import { MessageSquare } from "lucide-react";
 import { cn } from "@/ui/utils";
 import { attachChatEventStream, useChatStore } from "@/store/chat";
 import { useProjectsStore } from "@/store/projects.ts";
@@ -180,9 +179,6 @@ export default function ChatSidebar({
       />
 
       <header className="flex min-h-12 items-center gap-2.5 border-b border-border/60 px-3.5 py-2">
-        <span className="grid size-7 shrink-0 place-items-center rounded-lg border border-border/70 bg-muted/40 shadow-sm">
-          <MessageSquare className="size-3.5 text-muted-foreground" aria-hidden />
-        </span>
         <div className="min-w-0 flex-1">
           <div
             className="truncate text-sm font-semibold leading-normal tracking-tight "

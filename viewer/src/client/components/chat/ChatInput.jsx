@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, Plus, X } from "lucide-react";
+import { ArrowUp, Plus, Square, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/ui/utils";
@@ -27,6 +27,7 @@ export default function ChatInput({ className }) {
   const currentProjectId = useChatStore((state) => state.currentProjectId);
 
   const fileInputRef = useRef(null);
+  const textareaRef = useRef(null);
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
   // Transient hint shown next to the attach button (wrong type, too many, …).
@@ -165,13 +166,19 @@ export default function ChatInput({ className }) {
     return () => clearTimeout(timer);
   }, [notice]);
 
+  useEffect(() => {
+    if (!turnInProgress) {
+      textareaRef.current?.focus();
+    }
+  }, [turnInProgress]);
+
   const hasStrip = pendingTokens.length > 0 || pendingAttachments.length > 0;
 
   return (
     <div
       data-slot="chat-input"
       data-turn-in-progress={turnInProgress ? "true" : "false"}
-      className={cn("border-t border-border/60 bg-background/60 p-2", className)}
+      className={cn("bg-background/60 px-3.5 py-2", className)}
     >
       <div
         data-slot="chat-composer"
@@ -237,13 +244,15 @@ export default function ChatInput({ className }) {
         ) : null}
 
         <Textarea
+          ref={textareaRef}
+          autoFocus
           value={value}
           onChange={(event) => setValue(event.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           placeholder="Do anything"
           rows={2}
-          className="min-h-10 flex-1 resize-none border-0 bg-transparent! px-2 py-1 text-sm shadow-none placeholder:text-muted-foreground/70 focus-visible:ring-0 dark:bg-transparent!"
+          className="min-h-10 flex-1 resize-none border-0 bg-transparent! px-0 py-0 text-sm shadow-none placeholder:text-muted-foreground/70 focus-visible:ring-0 dark:bg-transparent!"
           data-slot="chat-input-textarea"
         />
 
@@ -277,14 +286,14 @@ export default function ChatInput({ className }) {
           {turnInProgress ? (
             <Button
               type="button"
-              variant="destructive"
+              variant="ghost"
               size="icon-sm"
               onClick={handleCancel}
-              title="Cancel turn"
+              title="Stop"
               data-slot="chat-cancel-button"
-              className="size-8 rounded-full"
+              className="size-8 rounded-full bg-foreground text-background transition-none hover:bg-foreground hover:text-background dark:hover:bg-foreground dark:hover:text-background"
             >
-              <X aria-hidden />
+              <Square className="size-3 fill-current stroke-current" aria-hidden />
             </Button>
           ) : (
             <Button
@@ -295,7 +304,7 @@ export default function ChatInput({ className }) {
               disabled={sendDisabled}
               title="Send"
               data-slot="chat-send-button"
-              className="size-8 rounded-full bg-muted-foreground text-background hover:bg-foreground disabled:bg-muted-foreground/40 disabled:text-background/80"
+              className="size-8 rounded-full bg-foreground text-background transition-none hover:bg-foreground hover:text-background dark:hover:bg-foreground dark:hover:text-background disabled:bg-foreground/35 disabled:text-background/70"
             >
               <ArrowUp className="size-4" aria-hidden />
             </Button>

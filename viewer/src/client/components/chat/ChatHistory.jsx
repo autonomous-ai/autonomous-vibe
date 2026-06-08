@@ -37,7 +37,7 @@ export default function ChatHistory({
       <div
         data-slot="chat-history-empty"
         className={cn(
-          "flex h-full flex-col items-center justify-center gap-1 px-4 text-center text-xs text-muted-foreground",
+          "flex h-full flex-col items-center justify-center gap-1 px-3.5 text-center text-xs text-muted-foreground",
           className,
         )}
       >

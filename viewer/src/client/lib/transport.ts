@@ -365,12 +365,13 @@ export type ClaudeLoginProgress =
 
 /**
  * Result of `app_panda_login` — the Panda-issued proxy token. Mirrors the serde
- * struct in `desktop/src-tauri/src/ipc/types.rs::PandaLoginResult`. The token is
- * persisted Rust-side (as `panda_token` with `use_panda_cloud = true`); the
- * frontend only needs to know the call succeeded.
+ * struct in `desktop/src-tauri/src/ipc/types.rs::PandaLoginResult`. The proxy key
+ * is persisted Rust-side (as `panda_token` with `use_panda_cloud = true`) and is
+ * intentionally NOT returned to the renderer — the frontend only learns it
+ * succeeded.
  */
 export interface PandaLoginResult {
-  token: string;
+  ok: boolean;
 }
 
 /**

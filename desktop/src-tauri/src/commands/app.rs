@@ -1068,9 +1068,7 @@ pub async fn app_panda_login(
             emit(PandaLoginProgress::Verifying);
             store_panda_session(token, PANDA_PROXY_URL).await?;
             emit(PandaLoginProgress::Done);
-            return Ok(PandaLoginResult {
-                token: token.to_string(),
-            });
+            return Ok(PandaLoginResult { ok: true });
         }
     }
 
@@ -1129,10 +1127,10 @@ pub async fn app_panda_login(
         Err(err) => return Err(fail(&emit, "PANDA_EXCHANGE_FAILED", err.message)),
     };
 
-    // 6. Persist + finish.
+    // 6. Persist + finish. The key stays Rust-side — only `ok` crosses to JS.
     store_panda_session(&key, &base_url).await?;
     emit(PandaLoginProgress::Done);
-    Ok(PandaLoginResult { token: key })
+    Ok(PandaLoginResult { ok: true })
 }
 
 /// Strip ANSI/VT escape sequences (CSI `ESC [ … final` and OSC

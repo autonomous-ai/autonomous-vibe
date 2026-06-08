@@ -93,7 +93,7 @@ test("buildOnboardedSettings defaults a fresh profile", () => {
   assert.equal(next.autoUpdate, false);
 });
 
-test("buildPandaLoginFlow resolves to done and hands the token to onComplete", async () => {
+test("buildPandaLoginFlow resolves to done and reports success to onComplete", async () => {
   let handler = null;
   let resolveLogin = null;
   const subscribe = (cb) => {
@@ -127,10 +127,12 @@ test("buildPandaLoginFlow resolves to done and hands the token to onComplete", a
   await new Promise((r) => setImmediate(r));
   handler?.({ stage: "verifying" });
   await new Promise((r) => setImmediate(r));
-  resolveLogin?.({ token: "panda-tok" });
+  // The real command returns only `{ ok: true }` — the proxy key never crosses
+  // into JS.
+  resolveLogin?.({ ok: true });
   await started;
 
   assert.deepEqual(transitions, ["installing", "done"]);
   assert.equal(flow.state, "done");
-  assert.deepEqual(completedWith, { token: "panda-tok" });
+  assert.deepEqual(completedWith, { ok: true });
 });

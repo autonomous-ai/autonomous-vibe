@@ -757,14 +757,14 @@ pub enum ClaudeLoginProgress {
 // Panda proxy sign-in (placeholder — backend in progress)
 // ---------------------------------------------------------------------------
 
-/// Result of `app_panda_login` — the Panda-issued proxy token. On success it is
-/// persisted as `panda_token` with `use_panda_cloud = true`, so the chat driver
-/// routes `claude -p` through Panda's hosted proxy (`ANTHROPIC_BASE_URL`) and
-/// the user needs no Claude subscription of their own.
+/// Result of `app_panda_login`. The issued proxy key is **never** returned to
+/// the renderer — it is persisted Rust-side (`panda_token` + `use_panda_cloud`,
+/// see `store_panda_session`) and only ever leaves the process as an env var on
+/// the spawned `claude` child. The renderer just needs to know it succeeded.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PandaLoginResult {
-    pub token: String,
+    pub ok: bool,
 }
 
 /// Streamed via the `panda_login_progress` Tauri event while `app_panda_login`

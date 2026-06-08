@@ -156,28 +156,26 @@ export default function WelcomeScreen({ onComplete }) {
     [],
   );
 
-  // Same wrapper for the Panda proxy sign-in; resolves to the PandaLoginResult
-  // (with the token) or null on failure.
+  // Same wrapper for the Panda proxy sign-in; resolves true on success. The
+  // proxy key is persisted Rust-side (app_panda_login → store_panda_session),
+  // so the renderer never sees it — finish() just re-reads settings.
   const runPandaLoginStep = useCallback(
     () =>
       new Promise((resolve) => {
-        let captured = null;
         const flow = buildPandaLoginFlow({
           runInstall: () => transport.app_panda_login(),
           subscribe: (handler) => transport.onPandaLoginProgress(handler),
           onChange: ({ progress }) => setPandaProgress(progress),
-          onComplete: (result) => {
-            captured = result;
-          },
+          onComplete: () => {},
         });
         activeFlowRef.current = flow;
         void flow.start().then(() => {
           if (flow.state === "done") {
-            resolve(captured || { token: "" });
+            resolve(true);
           } else {
             setPandaError(describePandaLoginProgress(flow.progress));
             setPandaState("error");
-            resolve(null);
+            resolve(false);
           }
         });
       }),
@@ -198,10 +196,12 @@ export default function WelcomeScreen({ onComplete }) {
     }
 
     setPandaState("signing_in");
-    const result = await runPandaLoginStep();
-    if (!result) return;
+    const ok = await runPandaLoginStep();
+    if (!ok) return;
 
-    await finish({ usePandaCloud: true, pandaToken: result.token });
+    // Rust already persisted panda_token/base_url/use_panda_cloud; finish()
+    // re-reads settings and only flips hasOnboarded — the token never touches JS.
+    await finish({ usePandaCloud: true });
   }, [busy, finish, runInstallStep, runPandaLoginStep]);
 
   const useOwnClaude = useCallback(() => {

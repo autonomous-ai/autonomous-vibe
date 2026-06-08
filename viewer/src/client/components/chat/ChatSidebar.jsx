@@ -5,7 +5,7 @@ import { useProjectsStore } from "@/store/projects.ts";
 import { CHAT_MIN_WIDTH, clampChatWidth } from "@/workbench/chatLayout";
 import ChatHistory from "./ChatHistory";
 import ChatInput from "./ChatInput";
-import ActionButtons from "./ActionButtons";
+// import ActionButtons from "./ActionButtons";
 import AuthModeControl from "./AuthModeControl";
 
 const SIDEBAR_WIDTH = 440;

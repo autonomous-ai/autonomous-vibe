@@ -336,6 +336,25 @@ pub fn build_env(cfg: &ClaudeRunConfig) -> Vec<(String, String)> {
     env
 }
 
+/// Heuristic: does this `claude` stderr look like an API authentication
+/// failure? Used only on the Panda proxy path to distinguish a revoked/expired
+/// key (BE returns 401, Anthropic-style `authentication_error` body) from other
+/// silent failures, so the UI can offer a re-login. Matched case-insensitively
+/// against the substrings Anthropic/the proxy emit; the proxy mode gating keeps
+/// false positives from mislabelling a non-auth failure.
+pub fn looks_like_auth_failure(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    s.contains("authentication_error")
+        || s.contains("invalid api key")
+        || s.contains("invalid x-api-key")
+        || s.contains("invalid bearer token")
+        || s.contains("permission_error")
+        || s.contains("401 unauthorized")
+        || s.contains("status 401")
+        || s.contains("http 401")
+        || s.contains("oauth token has expired")
+}
+
 /// Has Claude Code already persisted a session JSONL for this UUID?
 ///
 /// Claude Code stores sessions at
@@ -1185,10 +1204,19 @@ where
             .unwrap_or_else(|| {
                 format!("claude exited without output ({status:?})")
             });
-        on_event(ChatEvent::Error {
-            turn_id: turn_id.to_string(),
-            message: format!("claude produced no response: {detail}"),
-        });
+        // On the Panda proxy path, a revoked/expired key surfaces as an auth
+        // error here (the BE returns 401). Emit a dedicated event the chat UI
+        // turns into a "Sign in again" action instead of a cryptic message.
+        if cfg.use_panda_cloud && looks_like_auth_failure(&detail) {
+            on_event(ChatEvent::AuthExpired {
+                turn_id: turn_id.to_string(),
+            });
+        } else {
+            on_event(ChatEvent::Error {
+                turn_id: turn_id.to_string(),
+                message: format!("claude produced no response: {detail}"),
+            });
+        }
     }
 
     // Post-turn workspace diff. Emit artifact_changed for everything
@@ -1742,6 +1770,22 @@ mod tests {
             map.get("ANTHROPIC_BASE_URL").map(String::as_str),
             Some(crate::commands::app::PANDA_PROXY_URL),
         );
+    }
+
+    #[test]
+    fn looks_like_auth_failure_flags_proxy_401() {
+        // Anthropic-style 401 body the proxy returns for a revoked key.
+        assert!(looks_like_auth_failure(
+            "API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}"
+        ));
+        assert!(looks_like_auth_failure("Error: oauth token has expired"));
+        assert!(looks_like_auth_failure("request failed: HTTP 401"));
+        // Non-auth failures must NOT be flagged (they get the generic error).
+        assert!(!looks_like_auth_failure(
+            "Session ID already in use: 1234"
+        ));
+        assert!(!looks_like_auth_failure("spawn node ENOENT"));
+        assert!(!looks_like_auth_failure("overloaded_error: 529"));
     }
 
     #[test]

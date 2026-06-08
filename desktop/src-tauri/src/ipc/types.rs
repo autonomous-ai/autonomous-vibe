@@ -303,6 +303,14 @@ pub enum ChatEvent {
         turn_id: String,
         message: String,
     },
+    /// The Panda proxy rejected the turn's auth (revoked/expired `ccr-` key →
+    /// the BE returns 401). Emitted instead of a generic `Error` when
+    /// `use_panda_cloud` is on and the failure looks like an auth error, so the
+    /// chat UI can offer a "Sign in again" action rather than a cryptic message.
+    /// Ends the turn like `Error` does.
+    AuthExpired {
+        turn_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { ArrowUp, Plus, Square, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -19,7 +19,7 @@ import { blobToAttachment, imageFilesFromDataTransfer, MAX_ATTACHMENTS } from ".
 
 export { buildSendValue };
 
-export default function ChatInput({ className }) {
+function ChatInput({ className }, ref) {
   const [value, setValue] = useState("");
   const turnInProgress = useChatStore((state) => state.turnInProgress);
   const pendingTokens = useChatStore((state) => state.pendingTokens);
@@ -164,6 +164,12 @@ export default function ChatInput({ className }) {
     consumePendingAttachments();
     window.requestAnimationFrame?.(() => textareaRef.current?.focus());
   }, []);
+
+  useImperativeHandle(ref, () => ({
+    focus(options) {
+      textareaRef.current?.focus(options);
+    },
+  }), []);
 
   // Auto-dismiss the notice so it doesn't linger.
   useEffect(() => {
@@ -330,3 +336,5 @@ export default function ChatInput({ className }) {
     </div>
   );
 }
+
+export default forwardRef(ChatInput);

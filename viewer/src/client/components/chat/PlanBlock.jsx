@@ -7,9 +7,9 @@ import { approvePlan, requestPlanChanges, useChatStore } from "@/store/chat";
 import Markdown from "./Markdown";
 
 const STATUS_PILL = {
-  proposed: { label: "Awaiting approval", cls: "border-amber-500/40 bg-amber-500/10 text-amber-600" },
-  approved: { label: "Approved", cls: "border-emerald-500/40 bg-emerald-500/10 text-emerald-600" },
-  superseded: { label: "Superseded", cls: "border-border/60 bg-muted/30 text-muted-foreground" },
+  proposed: { label: "Awaiting approval", cls: "border-amber-500/35 bg-amber-500/15 text-amber-400" },
+  approved: { label: "Approved", cls: "border-emerald-500/40 bg-emerald-500/15 text-emerald-400" },
+  superseded: { label: "Superseded", cls: "border-white/10 bg-white/5 text-zinc-400" },
 };
 
 /**
@@ -45,22 +45,24 @@ export default function PlanBlock({ plan, status }) {
       data-slot="chat-plan"
       data-status={status}
       className={cn(
-        "rounded-lg border p-3 text-sm shadow-[var(--ui-shadow-soft)]",
-        isProposed ? "border-primary/40 bg-primary/[0.06]" : "border-border/60 bg-card/70",
+        "rounded-xl border border-border/70 bg-[#202124] p-3 text-sm text-zinc-100 shadow-(--ui-shadow-soft)",
+        !isProposed && "bg-card/70",
         status === "superseded" && "opacity-60",
       )}
     >
-      <header className="mb-2 flex items-center gap-2 border-b border-border/50 pb-2">
+      <header className="mb-3 flex items-center gap-2 border-b border-white/10 pb-2.5">
         <span
           className={cn(
-            "flex size-6 shrink-0 items-center justify-center rounded-full",
-            isProposed ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground",
+            "flex size-6 shrink-0 items-center justify-center rounded-full border",
+            isProposed
+              ? "border-white/10 bg-white/5 text-zinc-300"
+              : "border-white/10 bg-white/5 text-zinc-400",
           )}
         >
           <ClipboardList className="size-3.5" aria-hidden />
         </span>
-        <span className="text-sm font-semibold text-foreground">Here&apos;s my plan</span>
-        <span className={cn("ml-auto rounded-full border px-2 py-0.5 text-[10px] font-medium", pill.cls)}>
+        <span className="text-sm font-semibold text-zinc-100">Here&apos;s my plan</span>
+        <span className={cn("ml-auto rounded-full border px-2 py-0.5 text-[10px] font-semibold", pill.cls)}>
           {pill.label}
         </span>
       </header>
@@ -70,27 +72,36 @@ export default function PlanBlock({ plan, status }) {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           rows={Math.min(20, Math.max(6, draft.split("\n").length + 1))}
-          className="text-sm"
+          className="border-white/10 bg-black/20 text-sm text-zinc-100"
           data-slot="chat-plan-editor"
         />
       ) : (
-        <Markdown source={editing ? draft : plan} className="leading-relaxed" />
+        <Markdown
+          source={editing ? draft : plan}
+          className="text-[13px] font-medium leading-relaxed text-zinc-100 [&_code]:bg-white/8 [&_code]:text-zinc-100 [&_li]:my-1.5 [&_p]:my-1.5 [&_strong]:text-zinc-50"
+        />
       )}
 
       {isProposed ? (
         <>
           {feedbackOpen ? (
-            <div className="mt-2 flex flex-col gap-1.5">
+            <div className="mt-3 flex flex-col gap-2">
               <Textarea
                 value={feedback}
                 onChange={(e) => setFeedback(e.target.value)}
                 placeholder="What should change? e.g. add 4 screw bosses, make it 5 mm taller…"
                 rows={2}
-                className="text-sm"
+                className="border-white/10 bg-black/20 text-sm text-zinc-100 placeholder:text-zinc-500"
                 data-slot="chat-plan-feedback"
               />
-              <div className="flex justify-end gap-1.5">
-                <Button variant="outline" size="sm" onClick={() => setFeedbackOpen(false)} disabled={busy}>
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setFeedbackOpen(false)}
+                  disabled={busy}
+                  className="border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10 hover:text-zinc-50"
+                >
                   Cancel
                 </Button>
                 <Button
@@ -98,14 +109,15 @@ export default function PlanBlock({ plan, status }) {
                   onClick={handleSendFeedback}
                   disabled={busy || !feedback.trim()}
                   data-slot="chat-plan-feedback-send"
+                  className="bg-zinc-100 text-zinc-950 hover:bg-white"
                 >
                   Send feedback
                 </Button>
               </div>
             </div>
           ) : (
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              <span className="mr-auto text-xs text-muted-foreground">
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span className="mr-auto text-[11px] text-zinc-500">
                 Approve to build it, or ask for changes.
               </span>
               <Button
@@ -114,8 +126,9 @@ export default function PlanBlock({ plan, status }) {
                 onClick={() => setEditing((v) => !v)}
                 disabled={busy}
                 data-slot="chat-plan-edit"
+                className="h-8 border-white/10 bg-white/5 px-3 text-zinc-200 hover:bg-white/10 hover:text-zinc-50"
               >
-                <Pencil aria-hidden />
+                <Pencil className="size-3.5" aria-hidden />
                 {editing ? "Done editing" : "Edit"}
               </Button>
               <Button
@@ -124,8 +137,9 @@ export default function PlanBlock({ plan, status }) {
                 onClick={() => setFeedbackOpen(true)}
                 disabled={busy}
                 data-slot="chat-plan-request-changes"
+                className="h-8 border-white/10 bg-white/5 px-3 text-zinc-200 hover:bg-white/10 hover:text-zinc-50"
               >
-                <MessageSquare aria-hidden />
+                <MessageSquare className="size-3.5" aria-hidden />
                 Request changes
               </Button>
               <Button
@@ -133,6 +147,7 @@ export default function PlanBlock({ plan, status }) {
                 onClick={handleApprove}
                 disabled={busy}
                 data-slot="chat-plan-approve"
+                className="h-8 bg-zinc-100 px-3 text-zinc-950 hover:bg-white"
               >
                 {busy ? "Building…" : "Approve & build"}
               </Button>

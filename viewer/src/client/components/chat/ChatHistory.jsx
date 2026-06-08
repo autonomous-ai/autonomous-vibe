@@ -22,6 +22,7 @@ function groupTurns(history) {
 export default function ChatHistory({
   history,
   onOpenArtifact,
+  onRequestInputFocus,
   className,
 }) {
   const ref = useRef(null);
@@ -50,7 +51,8 @@ export default function ChatHistory({
     const node = ref.current;
     if (!node) return;
     node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
-  }, []);
+    onRequestInputFocus?.();
+  }, [onRequestInputFocus]);
 
   const groups = groupTurns(history);
 

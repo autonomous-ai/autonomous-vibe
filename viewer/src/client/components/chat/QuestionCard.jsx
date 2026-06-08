@@ -81,7 +81,7 @@ export default function QuestionCard({ questions }) {
                       className={cn(
                         "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
                         active
-                          ? "border-emerald-400/60 bg-emerald-500/20 text-zinc-100 ring-1 ring-emerald-400/25"
+                          ? "border-zinc-300/60 bg-white/12 text-zinc-100 ring-1 ring-white/25"
                           : "border-white/10 bg-white/4 text-zinc-400 hover:border-white/20 hover:bg-white/[0.07] hover:text-zinc-200",
                         submitted && !active && "opacity-55",
                       )}
@@ -107,7 +107,7 @@ export default function QuestionCard({ questions }) {
           // deliberate confirmation rather than a half-disabled button.
           className={cn(
             "min-w-20 rounded-lg bg-zinc-200 px-4 text-zinc-950 hover:bg-zinc-100 disabled:bg-zinc-500 disabled:text-zinc-950 disabled:opacity-100",
-            submitted && "bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/20",
+            submitted && "bg-white/10 text-zinc-100 hover:bg-white/10",
           )}
         >
           {submitted ? (

@@ -77,6 +77,7 @@ export default function ChatSidebar({
   const summaryTitle = currentProjectName.trim() || (history.length ? "Untitled chat" : "New chat");
 
   const resizeStateRef = useRef(null);
+  const chatInputRef = useRef(null);
   // The window-level pointer handlers below are installed once; these refs keep
   // them reading the latest layout and callbacks without re-subscribing.
   const layoutRef = useRef(layout);
@@ -163,6 +164,12 @@ export default function ChatSidebar({
     [width],
   );
 
+  const handleRequestInputFocus = useCallback(() => {
+    window.requestAnimationFrame?.(() => {
+      chatInputRef.current?.focus({ preventScroll: true });
+    });
+  }, []);
+
   return (
     <aside
       data-slot="chat-sidebar"
@@ -211,6 +218,7 @@ export default function ChatSidebar({
           <ChatHistory
             history={history}
             onOpenArtifact={onOpenArtifact}
+            onRequestInputFocus={handleRequestInputFocus}
           />
         )}
       </div>
@@ -224,7 +232,7 @@ export default function ChatSidebar({
         </div>
       ) : null}
 
-      <ChatInput />
+      <ChatInput ref={chatInputRef} />
     </aside>
   );
 }

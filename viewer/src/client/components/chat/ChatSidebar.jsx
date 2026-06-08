@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { MessageSquare } from "lucide-react";
 import { cn } from "@/ui/utils";
 import { attachChatEventStream, useChatStore } from "@/store/chat";
+import { useProjectsStore } from "@/store/projects.ts";
 import { CHAT_MIN_WIDTH, clampChatWidth } from "@/workbench/chatLayout";
 import ChatHistory from "./ChatHistory";
 import ChatInput from "./ChatInput";
@@ -66,6 +67,11 @@ export default function ChatSidebar({
   const lastError = useChatStore((state) => state.lastError);
   const history = useChatStore((state) => state.history);
   const projectId = useChatStore((state) => state.currentProjectId);
+  const currentProjectName = useProjectsStore((state) => {
+    const current = state.projects.find((project) => project.id === state.currentProjectId);
+    return current?.name || "";
+  });
+  const summaryTitle = currentProjectName.trim() || (history.length ? "Untitled chat" : "New chat");
 
   const resizeStateRef = useRef(null);
   // The window-level pointer handlers below are installed once; these refs keep
@@ -173,9 +179,18 @@ export default function ChatSidebar({
         className="absolute left-0 top-0 z-40 h-full w-1.5 -translate-x-1/2 cursor-col-resize touch-none bg-transparent transition-colors hover:bg-primary/30"
       />
 
-      <header className="flex items-center gap-2 border-b border-border/60 px-4 py-2.5">
-        <MessageSquare className="size-4 text-muted-foreground" aria-hidden />
-        <span className="text-sm font-semibold tracking-tight">Chat</span>
+      <header className="flex min-h-12 items-center gap-2.5 border-b border-border/60 px-3.5 py-2">
+        <span className="grid size-7 shrink-0 place-items-center rounded-lg border border-border/70 bg-muted/40 shadow-sm">
+          <MessageSquare className="size-3.5 text-muted-foreground" aria-hidden />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div
+            className="truncate text-sm font-semibold leading-normal tracking-tight "
+            title={summaryTitle}
+          >
+            {summaryTitle}
+          </div>
+        </div>
       </header>
 
       <div className="min-h-0 flex-1">

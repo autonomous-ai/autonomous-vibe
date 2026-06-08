@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ImagePlus, Send, X } from "lucide-react";
+import { ArrowUp, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/ui/utils";
@@ -25,7 +25,6 @@ export default function ChatInput({ className }) {
   const pendingTokens = useChatStore((state) => state.pendingTokens);
   const pendingAttachments = useChatStore((state) => state.pendingAttachments);
   const currentProjectId = useChatStore((state) => state.currentProjectId);
-  const awaitingApproval = useChatStore((state) => state.awaitingApproval);
 
   const fileInputRef = useRef(null);
   const dragDepth = useRef(0);
@@ -172,7 +171,7 @@ export default function ChatInput({ className }) {
     <div
       data-slot="chat-input"
       data-turn-in-progress={turnInProgress ? "true" : "false"}
-      className={cn("border-t border-border/60 bg-background/60 p-2.5", className)}
+      className={cn("border-t border-border/60 bg-background/60 p-2", className)}
     >
       <div
         data-slot="chat-composer"
@@ -181,8 +180,8 @@ export default function ChatInput({ className }) {
         onDragOver={handleDragOver}
         onDrop={handleDrop}
         className={cn(
-          "relative flex flex-col gap-2 rounded-xl border border-border/70 bg-background px-2.5 py-2 shadow-sm transition-colors",
-          "focus-within:border-ring/70 focus-within:ring-2 focus-within:ring-ring/25",
+          "relative flex min-h-24 flex-col gap-2 rounded-[1.35rem] border border-border/50 bg-muted/55 px-3 py-2.5 shadow-sm transition-colors",
+          "focus-within:border-ring/50 focus-within:ring-2 focus-within:ring-ring/20",
           dragging && "border-primary",
         )}
       >
@@ -219,7 +218,7 @@ export default function ChatInput({ className }) {
                 key={token}
                 data-slot="chat-input-token"
                 title={token}
-                className="max-w-[14rem] truncate rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[11px] font-mono text-foreground"
+                className="max-w-56 truncate rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[11px] font-mono text-foreground"
               >
                 {token}
               </span>
@@ -242,20 +241,14 @@ export default function ChatInput({ className }) {
           onChange={(event) => setValue(event.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          placeholder={
-            awaitingApproval
-              ? "Reply to refine the plan, or use the buttons above"
-              : currentProjectId
-                ? "Describe the change, then press Enter"
-                : "Describe what you want to print, then press Enter"
-          }
+          placeholder="Do anything"
           rows={2}
-          className="min-h-[2.5rem] resize-none border-0 bg-transparent px-1 py-0.5 text-sm shadow-none focus-visible:ring-0"
+          className="min-h-10 flex-1 resize-none border-0 bg-transparent! px-2 py-1 text-sm shadow-none placeholder:text-muted-foreground/70 focus-visible:ring-0 dark:bg-transparent!"
           data-slot="chat-input-textarea"
         />
 
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-1.5">
+        <div className="flex items-center justify-between gap-2 text-muted-foreground">
+          <div className="flex min-w-0 items-center gap-1">
             <input
               ref={fileInputRef}
               type="file"
@@ -273,11 +266,12 @@ export default function ChatInput({ className }) {
               disabled={turnInProgress}
               title="Attach images"
               data-slot="chat-attach-button"
+              className="size-7 rounded-full text-muted-foreground hover:bg-background/55 hover:text-foreground"
             >
-              <ImagePlus aria-hidden />
+              <Plus className="size-4" aria-hidden />
             </Button>
             {notice ? (
-              <span className="truncate text-[11px] text-muted-foreground">{notice}</span>
+              <span className="truncate pl-1 text-[11px] text-muted-foreground">{notice}</span>
             ) : null}
           </div>
           {turnInProgress ? (
@@ -288,6 +282,7 @@ export default function ChatInput({ className }) {
               onClick={handleCancel}
               title="Cancel turn"
               data-slot="chat-cancel-button"
+              className="size-8 rounded-full"
             >
               <X aria-hidden />
             </Button>
@@ -300,8 +295,9 @@ export default function ChatInput({ className }) {
               disabled={sendDisabled}
               title="Send"
               data-slot="chat-send-button"
+              className="size-8 rounded-full bg-muted-foreground text-background hover:bg-foreground disabled:bg-muted-foreground/40 disabled:text-background/80"
             >
-              <Send aria-hidden />
+              <ArrowUp className="size-4" aria-hidden />
             </Button>
           )}
         </div>

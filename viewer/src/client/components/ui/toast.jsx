@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom"
 import { Toast as ToastPrimitive } from "radix-ui"
 
 import { cn } from "@/ui/utils"
@@ -33,7 +34,7 @@ function ToastViewport({
   className,
   ...props
 }) {
-  return (
+  const viewport = (
     <ToastPrimitive.Viewport
       data-slot="toast-viewport"
       className={cn(
@@ -42,6 +43,16 @@ function ToastViewport({
       )}
       {...props} />
   )
+  // Portal the viewport (and the toasts Radix renders into it) to <body> so it
+  // escapes any ancestor stacking context — e.g. the `z-10` SidebarInset that
+  // wraps it — and so `z-50` actually wins against the chat sidebar (`z-20`).
+  // Without this, the toast's z-index only ranks it within the z-10 layer, and
+  // the higher-z chatbar paints over it. React context flows through the portal,
+  // so the Radix Toast provider/collection still works.
+  if (typeof document === "undefined") {
+    return viewport
+  }
+  return createPortal(viewport, document.body)
 }
 
 export {

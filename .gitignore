@@ -1,7 +1,7 @@
 # OS / IDE
 .DS_Store
 .idea/
-.vscode/
+# .vscode/
 
 # Local debugging scratch (Playwright MCP output, ad-hoc app screenshots)
 .playwright-mcp/

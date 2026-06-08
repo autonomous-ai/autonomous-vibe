@@ -3,7 +3,13 @@
 
 export function pickPrinterForSlice(printerList) {
   const list = Array.isArray(printerList) ? printerList : [];
-  return list[0] || null;
+  // Prefer a LAN printer. The LAN upload path (FTPS to the SD card + an MQTT
+  // start command) is the implemented, proven route; the cloud upload endpoint
+  // is still unverified. When a user has both a LAN and a cloud record (they
+  // have distinct ids, so both persist for the same physical printer), the LAN
+  // one must win so the print uses the working transport. Fall back to the first
+  // record (e.g. a cloud-only pairing) so off-LAN users still get a target.
+  return list.find((p) => p && p.transport === "lan") || list[0] || null;
 }
 
 export function basename(file) {

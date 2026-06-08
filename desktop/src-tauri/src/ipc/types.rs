@@ -423,6 +423,19 @@ pub struct AddPrinterRequest {
     pub serial: Option<String>,
 }
 
+/// Register a cloud printer directly from its serial + access code, skipping the
+/// account "bind list" discovery. The signed-in cloud account (token) authorizes
+/// the actual upload/print; the serial drives the MQTT topic and the access code
+/// is stored on the record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddCloudPrinterRequest {
+    pub serial: String,
+    pub access_code: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub name: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrinterStatus {
@@ -503,6 +516,18 @@ pub struct CloudLoginRequest {
 pub struct CloudLoginSubmit {
     pub account: String,
     pub code: String,
+}
+
+/// Direct email + password sign-in (no emailed verification code). Bambu may
+/// still answer with a 2FA / verification challenge for some accounts, which the
+/// command surfaces as a typed error.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudPasswordLogin {
+    pub account: String,
+    pub password: String,
+    #[serde(default)]
+    pub region: CloudRegion,
 }
 
 /// Result of `cloud_login_request_code`. `kind` is one of:

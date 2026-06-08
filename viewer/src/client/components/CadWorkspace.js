@@ -257,7 +257,7 @@ import {
 import { emitCadRefSelection } from "@/components/chat/cadRefEvents";
 import { basename, pickPrinterForSlice } from "@/components/chat/actionButtonsHelpers";
 import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
-import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, useChatStore } from "@/store/chat";
+import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, getChatState, useChatStore } from "@/store/chat";
 import { useProjectsStore } from "@/store/projects.ts";
 import { sortProjects } from "@/components/library/projectListHelpers.js";
 import { useProjectsFileTree } from "./workbench/hooks/useProjectsFileTree";
@@ -299,6 +299,55 @@ function describeSliceError(err) {
       return "Slicing timed out and was stopped. Try again, or simplify the model.";
     default:
       return raw || "Slice failed";
+  }
+}
+
+// Friendly text for a failed print. IPC rejects with the plain `IpcError`
+// object (`{ code, message }`), which is NOT an `Error` instance — so
+// `String(err)` renders the useless "[object Object]". Pull the code/message
+// off the object, map the common printer + cloud codes to actionable copy, and
+// always fall back to the raw backend message rather than the stringified
+// object. Mirrors `describeSliceError`.
+function describePrintError(err) {
+  const code = err && typeof err === "object" && "code" in err ? String(err.code || "") : "";
+  const raw =
+    err && typeof err === "object" && "message" in err
+      ? String(err.message || "")
+      : String(err || "");
+  switch (code) {
+    case "PRINTER_NOT_FOUND":
+      return "Printer not found. Re-pair it, then try again.";
+    case "PRINTER_NO_IP":
+    case "PRINTER_NO_SERIAL":
+    case "PRINTER_NO_ACCESS_CODE":
+      return "This printer is missing connection details. Re-pair it in Settings.";
+    case "FTPS_AUTH_FAILED":
+      return "The printer rejected the access code. Re-check it in Settings.";
+    case "FTPS_CONNECT_FAILED":
+    case "FTPS_TLS_FAILED":
+    case "TLS_CONNECT_FAILED":
+    case "TLS_INVALID_HOST":
+    case "MQTT_TIMEOUT":
+    case "MDNS_INIT_FAILED":
+      return "Couldn't reach the printer. Check it's powered on and on the same network.";
+    case "FTPS_UPLOAD_FAILED":
+    case "FTPS_FAILED":
+    case "CLOUD_UPLOAD_FAILED":
+      return `Upload to the printer failed: ${raw || "unknown error"}`;
+    case "MQTT_FAILED":
+    case "CLOUD_PRINT_FAILED":
+      return `Couldn't start the print: ${raw || "unknown error"}`;
+    case "CLOUD_LOGIN_FAILED":
+    case "CLOUD_REAUTH_REQUIRED":
+    case "CLOUD_TOKEN_INVALID":
+    case "CLOUD_TFA_REQUIRED":
+      return "Bambu cloud sign-in expired. Sign out and sign in again, then try printing.";
+    case "CLOUD_NO_MQTT_IDENTITY":
+      return "This Bambu cloud session can't send print commands (no MQTT identity). Sign out and sign in again.";
+    case "NO_ACTIVE_PROJECT":
+      return "Open a project before printing.";
+    default:
+      return raw || "Print failed";
   }
 }
 
@@ -6050,6 +6099,7 @@ export default function CadWorkspace({
     if (!gcodeFile) {
       return;
     }
+    console.info("[print] requested", { gcodeFile });
     setPrintStatus("");
     setPrintStatusError(false);
     setPrinting(true);
@@ -6059,35 +6109,51 @@ export default function CadWorkspace({
       const targetPrinter = pickPrinterForSlice(Array.isArray(printers) ? printers : []);
       if (!targetPrinter) {
         // No printer yet — pair first, then resume the print on dialog close.
+        console.info("[print] no paired printer — opening pairing dialog");
+        setPrintStatus("Add a printer to print");
+        setPrintStatusError(false);
         setAddPrinterOpen(true);
         return;
       }
+      console.info("[print] target printer", {
+        printerId: targetPrinter.id,
+        transport: targetPrinter.transport
+      });
       // Cloud print prefers the sliced `.gcode.3mf`, but only when it belongs to
       // the gcode being printed (a stale slice of a different model must not be
       // sent). LAN always uploads the plain gcode. Upload + start reference the
       // SAME file so their names agree.
-      const lastSlice = useChatStore.getState().lastSlice || {};
+      const lastSlice = getChatState().lastSlice || {};
       const gcode3mfFile =
-        lastSlice.gcodeFile === gcodeFile ? selectLatestGcode3mf(useChatStore.getState()) : "";
+        lastSlice.gcodeFile === gcodeFile ? selectLatestGcode3mf(getChatState()) : "";
       const sendFile =
         targetPrinter.transport === "cloud" && gcode3mfFile ? gcode3mfFile : gcodeFile;
+      const remoteName = basename(sendFile);
+      console.info("[print] uploading gcode", { sendFile, remoteName });
+      setPrintStatus(`Uploading ${remoteName}…`);
+      setPrintStatusError(false);
       await transport.printer_upload_gcode({
         printerId: targetPrinter.id,
         gcodeFile: sendFile
       });
+      console.info("[print] upload complete — starting print", { remoteName });
+      setPrintStatus("Starting print…");
+      setPrintStatusError(false);
       await transport.printer_start_print({
         printerId: targetPrinter.id,
-        remoteName: basename(sendFile),
+        remoteName,
         confirmed: true
       });
+      console.info("[print] print started", { printerId: targetPrinter.id, remoteName });
       setPrintStatus("Print started");
       setPrintStatusError(false);
       // Kick off live progress polling (no backend `print_progress` event exists,
       // so we poll `printer_status`). Seed a job so the button flips immediately.
-      setPrintJob({ state: "printing", progress: 0, etaSeconds: 0, name: basename(sendFile) });
+      setPrintJob({ state: "printing", progress: 0, etaSeconds: 0, name: remoteName });
       setMonitoredPrinterId(targetPrinter.id);
     } catch (error) {
-      setPrintStatus(error instanceof Error ? error.message : String(error));
+      console.error("[print] failed", error);
+      setPrintStatus(describePrintError(error));
       setPrintStatusError(true);
     } finally {
       setPrinting(false);
@@ -6123,17 +6189,23 @@ export default function CadWorkspace({
       if (state === "printing" || state === "paused") {
         sawActive = true;
       } else if (state === "error") {
+        console.error("[print] printer reported error", { printerId: monitoredPrinterId });
         setPrintStatus("Print error");
         setPrintStatusError(true);
         stop();
       } else if (state === "idle") {
         if (sawActive) {
+          console.info("[print] print complete", { printerId: monitoredPrinterId });
           setPrintStatus("Print complete");
           setPrintStatusError(false);
           stop();
         } else {
           idleEvents += 1;
           if (idleEvents >= MAX_IDLE_EVENTS) {
+            console.warn("[print] job never registered as active — stopping monitor", {
+              printerId: monitoredPrinterId,
+              idleEvents
+            });
             stop();
           }
         }

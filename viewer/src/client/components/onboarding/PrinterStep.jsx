@@ -285,20 +285,29 @@ function LanPairing({ onAdvance }) {
 }
 
 // ---------------------------------------------------------------------------
-// Cloud pairing (Bambu account sign-in → bound devices)
+// Cloud pairing (Bambu account email+password → auto-pulled printers)
 // ---------------------------------------------------------------------------
+//
+// Sign in to Bambu Cloud with email + password, then auto-pull the account's
+// printers from the cloud "bind list" (`printer_discover_cloud` → GET /user/bind),
+// which already carries each printer's serial + access code — so the user never
+// types them. A returning, already-signed-in user lands straight on the list.
 
 function CloudPairing({ onAdvance }) {
-  // phase: "email" (enter email) → "code" (enter emailed code) → "signedIn"
-  const [phase, setPhase] = useState("email");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
+  // Bambu often requires an emailed code as a second factor after the password;
+  // when it does, the form switches to collecting that code.
+  const [awaitingCode, setAwaitingCode] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [account, setAccount] = useState("");
+  const [signedInAccount, setSignedInAccount] = useState("");
   const [printers, setPrinters] = useState([]);
   const [discovering, setDiscovering] = useState(false);
 
+  // Pull the account's bound printers. Each is persisted by the backend on
+  // discovery (serial + access code included), so selecting one just advances.
   const discover = useCallback(async () => {
     setDiscovering(true);
     setError("");
@@ -306,13 +315,13 @@ function CloudPairing({ onAdvance }) {
       const list = await transport.printer_discover_cloud();
       setPrinters(Array.isArray(list) ? list : []);
     } catch (err) {
-      setError(errMessage(err, "Could not list cloud printers"));
+      setError(errMessage(err, "Could not list your printers"));
     } finally {
       setDiscovering(false);
     }
   }, []);
 
-  // On mount, reflect an existing signed-in session.
+  // Reflect an existing session: skip the password step straight to the list.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -320,12 +329,11 @@ function CloudPairing({ onAdvance }) {
         const status = await transport.cloud_account_status();
         if (cancelled) return;
         if (status?.signedIn && !status.needsReauth) {
-          setAccount(status.account || "");
-          setPhase("signedIn");
+          setSignedInAccount(status.account || "");
           void discover();
         }
       } catch {
-        /* not signed in — stay on the email phase */
+        /* not signed in — show the email/password fields */
       }
     })();
     return () => {
@@ -333,21 +341,33 @@ function CloudPairing({ onAdvance }) {
     };
   }, [discover]);
 
-  const sendCode = async () => {
-    if (!email.trim()) return;
+  const signIn = async () => {
+    if (!email.trim() || !password) return;
     setBusy(true);
     setError("");
     try {
-      await transport.cloud_login_request_code({ account: email.trim() });
-      setPhase("code");
+      const challenge = await transport.cloud_login_password({
+        account: email.trim(),
+        password,
+      });
+      if (challenge?.kind === "success") {
+        setSignedInAccount(email.trim());
+        setPassword("");
+        void discover();
+      } else if (challenge?.kind === "codeSent") {
+        // Bambu emailed a verification code — collect it to finish sign-in.
+        setAwaitingCode(true);
+      } else {
+        setError("Sign-in could not be completed.");
+      }
     } catch (err) {
-      setError(errMessage(err, "Could not send the verification code"));
+      setError(errMessage(err, "Email or password was not accepted"));
     } finally {
       setBusy(false);
     }
   };
 
-  const signIn = async () => {
+  const submitCode = async () => {
     if (!code.trim()) return;
     setBusy(true);
     setError("");
@@ -356,9 +376,10 @@ function CloudPairing({ onAdvance }) {
         account: email.trim(),
         code: code.trim(),
       });
-      setAccount(status?.account || email.trim());
+      setSignedInAccount(status?.account || email.trim());
       setCode("");
-      setPhase("signedIn");
+      setAwaitingCode(false);
+      setPassword("");
       void discover();
     } catch (err) {
       setError(errMessage(err, "That code was not accepted"));
@@ -375,20 +396,29 @@ function CloudPairing({ onAdvance }) {
       /* best-effort */
     } finally {
       setBusy(false);
-      setAccount("");
+      setSignedInAccount("");
       setPrinters([]);
-      setPhase("email");
+      setPassword("");
+      setCode("");
+      setAwaitingCode(false);
     }
   };
 
-  if (phase === "signedIn") {
+  // Signed in → the auto-pulled printer list.
+  if (signedInAccount) {
     return (
       <div className="flex flex-col gap-4">
         <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/20 p-3">
           <span className="text-sm">
-            Signed in as <span className="font-medium">{account}</span>
+            Signed in as <span className="font-medium">{signedInAccount}</span>
           </span>
-          <Button variant="ghost" size="sm" onClick={() => void signOut()} disabled={busy}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => void signOut()}
+            disabled={busy}
+          >
             <LogOut className="mr-2 size-4" /> Sign out
           </Button>
         </div>
@@ -413,9 +443,15 @@ function CloudPairing({ onAdvance }) {
             </p>
           ) : null}
         </div>
+        {discovering && printers.length === 0 ? (
+          <div className="rounded-md border border-border bg-muted/20 p-4 text-sm text-muted-foreground">
+            Loading your printers…
+          </div>
+        ) : null}
         {!discovering && printers.length === 0 ? (
           <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
-            No printers are bound to this Bambu account yet.
+            No printers are bound to this Bambu account yet. Add the printer in the
+            Bambu Handy app, then Refresh.
           </div>
         ) : null}
         <ul className="grid gap-2">
@@ -442,18 +478,75 @@ function CloudPairing({ onAdvance }) {
     );
   }
 
+  // Awaiting the emailed verification code Bambu requires after the password.
+  if (awaitingCode) {
+    return (
+      <form
+        className="flex flex-col gap-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!busy) void submitCode();
+        }}
+      >
+        <p className="text-sm text-muted-foreground">
+          Bambu emailed a 6-digit verification code to{" "}
+          <span className="font-medium">{email}</span>. Enter it to finish
+          signing in.
+        </p>
+        <Input
+          autoFocus
+          placeholder="Verification code"
+          value={code}
+          onChange={(event) => setCode(event.target.value)}
+          aria-label="Verification code"
+          inputMode="numeric"
+          disabled={busy}
+          data-testid="printer-cloud-code"
+        />
+        {error ? (
+          <p className="text-sm text-destructive" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setAwaitingCode(false);
+              setCode("");
+              setError("");
+            }}
+            disabled={busy}
+          >
+            Back
+          </Button>
+          <Button
+            type="submit"
+            disabled={busy || !code.trim()}
+            data-testid="printer-cloud-verify"
+          >
+            {busy ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
+            Verify & continue
+          </Button>
+        </div>
+      </form>
+    );
+  }
+
+  // Not signed in → email + password.
   return (
     <form
       className="flex flex-col gap-3"
       onSubmit={(event) => {
         event.preventDefault();
-        if (busy) return;
-        if (phase === "email") void sendCode();
-        else void signIn();
+        if (!busy) void signIn();
       }}
     >
       <p className="text-sm text-muted-foreground">
-        We’ll email a 6-digit verification code to your Bambu account.
+        Sign in to Bambu Cloud with your account email and password. We’ll pull
+        your printers automatically.
       </p>
       <Input
         type="email"
@@ -462,45 +555,31 @@ function CloudPairing({ onAdvance }) {
         value={email}
         onChange={(event) => setEmail(event.target.value)}
         aria-label="Bambu account email"
-        disabled={busy || phase === "code"}
+        disabled={busy}
+        data-testid="printer-cloud-email"
       />
-      {phase === "code" ? (
-        <Input
-          placeholder="Verification code"
-          value={code}
-          onChange={(event) => setCode(event.target.value)}
-          aria-label="Verification code"
-          inputMode="numeric"
-          autoFocus
-          disabled={busy}
-        />
-      ) : null}
+      <Input
+        type="password"
+        placeholder="Password"
+        value={password}
+        onChange={(event) => setPassword(event.target.value)}
+        aria-label="Password"
+        disabled={busy}
+        data-testid="printer-cloud-password"
+      />
       {error ? (
         <p className="text-sm text-destructive" role="alert">
           {error}
         </p>
       ) : null}
       <div className="flex items-center gap-2">
-        {phase === "code" ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              setPhase("email");
-              setCode("");
-              setError("");
-            }}
-            disabled={busy}
-          >
-            Back
-          </Button>
-        ) : null}
-        <Button type="submit" disabled={busy || (phase === "email" ? !email.trim() : !code.trim())}>
-          {busy ? (
-            <Loader2 className="mr-2 size-4 animate-spin" />
-          ) : null}
-          {phase === "email" ? "Send code" : "Sign in"}
+        <Button
+          type="submit"
+          disabled={busy || !email.trim() || !password}
+          data-testid="printer-cloud-signin"
+        >
+          {busy ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
+          Sign in
         </Button>
       </div>
     </form>

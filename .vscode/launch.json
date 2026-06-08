@@ -1,0 +1,25 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Panda Dev (Debug)",
+      "cargo": {
+        "args": [
+          "build",
+          "--manifest-path=./desktop/src-tauri/Cargo.toml"
+        ]
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Start Vite Dev Server",
+      "env": {
+        "VIEWER_PORT": "5173",
+        "PANDA_DEVTOOLS": "1",
+        "RUST_LOG": "debug",
+        "RUST_BACKTRACE": "1"
+      }
+    }
+  ]
+}

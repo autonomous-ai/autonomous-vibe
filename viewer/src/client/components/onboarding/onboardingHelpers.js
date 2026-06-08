@@ -582,6 +582,9 @@ export function buildOnboardedSettings(existing, overrides = {}) {
     slicerBinaryPath: base.slicerBinaryPath ?? "",
     usePandaCloud: overrides.usePandaCloud ?? base.usePandaCloud ?? false,
     pandaToken: overrides.pandaToken ?? base.pandaToken,
+    // Preserve the proxy base URL app_panda_login persisted — dropping it here
+    // would clobber it back to None on the completion write.
+    pandaBaseUrl: overrides.pandaBaseUrl ?? base.pandaBaseUrl,
     claudeOauthToken: base.claudeOauthToken,
     hasOnboarded: true,
     autoUpdate: base.autoUpdate ?? false,

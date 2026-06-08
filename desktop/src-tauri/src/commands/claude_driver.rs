@@ -119,6 +119,10 @@ pub struct ClaudeRunConfig {
     pub model: Option<String>,
     pub use_panda_cloud: bool,
     pub panda_token: Option<String>,
+    /// Panda proxy base URL (the exchange's `baseUrl`). Used as
+    /// `ANTHROPIC_BASE_URL` when `use_panda_cloud`; `None` falls back to the
+    /// compiled-in proxy URL.
+    pub panda_base_url: Option<String>,
     /// The workflow phase → drives `--permission-mode` + system prompt.
     pub phase: TurnPhase,
 }
@@ -297,10 +301,11 @@ pub fn build_command(cfg: &ClaudeRunConfig) -> Vec<String> {
     cmd
 }
 
-/// Env vars to set on the spawned `claude` process. When
-/// `use_panda_cloud` is true (v2 hook, default off in v1), override
-/// `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY`. Otherwise we inherit the
-/// host environment so the user's existing Claude Code auth applies.
+/// Env vars to set on the spawned `claude` process. When `use_panda_cloud` is
+/// true (set by the "Sign in with Panda" flow), route through Panda's hosted
+/// proxy: `ANTHROPIC_BASE_URL` (the exchange's baseUrl) + `ANTHROPIC_AUTH_TOKEN`
+/// (the `ccr-…` key). Otherwise we inherit the host environment so the user's
+/// existing Claude Code auth applies.
 pub fn build_env(cfg: &ClaudeRunConfig) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = Vec::new();
     // Disable Claude Code's self-updater on the spawned CLI. The host `claude`
@@ -315,9 +320,17 @@ pub fn build_env(cfg: &ClaudeRunConfig) -> Vec<(String, String)> {
     // own `claude`; it must not mutate itself underneath a turn.
     env.push(("DISABLE_AUTOUPDATER".into(), "1".into()));
     if cfg.use_panda_cloud {
-        env.push(("ANTHROPIC_BASE_URL".into(), "https://api.panda.app/v1".into()));
+        // Route through Panda's hosted proxy (BE contract): the issued `ccr-…`
+        // key is a bearer token, not an Anthropic API key, so it goes in
+        // `ANTHROPIC_AUTH_TOKEN`. The base URL is whatever the sign-in exchange
+        // returned, falling back to the compiled-in proxy URL.
+        let base = cfg
+            .panda_base_url
+            .clone()
+            .unwrap_or_else(|| crate::commands::app::PANDA_PROXY_URL.to_string());
+        env.push(("ANTHROPIC_BASE_URL".into(), base));
         if let Some(token) = &cfg.panda_token {
-            env.push(("ANTHROPIC_API_KEY".into(), token.clone()));
+            env.push(("ANTHROPIC_AUTH_TOKEN".into(), token.clone()));
         }
     }
     env
@@ -1006,10 +1019,11 @@ where
     // Honor the "Sign in with Panda" path: when the user picked the proxy during
     // onboarding, route this turn through Panda's hosted Claude server. Settings
     // are the source of truth (set by `app_panda_login`); `build_env` turns these
-    // two fields into `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY`. Best-effort: a
+    // fields into `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`. Best-effort: a
     // settings read failure just falls back to the user's own host auth.
     let settings = crate::commands::app::load_settings().await.ok();
     let use_panda_cloud = settings.as_ref().map(|s| s.use_panda_cloud).unwrap_or(false);
+    let panda_base_url = settings.as_ref().and_then(|s| s.panda_base_url.clone());
     let panda_token = settings.and_then(|s| s.panda_token);
 
     let cfg = ClaudeRunConfig {
@@ -1019,6 +1033,7 @@ where
         model: Some("opus".into()),
         use_panda_cloud,
         panda_token,
+        panda_base_url,
         phase,
     };
     let argv = build_command(&cfg);
@@ -1330,6 +1345,7 @@ where
             model: Some("opus".into()),
             use_panda_cloud: false,
             panda_token: None,
+            panda_base_url: None,
             phase: TurnPhase::Review,
         };
 
@@ -1569,6 +1585,7 @@ mod tests {
             model: None,
             use_panda_cloud: false,
             panda_token: None,
+            panda_base_url: None,
             phase: TurnPhase::Plan,
         };
         let cmd = build_command(&cfg);
@@ -1591,6 +1608,7 @@ mod tests {
             model: None,
             use_panda_cloud: false,
             panda_token: None,
+            panda_base_url: None,
             phase: TurnPhase::Plan,
         };
         let cmd = build_command(&cfg);
@@ -1617,6 +1635,7 @@ mod tests {
             model: None,
             use_panda_cloud: false,
             panda_token: None,
+            panda_base_url: None,
             phase: TurnPhase::Plan,
         };
         let cmd = build_command(&cfg);
@@ -1640,6 +1659,7 @@ mod tests {
             model: None,
             use_panda_cloud: false,
             panda_token: None,
+            panda_base_url: None,
             phase: TurnPhase::Implement,
         };
         let cmd = build_command(&cfg);
@@ -1676,25 +1696,52 @@ mod tests {
     }
 
     #[test]
-    fn build_env_panda_cloud_sets_base_url() {
+    fn build_env_panda_cloud_uses_returned_base_url_and_auth_token() {
         let cfg = ClaudeRunConfig {
             prompt: "hi".into(),
             workspace: PathBuf::from("/tmp/proj"),
             claude_session_id: None,
             model: None,
             use_panda_cloud: true,
-            panda_token: Some("tok-123".into()),
+            panda_token: Some("ccr-tok-123".into()),
+            panda_base_url: Some("https://api-panda.autonomous.ai".into()),
             phase: TurnPhase::Plan,
         };
         let env = build_env(&cfg);
         let map: HashMap<String, String> = env.into_iter().collect();
+        // The BE-issued base URL is used verbatim, and the `ccr-…` key is a
+        // bearer token (ANTHROPIC_AUTH_TOKEN), not an API key.
         assert_eq!(
             map.get("ANTHROPIC_BASE_URL").map(String::as_str),
-            Some("https://api.panda.app/v1"),
+            Some("https://api-panda.autonomous.ai"),
         );
-        assert_eq!(map.get("ANTHROPIC_API_KEY").map(String::as_str), Some("tok-123"));
+        assert_eq!(
+            map.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str),
+            Some("ccr-tok-123"),
+        );
+        // We never set the API-key var on the panda path.
+        assert!(!map.contains_key("ANTHROPIC_API_KEY"));
         // The self-updater is always disabled, cloud or not.
         assert_eq!(map.get("DISABLE_AUTOUPDATER").map(String::as_str), Some("1"));
+    }
+
+    #[test]
+    fn build_env_panda_cloud_falls_back_to_compiled_proxy_url() {
+        let cfg = ClaudeRunConfig {
+            prompt: "hi".into(),
+            workspace: PathBuf::from("/tmp/proj"),
+            claude_session_id: None,
+            model: None,
+            use_panda_cloud: true,
+            panda_token: Some("ccr-tok".into()),
+            panda_base_url: None,
+            phase: TurnPhase::Plan,
+        };
+        let map: HashMap<String, String> = build_env(&cfg).into_iter().collect();
+        assert_eq!(
+            map.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some(crate::commands::app::PANDA_PROXY_URL),
+        );
     }
 
     #[test]
@@ -1706,6 +1753,7 @@ mod tests {
             model: None,
             use_panda_cloud: false,
             panda_token: None,
+            panda_base_url: None,
             phase: TurnPhase::Plan,
         };
         let map: HashMap<String, String> = build_env(&cfg).into_iter().collect();
@@ -1714,6 +1762,7 @@ mod tests {
         // nothing else — host auth is inherited.
         assert_eq!(map.get("DISABLE_AUTOUPDATER").map(String::as_str), Some("1"));
         assert!(!map.contains_key("ANTHROPIC_BASE_URL"));
+        assert!(!map.contains_key("ANTHROPIC_AUTH_TOKEN"));
         assert!(!map.contains_key("ANTHROPIC_API_KEY"));
         assert_eq!(map.len(), 1);
     }
@@ -1855,6 +1904,7 @@ mod tests {
             model: None,
             use_panda_cloud: false,
             panda_token: None,
+            panda_base_url: None,
             phase: TurnPhase::Plan,
         };
         let cmd = build_command(&cfg);

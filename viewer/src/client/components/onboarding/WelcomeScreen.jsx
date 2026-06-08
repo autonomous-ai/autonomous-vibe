@@ -304,13 +304,28 @@ export default function WelcomeScreen({ onComplete }) {
           </div>
           {progressLabel ? (
             <div
-              className="flex items-center gap-2 rounded-md border border-border bg-background/60 p-3 text-sm"
+              className="flex flex-col gap-2 rounded-md border border-border bg-background/60 p-3 text-sm"
               data-testid="panda-login-progress"
             >
-              {pandaState === "error" ? null : (
-                <Loader2 className="size-4 animate-spin" />
-              )}
-              <span>{progressLabel}</span>
+              <div className="flex items-center gap-2">
+                {pandaState === "error" ? null : (
+                  <Loader2 className="size-4 animate-spin" />
+                )}
+                <span>{progressLabel}</span>
+              </div>
+              {pandaProgress?.stage === "awaiting_browser" &&
+              pandaProgress?.url ? (
+                <a
+                  href={pandaProgress.url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="inline-flex items-center gap-1 text-primary underline-offset-2 hover:underline"
+                  data-testid="panda-login-fallback-link"
+                >
+                  <ExternalLink className="size-3.5" /> Didn’t open? Open the
+                  sign-in page
+                </a>
+              ) : null}
             </div>
           ) : null}
           {pandaError ? (

@@ -262,6 +262,9 @@ export interface AppSettings {
   slicerFilamentProfile?: string;
   usePandaCloud: boolean;
   pandaToken?: string;
+  // Panda proxy base URL captured by app_panda_login (the exchange `baseUrl`);
+  // exported as ANTHROPIC_BASE_URL. Mirrors ipc/types.rs::AppSettings.panda_base_url.
+  pandaBaseUrl?: string;
   // Captured by app_login_claude (`claude setup-token`); exported as
   // CLAUDE_CODE_OAUTH_TOKEN so headless turns authenticate. Mirrors
   // ipc/types.rs::AppSettings.claude_oauth_token.
@@ -628,6 +631,16 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
       } as unknown as T;
     case "app_settings_write":
       return undefined as unknown as T;
+    case "app_set_auth_mode":
+      // Echo a settings snapshot reflecting the requested mode so the badge
+      // updates in browser dev.
+      return {
+        defaultFilament: "PLA",
+        slicerBinaryPath: "",
+        usePandaCloud: Boolean(args.usePandaCloud),
+        hasOnboarded: true,
+        autoUpdate: false,
+      } as unknown as T;
     case "app_install_claude_code":
       // Browser dev stub. The real command runs only inside Tauri — in
       // a plain browser there's no shell to run sh on. Return a labeled
@@ -792,6 +805,11 @@ const transportBase = {
   // success Rust persists the token + flips use_panda_cloud; progress streams
   // via the `panda_login_progress` event (see onPandaLoginProgress).
   app_panda_login: () => invoke<PandaLoginResult>("app_panda_login"),
+  // Switch the active Claude access mode (proxy ↔ own local Claude) without
+  // re-onboarding. Enabling the proxy requires a prior Panda sign-in (errors
+  // PANDA_NOT_SIGNED_IN otherwise). Returns the updated settings.
+  app_set_auth_mode: (usePandaCloud: boolean) =>
+    invoke<AppSettings>("app_set_auth_mode", { usePandaCloud }),
   app_install_orcaslicer: () =>
     invoke<InstalledSlicer>("app_install_orcaslicer"),
 

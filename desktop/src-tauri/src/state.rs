@@ -11,6 +11,19 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::oneshot;
+
+/// The in-RAM context for an in-flight Panda sign-in. `app_panda_login` stashes
+/// this before opening the browser; the deep-link handler matches `state` and
+/// delivers the one-time `code` (or an error) through `tx`. Never persisted.
+pub struct PendingPandaLogin {
+    /// The CSRF `state` value we sent to the web login; the callback must echo
+    /// it back or we reject the response.
+    pub state: String,
+    /// Fires once with the authorization `code` on a matched callback, or an
+    /// error string the command surfaces to the UI.
+    pub tx: oneshot::Sender<Result<String, String>>,
+}
 
 pub struct AppState {
     /// Monotonic counter incremented when the catalog scanner detects
@@ -46,6 +59,11 @@ pub struct AppState {
     /// writes the user-pasted authorization code into it so the OAuth
     /// paste-the-code flow can complete. `None` when no sign-in is in progress.
     login_pty_writer: Mutex<Option<Box<dyn Write + Send>>>,
+
+    /// In-flight Panda sign-in awaiting its browser deep-link callback. Set by
+    /// `app_panda_login`; consumed by the deep-link handler. `None` when no
+    /// Panda sign-in is in progress.
+    pending_panda_login: Mutex<Option<PendingPandaLogin>>,
 }
 
 impl AppState {
@@ -59,6 +77,7 @@ impl AppState {
             printers: Mutex::new(Vec::new()),
             active_project: Mutex::new(None),
             login_pty_writer: Mutex::new(None),
+            pending_panda_login: Mutex::new(None),
         }
     }
 
@@ -150,6 +169,20 @@ impl AppState {
             .and_then(|_| writer.write_all(b"\r"))
             .and_then(|_| writer.flush())
             .map_err(|e| e.to_string())
+    }
+
+    /// Arm the pending Panda sign-in (see [`PendingPandaLogin`]). Replaces any
+    /// prior pending login — a fresh "Sign in with Panda" click supersedes a
+    /// stale one (whose receiver has already timed out).
+    pub fn set_pending_panda_login(&self, pending: PendingPandaLogin) {
+        *self.pending_panda_login.lock() = Some(pending);
+    }
+
+    /// Take the pending Panda sign-in, leaving `None`. The deep-link handler
+    /// calls this once per callback; the command's `oneshot` receiver only
+    /// fires for the matching arming.
+    pub fn take_pending_panda_login(&self) -> Option<PendingPandaLogin> {
+        self.pending_panda_login.lock().take()
     }
 }
 

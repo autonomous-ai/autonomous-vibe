@@ -6,6 +6,7 @@ import { CHAT_MIN_WIDTH, clampChatWidth } from "@/workbench/chatLayout";
 import ChatHistory from "./ChatHistory";
 import ChatInput from "./ChatInput";
 import ActionButtons from "./ActionButtons";
+import AuthModeControl from "./AuthModeControl";
 
 const SIDEBAR_WIDTH = 440;
 const SIDEBAR_WIDTH_STORAGE_KEY = "panda.chatSidebar.width";
@@ -179,6 +180,9 @@ export default function ChatSidebar({
       <header className="flex items-center gap-2 border-b border-border/60 px-4 py-2.5">
         <MessageSquare className="size-4 text-muted-foreground" aria-hidden />
         <span className="text-sm font-semibold tracking-tight">Chat</span>
+        <div className="ml-auto">
+          <AuthModeControl />
+        </div>
       </header>
 
       <div className="min-h-0 flex-1">

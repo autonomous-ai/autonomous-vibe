@@ -598,8 +598,16 @@ pub struct AppSettings {
     #[serde(default)]
     pub slicer_filament_profile: String,
     pub use_panda_cloud: bool,
+    /// Panda proxy key (`ccr-…`) captured by `app_panda_login`. Exported as
+    /// `ANTHROPIC_AUTH_TOKEN` into the spawned `claude -p` when
+    /// `use_panda_cloud` is set, so turns route through Panda's hosted proxy.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub panda_token: Option<String>,
+    /// Panda proxy base URL (`baseUrl` returned by the sign-in exchange, e.g.
+    /// `https://api-panda.autonomous.ai`). Exported as `ANTHROPIC_BASE_URL`
+    /// alongside `panda_token`. `None` falls back to the compiled-in proxy URL.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub panda_base_url: Option<String>,
     /// Long-lived (1-year) Claude Code OAuth token captured by
     /// `app_login_claude` (`claude setup-token`). When present it is exported
     /// as `CLAUDE_CODE_OAUTH_TOKEN` into the spawned `claude -p` environment so
@@ -630,6 +638,7 @@ impl Default for AppSettings {
             slicer_filament_profile: String::new(),
             use_panda_cloud: false,
             panda_token: None,
+            panda_base_url: None,
             claude_oauth_token: None,
             has_onboarded: false,
             auto_update: false,

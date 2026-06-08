@@ -88,9 +88,41 @@ pub fn run() {
             // environment so every spawned `claude -p` child inherits it and
             // headless turns authenticate without an interactive `/login`.
             tauri::async_runtime::spawn(commands::app::apply_stored_oauth_token_to_env());
+            // Panda sign-in deep link: receive the browser's
+            // `myide://auth/callback?code=…&state=…` and route it to the
+            // waiting `app_panda_login`. Runtime-register the scheme so dev
+            // (`cargo run`, no installer) also works; the installed build
+            // registers it via the bundler (tauri.conf.json deep-link config).
+            // The warm-start case on Windows/Linux (a second process spawned for
+            // the link) is handled by the single-instance callback below.
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let handle = tauri::Manager::app_handle(app).clone();
+                let _ = app.deep_link().register("myide");
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        commands::app::handle_panda_deeplink(&handle, url.as_str());
+                    }
+                });
+            }
             Ok(())
         })
         .on_menu_event(|app, event| menu::on_event(app, event.id.as_ref()))
+        // Single-instance MUST be the first plugin registered. It also forwards
+        // the deep-link URL: on Windows/Linux the OS launches a *second* process
+        // for `myide://…`, whose argv carries the URL — we route it to
+        // the same handler and focus the existing window.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            for arg in &argv {
+                if arg.starts_with("myide://") {
+                    commands::app::handle_panda_deeplink(app, arg);
+                }
+            }
+            if let Some(win) = tauri::Manager::get_webview_window(app, "main") {
+                let _ = win.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -108,6 +140,7 @@ pub fn run() {
             app::app_login_claude,
             app::app_submit_login_code,
             app::app_panda_login,
+            app::app_set_auth_mode,
             app::app_install_orcaslicer,
             // catalog
             catalog::catalog_read,

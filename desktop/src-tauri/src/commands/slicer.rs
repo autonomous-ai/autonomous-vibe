@@ -139,8 +139,9 @@ async fn run_slice_job(
         None => (settings_profile, filament_profile),
     };
 
-    // Sliced project 3mf lands next to the gcode as `<stem>.gcode.3mf`.
-    let gcode_3mf_path = append_ext(&gcode_path, "3mf");
+    // Sliced project 3mf lands next to the gcode named after the model
+    // (`<stem>.3mf`), so the exported plate matches the source model name.
+    let gcode_3mf_path = sliced_3mf_path_for(&mesh_path, &gcode_path);
     let args = build_orcaslicer_args(SlicerInvocation {
         out_dir: &out_dir,
         mesh: &mesh_path,
@@ -194,15 +195,28 @@ async fn run_slice_job(
     );
 
     let produced_gcode = pick_produced_gcode(&out_dir, &mesh_path, &gcode_path).await?;
+    // OrcaSlicer names the gcode after the build *plate* (e.g. `plate_1.gcode`),
+    // not the input mesh, and there's no CLI flag to override it. Rename it to
+    // the model name (`<stem>.gcode`) so the output matches the model — the same
+    // name we give the exported `.3mf`. Best-effort: if the rename fails, keep
+    // the produced path so the slice still succeeds.
+    let produced_gcode = if produced_gcode == gcode_path {
+        produced_gcode
+    } else {
+        match tokio::fs::rename(&produced_gcode, &gcode_path).await {
+            Ok(()) => gcode_path.clone(),
+            Err(_) => produced_gcode,
+        }
+    };
     let header_bytes = read_gcode_header(&produced_gcode).await?;
     let parsed = parse_gcode_metadata(&String::from_utf8_lossy(&header_bytes));
 
     let gcode_relpath = produced_gcode_relpath(&produced_gcode, &req.mesh_file);
     // Best-effort: only advertise the 3mf if the slicer actually wrote it.
-    // The 3mf is named after the mesh stem (`gcode_3mf_path`), which can
-    // differ from the produced gcode's name, so build its relpath from the
-    // actual exported filename in the gcode's workspace dir — not by suffixing
-    // the gcode relpath.
+    // The 3mf is named after the model (`gcode_3mf_path`), which can differ
+    // from the produced gcode's name, so build its relpath from the actual
+    // exported filename in the gcode's workspace dir — not by suffixing the
+    // gcode relpath.
     let gcode_3mf_file = if gcode_3mf_path.exists() {
         let fname = gcode_3mf_path
             .file_name()
@@ -710,6 +724,19 @@ fn gcode_path_for(mesh: &Path) -> PathBuf {
         .unwrap_or_else(|| "model".to_string());
     let dir = mesh.parent().unwrap_or_else(|| Path::new(""));
     dir.join(format!("{stem}.gcode"))
+}
+
+/// Path for the sliced project `.3mf`. Named after the model (`<stem>.3mf`,
+/// derived from the gcode path so it sits in the same output dir) so the
+/// exported plate matches the source model name. Falls back to
+/// `<stem>.gcode.3mf` when that would collide with the input mesh (e.g. the
+/// model is itself a `.3mf`), so a slice never overwrites its own source.
+fn sliced_3mf_path_for(mesh: &Path, gcode: &Path) -> PathBuf {
+    let candidate = gcode.with_extension("3mf");
+    if candidate == mesh {
+        return append_ext(gcode, "3mf");
+    }
+    candidate
 }
 
 fn produced_gcode_relpath(produced: &Path, original_ref: &str) -> String {
@@ -1346,6 +1373,28 @@ G1 X0 Y0
         let produced = PathBuf::from("/abs/projects/parts/lid.gcode");
         assert_eq!(produced_gcode_relpath(&produced, "parts/lid.stl"), "parts/lid.gcode");
         assert_eq!(produced_gcode_relpath(&produced, "model.stl"), "lid.gcode");
+    }
+
+    #[test]
+    fn sliced_3mf_matches_model_name() {
+        // The exported plate is named after the model, not `<stem>.gcode.3mf`.
+        let mesh = PathBuf::from("/abs/projects/parts/lid.stl");
+        let gcode = gcode_path_for(&mesh);
+        assert_eq!(
+            sliced_3mf_path_for(&mesh, &gcode),
+            PathBuf::from("/abs/projects/parts/lid.3mf")
+        );
+    }
+
+    #[test]
+    fn sliced_3mf_falls_back_when_input_is_3mf() {
+        // A `.3mf` input would collide with `<stem>.3mf`; keep the source intact.
+        let mesh = PathBuf::from("/abs/projects/parts/lid.3mf");
+        let gcode = gcode_path_for(&mesh);
+        assert_eq!(
+            sliced_3mf_path_for(&mesh, &gcode),
+            PathBuf::from("/abs/projects/parts/lid.gcode.3mf")
+        );
     }
 
     #[test]

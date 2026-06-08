@@ -161,7 +161,13 @@ export function entryHasDxf(entry) {
 }
 
 export function entryHasGcode(entry) {
-  return Boolean(entryAssetUrl(entry, "gcode") && entryAssetHash(entry, "gcode"));
+  // A gcode entry is loadable as soon as it has a fetchable URL — the toolpath
+  // is parsed/rendered straight from the bytes. The `hash` is only a cache-bust
+  // token (synthesized from the versioned URL) and stays optional: it's compared
+  // separately (selectedGcodeMatches) to refetch a re-sliced same-path file.
+  // Requiring it here meant any catalog that omits the hash (e.g. the HTTP dev
+  // backend) parsed 0 layers even though the gcode rendered fine.
+  return Boolean(entryAssetUrl(entry, "gcode"));
 }
 
 export function entryStepModuleUrl(entry) {

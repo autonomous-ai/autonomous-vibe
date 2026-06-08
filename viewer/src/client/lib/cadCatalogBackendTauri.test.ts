@@ -31,6 +31,28 @@ test("readCatalog adds a hash to stl entries but not step", async () => {
   }
 });
 
+// A `.gcode` toolpath is directly renderable too (GcodePreviewPane), and
+// `entryHasGcode` gates on a hash. The Rust catalog omits it, so the adapter
+// must synthesize one — otherwise `loadGcodeForEntry` early-returns and the
+// G-code view hangs on "Loading G-code preview...".
+test("readCatalog adds a hash to gcode entries", async () => {
+  const restore = __setTransportForTesting({
+    catalog_read: async () => ({
+      revision: 5,
+      rootPath: "/p",
+      entries: [
+        { file: "ladybug.gcode", kind: "gcode", url: "pandaasset://localhost/ladybug.gcode?v=9-9" },
+      ],
+    }),
+  });
+  try {
+    const catalog = await tauriCadCatalogBackend.readCatalog();
+    assert.equal(catalog.entries[0].hash, "pandaasset://localhost/ladybug.gcode?v=9-9#5");
+  } finally {
+    restore();
+  }
+});
+
 // An assembly's integrated `.stl` carries `artifact.parts`; the adapter turns
 // each into a render-ready child entry on `entry.parts` (with a `__partOf`
 // marker + synthesized hash) without adding them as standalone catalog entries.

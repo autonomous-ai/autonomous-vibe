@@ -5,7 +5,6 @@ import { attachChatEventStream, useChatStore } from "@/store/chat";
 import { CHAT_MIN_WIDTH, clampChatWidth } from "@/workbench/chatLayout";
 import ChatHistory from "./ChatHistory";
 import ChatInput from "./ChatInput";
-import ActionButtons from "./ActionButtons";
 
 const SIDEBAR_WIDTH = 440;
 const SIDEBAR_WIDTH_STORAGE_KEY = "panda.chatSidebar.width";
@@ -57,8 +56,6 @@ function persistChatSidebarWidth(width) {
 // (see workbench/chatLayout.js): dragging wide enough auto-closes the Models
 // sidebar to free space, and the viewer keeps a minimum visible width.
 export default function ChatSidebar({
-  printerList = [],
-  defaultFilament = "PLA",
   onOpenArtifact,
   width = SIDEBAR_WIDTH,
   onWidthChange,
@@ -197,7 +194,6 @@ export default function ChatSidebar({
         </div>
       ) : null}
 
-      <ActionButtons printerList={printerList} defaultFilament={defaultFilament} />
       <ChatInput />
     </aside>
   );

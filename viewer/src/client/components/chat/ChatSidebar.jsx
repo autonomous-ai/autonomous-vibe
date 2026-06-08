@@ -70,6 +70,7 @@ export default function ChatSidebar({
     const current = state.projects.find((project) => project.id === state.currentProjectId);
     return current?.name || "";
   });
+  const isEmpty = history.length === 0;
   const summaryTitle = currentProjectName.trim() || (history.length ? "Untitled chat" : "New chat");
 
   const resizeStateRef = useRef(null);
@@ -190,10 +191,24 @@ export default function ChatSidebar({
       </header>
 
       <div className="min-h-0 flex-1">
-        <ChatHistory
-          history={history}
-          onOpenArtifact={onOpenArtifact}
-        />
+        {isEmpty ? (
+          <div
+            data-slot="chat-empty-composer"
+            className="flex h-full flex-col items-center justify-center gap-4 px-3.5"
+          >
+            <div className="flex flex-col items-center gap-1 text-center text-xs text-muted-foreground">
+              <p>Describe what you want to print.</p>
+              <p className="opacity-70">I'll draft a plan first — you can edit and approve it before I build.</p>
+              <p className="opacity-70">Click a face on the model to refer to it in your message.</p>
+            </div>
+            <ChatInput className="w-full bg-transparent px-0 py-0" />
+          </div>
+        ) : (
+          <ChatHistory
+            history={history}
+            onOpenArtifact={onOpenArtifact}
+          />
+        )}
       </div>
 
       {lastError ? (
@@ -205,7 +220,7 @@ export default function ChatSidebar({
         </div>
       ) : null}
 
-      <ChatInput />
+      {isEmpty ? null : <ChatInput />}
     </aside>
   );
 }

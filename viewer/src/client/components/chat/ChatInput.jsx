@@ -291,7 +291,7 @@ export default function ChatInput({ className }) {
               onClick={handleCancel}
               title="Stop"
               data-slot="chat-cancel-button"
-              className="size-8 rounded-full bg-foreground text-background transition-none hover:bg-foreground hover:text-background dark:hover:bg-foreground dark:hover:text-background"
+              className="size-8 rounded-full bg-white text-neutral-900 shadow-sm transition-none hover:bg-white hover:text-neutral-900 dark:bg-white dark:text-neutral-900 dark:hover:bg-white dark:hover:text-neutral-900"
             >
               <Square className="size-3 fill-current stroke-current" aria-hidden />
             </Button>
@@ -304,7 +304,7 @@ export default function ChatInput({ className }) {
               disabled={sendDisabled}
               title="Send"
               data-slot="chat-send-button"
-              className="size-8 rounded-full bg-foreground text-background transition-none hover:bg-foreground hover:text-background dark:hover:bg-foreground dark:hover:text-background disabled:bg-foreground/35 disabled:text-background/70"
+              className="size-8 rounded-full bg-foreground text-background transition-none hover:bg-foreground hover:text-background dark:hover:bg-foreground dark:hover:text-background disabled:opacity-100 disabled:bg-muted-foreground disabled:text-background"
             >
               <ArrowUp className="size-4" aria-hidden />
             </Button>

@@ -158,6 +158,25 @@ export interface SliceStats {
   gcodeFile: string;
   /** Sliced project `.3mf` (gcode embedded) for the cloud print path. */
   gcode3mfFile?: string;
+  /** Static analysis of the produced G-code; absent if it couldn't be read. */
+  validation?: SliceValidation;
+  /**
+   * Actionable warnings OrcaSlicer reported about the model itself during a
+   * successful slice (floating regions, unsupported overhangs, …) — the same
+   * "re-orient or enable supports" notices its GUI shows. Empty/absent when none.
+   */
+  slicerWarnings?: string[];
+}
+
+export interface SliceValidation {
+  /** Structural integrity only (non-empty + has movement + has extrusion). */
+  ok: boolean;
+  errors: string[];
+  /** Non-fatal findings: bed bounds, missing temps, unrecognized commands. */
+  warnings: string[];
+  movementCommands: number;
+  extrusionMoves: number;
+  temperatureCommands: number;
 }
 
 export interface SliceStatus {
@@ -293,6 +312,10 @@ export interface AppSettings {
   slicerSettingsProfile?: string;
   // OrcaSlicer filament config for `--load-filaments`. Empty = none.
   slicerFilamentProfile?: string;
+  // Preferred print device — a PrinterCard.id. When set and still paired, the
+  // Print action targets it; empty/unpaired falls back to auto-pick. Mirrors
+  // ipc/types.rs::AppSettings.default_printer_id.
+  defaultPrinterId?: string;
   usePandaCloud: boolean;
   pandaToken?: string;
   // Panda proxy base URL captured by app_panda_login (the exchange `baseUrl`);

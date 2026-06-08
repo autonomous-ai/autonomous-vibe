@@ -355,6 +355,34 @@ pub struct SliceStats {
     /// when the slicer did not produce one.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub gcode_3mf_file: Option<String>,
+    /// Static analysis of the produced G-code (ported from the `gcode` skill's
+    /// `validate`). Best-effort and non-fatal: a slice still succeeds even when
+    /// `validation.ok` is false. `None` when the G-code could not be read back.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub validation: Option<SliceValidation>,
+    /// Actionable slicing warnings OrcaSlicer itself reported on stdout during a
+    /// **successful** slice — e.g. "object has floating regions; re-orient or
+    /// enable support generation". Distinct from `validation` (Panda's own static
+    /// G-code analysis): these are the slicer's own findings about the model, the
+    /// same notices its GUI surfaces. Empty/omitted when the slicer reported none.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub slicer_warnings: Vec<String>,
+}
+
+/// Result of statically validating a sliced `.gcode`. `ok` reflects structural
+/// integrity only (the file has movement + extrusion and is non-empty); bed
+/// bounds, missing-temperature, and unrecognized-command findings ride in
+/// `warnings` so they never spuriously fail a slice (Bambu firmware legitimately
+/// moves outside the printable area for purge/wipe).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SliceValidation {
+    pub ok: bool,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub movement_commands: u32,
+    pub extrusion_moves: u32,
+    pub temperature_commands: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -654,6 +682,13 @@ pub struct AppSettings {
     /// path(s), `;`-joined. Empty = none.
     #[serde(default)]
     pub slicer_filament_profile: String,
+    /// Preferred print device — a `PrinterCard.id` (LAN serial, `cloud:<serial>`,
+    /// or the `bambu-studio` handoff). When set and it still matches a paired
+    /// device, the Print action targets it instead of auto-picking; an empty or
+    /// no-longer-paired value falls back to the auto-pick heuristic. Lets the
+    /// user choose which device prints a sliced model when several are paired.
+    #[serde(default)]
+    pub default_printer_id: String,
     pub use_panda_cloud: bool,
     /// Panda proxy key (`ccr-…`) captured by `app_panda_login`. Exported as
     /// `ANTHROPIC_AUTH_TOKEN` into the spawned `claude -p` when
@@ -693,6 +728,7 @@ impl Default for AppSettings {
             slicer_binary_path: String::new(),
             slicer_settings_profile: String::new(),
             slicer_filament_profile: String::new(),
+            default_printer_id: String::new(),
             use_panda_cloud: false,
             panda_token: None,
             panda_base_url: None,

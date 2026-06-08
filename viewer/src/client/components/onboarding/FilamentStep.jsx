@@ -17,11 +17,14 @@ export default function FilamentStep({ onAdvance, currentSettings }) {
     setError("");
     try {
       const existing = currentSettings || (await transport.app_settings_read());
+      // Spread the existing settings so sibling fields (slicer profiles, the
+      // chosen default device, auth tokens, autoUpdate, …) survive — only the
+      // filament choice changes here.
       const nextSettings = {
+        ...(existing || {}),
         defaultFilament: selected,
         slicerBinaryPath: existing?.slicerBinaryPath ?? "",
         usePandaCloud: existing?.usePandaCloud ?? false,
-        pandaToken: existing?.pandaToken,
         hasOnboarded: existing?.hasOnboarded ?? false,
       };
       await transport.app_settings_write(nextSettings);

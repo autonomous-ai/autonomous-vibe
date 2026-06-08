@@ -7,6 +7,7 @@ Document version: **v1.0-post-merge** (2026-05-28).
 
 Changes since pre-flight:
 - AppSettings gained `hasOnboarded: boolean` (Track E; mirrored in Rust as `has_onboarded`)
+- AppSettings gained `defaultPrinterId?: string` — the user's preferred print device (a `PrinterCard.id`); the Print action targets it when still paired, else auto-picks (mirrored in Rust as `default_printer_id`)
 - §1 documents the concrete `generate_step()` signature now that Track A's follow-up wrapper has landed
 - §2 added `app_install_claude_code()` + `claude_install_progress` event for Track I (one-click Claude Code install from the first-run wizard)
 - §2 added `app_install_orcaslicer()` + `slicer_install_progress` event (one-click OrcaSlicer install from the first-run wizard, step 2 of 4); `app_prereq_check().slicer` now resolves via the same probe the slice path uses
@@ -337,7 +338,30 @@ interface SliceStats {
   supportsUsed: boolean;
   gcodeFile: string;            // workspace-relative .gcode
   gcode3mfFile?: string;        // sliced .gcode.3mf (cloud upload artifact); absent if not produced
+  validation?: SliceValidation; // static analysis of the produced gcode; absent if it couldn't be read
+  slicerWarnings?: string[];    // OrcaSlicer's own model warnings on a successful slice
+                                // (floating regions / unsupported overhangs — "re-orient or
+                                // enable supports"); empty/absent when the slicer reported none
 }
+// Ported from the `gcode` skill's `validate`. Advisory/non-fatal: a slice
+// succeeds even when `ok` is false. `ok` reflects structural integrity only
+// (non-empty + has movement + has extrusion); bed-bounds, missing-temperature,
+// and unrecognized-command findings ride in `warnings` (Bambu firmware
+// legitimately moves outside the printable area for purge/wipe).
+interface SliceValidation {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+  movementCommands: number;
+  extrusionMoves: number;
+  temperatureCommands: number;
+}
+// slice_run pre-screens the mesh (ported from the `gcode` skill's `inspect`)
+// before invoking OrcaSlicer, rejecting unsliceable inputs with a clear code:
+//   MESH_UNSUPPORTED — non-mesh (.step/.dxf/…), or a mesh format this flow
+//                      doesn't convert (.ply/.glb/.gltf)
+//   ALREADY_SLICED   — a .3mf that is already a sliced plate (carries
+//                      Metadata/plate_*.gcode), to avoid re-slicing it
 function slice_run(req: SliceRequest): Promise<SliceStats>;
 
 interface SliceStatus {
@@ -499,6 +523,8 @@ interface AppSettings {
   slicerBinaryPath: string;     // empty = bundled
   slicerSettingsProfile?: string;   // OrcaSlicer --load-settings (machine;process), ;-joined paths; empty = default
   slicerFilamentProfile?: string;   // OrcaSlicer --load-filaments path; empty = none
+  defaultPrinterId?: string;    // preferred print device (a PrinterCard.id); when paired the Print
+                                //   action targets it, else auto-picks. empty = auto-pick
   usePandaCloud: boolean;       // v2 hook; default false
   pandaToken?: string;          // v2 hook
   hasOnboarded: boolean;        // gates the first-run wizard (added during Track E merge)

@@ -297,6 +297,10 @@ function describeSliceError(err) {
       return `Slicer error: ${raw || "the slicer exited with an error"}`;
     case "SLICE_TIMEOUT":
       return "Slicing timed out and was stopped. Try again, or simplify the model.";
+    case "MESH_UNSUPPORTED":
+      return raw || "This file can't be sliced. Provide a printable mesh (.stl).";
+    case "ALREADY_SLICED":
+      return raw || "This file is already sliced. Open it to print directly.";
     default:
       return raw || "Slice failed";
   }
@@ -615,7 +619,10 @@ export default function CadWorkspace({
   // Terminal slice toast (success or failure), kept separate from the
   // overloaded `screenshotStatus` so failures can be styled as errors.
   const [sliceStatus, setSliceStatus] = useState("");
-  const [sliceStatusError, setSliceStatusError] = useState(false);
+  // "" | "error" | "warning" — drives the toast tone: red for a failed/bad
+  // slice, amber for a slice that succeeded but the slicer flagged the model
+  // (floating regions, unsupported overhangs).
+  const [sliceStatusSeverity, setSliceStatusSeverity] = useState("");
   // Live in-flight stage from `slice_progress`, drives the button label.
   const [sliceProgress, setSliceProgress] = useState(null);
   const [addPrinterOpen, setAddPrinterOpen] = useState(false);
@@ -6061,7 +6068,7 @@ export default function CadWorkspace({
     setSlicing(true);
     setSliceError("");
     setSliceStatus("");
-    setSliceStatusError(false);
+    setSliceStatusSeverity("");
     setSliceProgress(null);
     setCopyStatus("");
     try {
@@ -6085,14 +6092,37 @@ export default function CadWorkspace({
       if (stats?.gcodeFile) {
         setAutoSelectGcodePath(stats.gcodeFile);
       }
-      setSliceStatus("Plate sliced");
-      setSliceStatusError(false);
+      // Static validation rides along on the stats (ported from the gcode
+      // skill). It's advisory: a slice still succeeds when it fails, so only
+      // structural problems (empty / no movement / no extrusion) get the
+      // attention-grabbing error chip. Validator warnings (bed-bounds,
+      // unrecognized commands) are common on real Bambu output, so they go to
+      // the console rather than nagging on every slice.
+      const validation = stats?.validation;
+      if (validation?.warnings?.length) {
+        console.warn("[panda] slice validation warnings:", validation.warnings);
+      }
+      // OrcaSlicer's *own* warnings about the model (floating regions,
+      // unsupported overhangs) are different: actionable and worth surfacing,
+      // exactly the "re-orient or enable supports" notices its GUI shows.
+      const slicerWarnings = Array.isArray(stats?.slicerWarnings) ? stats.slicerWarnings : [];
+      if (validation && validation.ok === false && validation.errors?.length) {
+        setSliceStatus(`Plate sliced, but the G-code looks off: ${validation.errors[0]}`);
+        setSliceStatusSeverity("error");
+      } else if (slicerWarnings.length) {
+        console.warn("[panda] slicer warnings:", slicerWarnings);
+        setSliceStatus(slicerWarnings.join(" "));
+        setSliceStatusSeverity("warning");
+      } else {
+        setSliceStatus("Plate sliced");
+        setSliceStatusSeverity("");
+      }
     } catch (err) {
       // Surface a clear, actionable message both as a toast and a persistent
       // chip on the toolbar (the toast alone was too easy to miss).
       const message = describeSliceError(err);
       setSliceStatus(message);
-      setSliceStatusError(true);
+      setSliceStatusSeverity("error");
       setSliceError(message);
     } finally {
       setSlicing(false);
@@ -6138,7 +6168,20 @@ export default function CadWorkspace({
     try {
       const transport = getTransport();
       const printers = await transport.printer_list();
-      const targetPrinter = pickPrinterForSlice(Array.isArray(printers) ? printers : []);
+      // Honor the user's chosen default device (Settings → Default device); a
+      // blank or no-longer-paired default falls back to the auto-pick heuristic.
+      // Best-effort: a settings read failure must never block printing.
+      let defaultPrinterId = "";
+      try {
+        const settings = await transport.app_settings_read();
+        defaultPrinterId = String(settings?.defaultPrinterId || "");
+      } catch (settingsError) {
+        console.warn("[print] could not read default device setting", settingsError);
+      }
+      const targetPrinter = pickPrinterForSlice(
+        Array.isArray(printers) ? printers : [],
+        defaultPrinterId
+      );
       if (!targetPrinter) {
         // No printer yet — pair first, then resume the print on dialog close.
         console.info("[print] no paired printer — opening pairing dialog");
@@ -6180,15 +6223,17 @@ export default function CadWorkspace({
         setPrintStatusError(true);
         return;
       }
-      // Cloud print prefers the sliced `.gcode.3mf`, but only when it belongs to
-      // the gcode being printed (a stale slice of a different model must not be
-      // sent). LAN always uploads the plain gcode. Upload + start reference the
-      // SAME file so their names agree.
+      // Both cloud and LAN prefer the sliced `.gcode.3mf` project: it is the
+      // firmware-validated start path (LAN publishes `project_file` against the
+      // FTPS-root project, cloud uploads the project), far more reliable than a
+      // plain-gcode start. Use it only when it belongs to the gcode being printed
+      // (a stale slice of a different model must not be sent); otherwise fall back
+      // to the plain gcode. Upload + start reference the SAME file so the names
+      // agree.
       const lastSlice = getChatState().lastSlice || {};
       const gcode3mfFile =
         lastSlice.gcodeFile === gcodeFile ? selectLatestGcode3mf(getChatState()) : "";
-      const sendFile =
-        targetPrinter.transport === "cloud" && gcode3mfFile ? gcode3mfFile : gcodeFile;
+      const sendFile = gcode3mfFile || gcodeFile;
       const remoteName = basename(sendFile);
       console.info("[print] uploading gcode", { sendFile, remoteName });
       setPrintStatus(`Uploading ${remoteName}…`);
@@ -6893,7 +6938,7 @@ export default function CadWorkspace({
           persistenceStatus={persistenceStatus}
           motionErrorStatus={motionErrorStatus}
           sliceStatus={sliceStatus}
-          sliceStatusError={sliceStatusError}
+          sliceStatusSeverity={sliceStatusSeverity}
           printStatus={printStatus}
           printStatusError={printStatusError}
           previewMode={previewMode}
@@ -6903,7 +6948,7 @@ export default function CadWorkspace({
             setPersistenceStatus("");
             setMotionErrorStatus("");
             setSliceStatus("");
-            setSliceStatusError(false);
+            setSliceStatusSeverity("");
             setPrintStatus("");
             setPrintStatusError(false);
             lastPersistenceFailureKeyRef.current = "";

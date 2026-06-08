@@ -5,8 +5,10 @@
 //! (`rumqttc`). Per the donor `skills/bambu-labs` skill:
 //!
 //!   - FTPS:   implicit TLS, port 990, user `bblp`, password is the
-//!             printer's LAN access code. Plain-gcode uploads land in
-//!             `/cache/<job>.gcode` on the printer.
+//!             printer's LAN access code. A sliced `.gcode.3mf` project lands
+//!             at the FTPS root (the firmware-validated `project_file` start
+//!             fetches it via `ftp:///<job>.gcode.3mf`); a plain `.gcode`
+//!             falls back to `/cache/<job>.gcode`.
 //!   - MQTT:   TLS port 8883, same `bblp` user + access-code auth.
 //!             Request topic: `device/{serial}/request`.
 //!             Report topic:  `device/{serial}/report`.
@@ -406,7 +408,19 @@ async fn run_start_print(req: &StartPrintRequest) -> IpcResult<PrinterRecord> {
         PrinterTransport::Lan => {
             let serial = lan_serial(&record).await?;
             let target = lan_mqtt_target(&record, &serial)?;
-            let payload = build_start_print_payload(&req.remote_name);
+            // Prefer the firmware-validated `project_file` start: when the upload
+            // phase staged a `.gcode.3mf` for this printer under the same name, it
+            // sits at the FTPS root with a known md5. Otherwise fall back to the
+            // plain `gcode_file` path (only reliable on some firmware).
+            let pending = pending_lan_prints()
+                .lock()
+                .unwrap()
+                .remove(&req.printer_id)
+                .filter(|p| p.remote_name == req.remote_name);
+            let payload = match pending {
+                Some(p) => build_project_file_payload(&p.remote_name, &p.md5),
+                None => build_start_print_payload(&req.remote_name),
+            };
             publish_start_command(&target, &payload, Duration::from_secs(5)).await?;
         }
         PrinterTransport::Cloud => {
@@ -912,15 +926,49 @@ async fn upload_via_ftps(
     let pass = record.lan_access_code()?.to_string();
     let remote_name = remote_name.to_string();
     let local_buf = local.to_path_buf();
-    tokio::task::spawn_blocking(move || ftps_upload_blocking(&host, &user, &pass, &local_buf, &remote_name))
-        .await
-        .map_err(|e| IpcError::internal(format!("ftps upload join error: {e}")))?
+
+    // A sliced `.gcode.3mf` project is the firmware-validated start: it must land
+    // at the FTPS root (NOT `cache/`) so the `project_file` command can fetch it
+    // via `ftp:///<name>`. A plain `.gcode` keeps the legacy `cache/` location.
+    let is_project = is_project_file(&remote_name);
+    let remote_dir = if is_project { "" } else { REMOTE_DIR };
+
+    // Digest the project up front so the start phase can quote it in the
+    // `project_file` payload (the protocol expects an uppercase md5).
+    let md5 = if is_project {
+        let bytes = tokio::fs::read(local).await.map_err(IpcError::from)?;
+        Some(format!("{:x}", md5::compute(&bytes)))
+    } else {
+        None
+    };
+
+    let remote_dir = remote_dir.to_string();
+    let upload_name = remote_name.clone();
+    tokio::task::spawn_blocking(move || {
+        ftps_upload_blocking(&host, &user, &pass, &remote_dir, &local_buf, &upload_name)
+    })
+    .await
+    .map_err(|e| IpcError::internal(format!("ftps upload join error: {e}")))??;
+
+    // Hand the staged project to the start phase (keyed by printer; same printer,
+    // same turn). A plain upload clears any stale entry so start uses gcode_file.
+    let mut pending = pending_lan_prints().lock().unwrap();
+    match md5 {
+        Some(md5) => {
+            pending.insert(record.id.clone(), PendingLanPrint { remote_name, md5 });
+        }
+        None => {
+            pending.remove(&record.id);
+        }
+    }
+    Ok(())
 }
 
 fn ftps_upload_blocking(
     host: &str,
     user: &str,
     pass: &str,
+    remote_dir: &str,
     local: &Path,
     remote_name: &str,
 ) -> IpcResult<()> {
@@ -941,11 +989,15 @@ fn ftps_upload_blocking(
         .map_err(|e| IpcError::new("FTPS_AUTH_FAILED", e.to_string()))?;
     ftps.transfer_type(FileType::Binary)
         .map_err(|e| IpcError::new("FTPS_FAILED", e.to_string()))?;
-    // Make sure the remote dir exists; ignore errors (Bambu firmware
-    // returns 550 if it already exists).
-    let _ = ftps.mkdir(REMOTE_DIR);
-    ftps.cwd(REMOTE_DIR)
-        .map_err(|e| IpcError::new("FTPS_FAILED", e.to_string()))?;
+    // A `.gcode.3mf` project uploads to the FTPS root (empty `remote_dir`) so the
+    // `project_file` start can fetch it via `ftp:///<name>`; plain gcode goes
+    // under `cache/`. When a dir is given, make sure it exists first — ignore
+    // mkdir errors (Bambu firmware returns 550 if it already exists).
+    if !remote_dir.is_empty() {
+        let _ = ftps.mkdir(remote_dir);
+        ftps.cwd(remote_dir)
+            .map_err(|e| IpcError::new("FTPS_FAILED", e.to_string()))?;
+    }
     let file = std::fs::File::open(local)
         .map_err(|e| IpcError::new("IO_ERROR", e.to_string()))?;
     let mut reader = BufReader::new(file);
@@ -1114,9 +1166,10 @@ pub(crate) fn build_start_print_payload(remote_name: &str) -> serde_json::Value 
     //
     //   {"print": {"command": "gcode_file", "param": "cache/job.gcode"}}
     //
-    // The protocol doc flags this path as diagnostic on some A1 firmware;
-    // the consumer flow's pre-flight modal already names the printer
-    // model so the user can opt out before this command fires.
+    // The protocol doc flags this path as diagnostic/broken on A1 firmware
+    // (byte-perfect uploads still leave the printer IDLE), so it is now only
+    // the FALLBACK used when no sliced `.gcode.3mf` project is available —
+    // the consumer flow prefers `project_file` (see `build_project_file_payload`).
     let param = if remote_name.starts_with("cache/") || remote_name.starts_with('/') {
         remote_name.trim_start_matches('/').to_string()
     } else {
@@ -1129,6 +1182,89 @@ pub(crate) fn build_start_print_payload(remote_name: &str) -> serde_json::Value 
             "param": param,
         }
     })
+}
+
+/// The single OrcaSlicer plate Panda exports. CadQuery/Panda models slice to one
+/// plate, so the embedded G-code is always `Metadata/plate_1.gcode` (matches the
+/// cloud path, which also hardcodes plate 1).
+const LAN_PLATE_PARAM: &str = "Metadata/plate_1.gcode";
+
+/// True when a remote object is a Bambu project archive (`.gcode.3mf` / `.3mf`)
+/// rather than a plain `.gcode`. The project path is the firmware-validated
+/// start (`project_file`); the plain path is the unreliable fallback.
+pub(crate) fn is_project_file(name: &str) -> bool {
+    name.to_ascii_lowercase().ends_with(".3mf")
+}
+
+/// Build the **validated** LAN start command for a sliced project uploaded to the
+/// FTPS root. Mirrors the reference skill's `build_project_file_payload`
+/// (`skills/bambu-labs/scripts/bambu_lan_print.py`): the firmware fetches the
+/// `.gcode.3mf` from its own FTP root via `ftp:///<name>` and starts the embedded
+/// plate. `md5` is the uppercase digest of the uploaded archive — the protocol
+/// expects it (`local-lan-protocol.md`), unlike the cloud path where the server
+/// recomputes it. Calibration defaults are the reference's conservative set.
+pub(crate) fn build_project_file_payload(remote_name: &str, md5: &str) -> serde_json::Value {
+    serde_json::json!({
+        "print": {
+            "sequence_id": sequence_id(),
+            "command": "project_file",
+            "param": LAN_PLATE_PARAM,
+            "project_id": "0",
+            "profile_id": "0",
+            "task_id": "0",
+            "subtask_id": "0",
+            "subtask_name": subtask_name_from(remote_name),
+            "url": format!("ftp:///{remote_name}"),
+            "md5": md5.to_ascii_uppercase(),
+            "timelapse": false,
+            "bed_type": "auto",
+            "bed_levelling": true,
+            "flow_cali": true,
+            "vibration_cali": false,
+            "layer_inspect": true,
+            "use_ams": false,
+            "ams_mapping": "",
+        }
+    })
+}
+
+/// Human-ish job name for the MQTT payload: the remote object name with the
+/// project/gcode suffixes stripped (`model.gcode.3mf` → `model`).
+fn subtask_name_from(remote_name: &str) -> String {
+    let mut name = remote_name;
+    for suffix in [".gcode.3mf", ".3mf", ".gcode"] {
+        if let Some(stripped) = name
+            .to_ascii_lowercase()
+            .ends_with(suffix)
+            .then(|| &name[..name.len() - suffix.len()])
+        {
+            name = stripped;
+            break;
+        }
+    }
+    if name.is_empty() {
+        "local_print".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// Identifiers the LAN upload phase produces that the start phase needs to issue
+/// the `project_file` command. Bridges the two IPC calls (upload → start) keyed
+/// by printer id — the LAN twin of `cloud::pending_cloud_prints`. Best-effort
+/// in-memory hand-off; a stale entry is overwritten by the next upload.
+#[derive(Clone)]
+struct PendingLanPrint {
+    /// FTPS-root object name both phases agree on (`model.gcode.3mf`).
+    remote_name: String,
+    /// Uppercase md5 of the uploaded archive, for the `project_file` payload.
+    md5: String,
+}
+
+fn pending_lan_prints() -> &'static std::sync::Mutex<HashMap<String, PendingLanPrint>> {
+    static MAP: std::sync::OnceLock<std::sync::Mutex<HashMap<String, PendingLanPrint>>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
 pub(crate) fn build_status_request_payload() -> serde_json::Value {
@@ -1513,6 +1649,45 @@ mod tests {
     fn start_print_payload_passes_through_full_path() {
         let payload = build_start_print_payload("cache/already.gcode");
         assert_eq!(payload["print"]["param"], "cache/already.gcode");
+    }
+
+    #[test]
+    fn detects_project_archives_by_extension() {
+        assert!(is_project_file("model.gcode.3mf"));
+        assert!(is_project_file("model.3mf"));
+        assert!(is_project_file("MODEL.3MF")); // case-insensitive
+        assert!(!is_project_file("model.gcode"));
+        assert!(!is_project_file("model.stl"));
+    }
+
+    #[test]
+    fn project_file_payload_uses_ftp_root_url_and_uppercase_md5() {
+        let payload = build_project_file_payload("widget.gcode.3mf", "abc123def");
+        let print = &payload["print"];
+        assert_eq!(print["command"], "project_file");
+        // Embedded plate, not a cache path.
+        assert_eq!(print["param"], "Metadata/plate_1.gcode");
+        // Root FTP URL — the printer fetches the project from its own FTPS root.
+        assert_eq!(print["url"], "ftp:///widget.gcode.3mf");
+        // md5 is uppercased per the protocol.
+        assert_eq!(print["md5"], "ABC123DEF");
+        // Job name strips the project suffix.
+        assert_eq!(print["subtask_name"], "widget");
+        // Conservative calibration defaults from the validated reference.
+        assert_eq!(print["bed_type"], "auto");
+        assert_eq!(print["bed_levelling"], true);
+        assert_eq!(print["use_ams"], false);
+        assert!(print["sequence_id"].is_string());
+    }
+
+    #[test]
+    fn subtask_name_strips_known_suffixes() {
+        assert_eq!(subtask_name_from("model.gcode.3mf"), "model");
+        assert_eq!(subtask_name_from("model.3mf"), "model");
+        assert_eq!(subtask_name_from("model.gcode"), "model");
+        assert_eq!(subtask_name_from("model"), "model");
+        // A bare suffix degrades to a stable placeholder rather than empty.
+        assert_eq!(subtask_name_from(".3mf"), "local_print");
     }
 
     #[test]

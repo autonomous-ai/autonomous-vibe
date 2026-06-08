@@ -46,6 +46,22 @@ test("pickPrinterForSlice prefers a LAN printer over a cloud one (working upload
   assert.equal(pickPrinterForSlice([cloud]), cloud);
 });
 
+test("pickPrinterForSlice honors an explicit default device id over the heuristic", () => {
+  const studio = { id: "bambu-studio", transport: "bambustudio", hostName: "Open with Bambu Studio" };
+  const lan = { id: "S1", transport: "lan", ipAddress: "10.0.0.1", hostName: "office" };
+  const cloud = { id: "cloud:S1", transport: "cloud", hostName: "office" };
+  const list = [studio, lan, cloud];
+  // The user's chosen default wins even over the Bambu Studio opt-in…
+  assert.equal(pickPrinterForSlice(list, "cloud:S1"), cloud);
+  assert.equal(pickPrinterForSlice(list, "S1"), lan);
+  // …a blank default falls back to the heuristic (studio first)…
+  assert.equal(pickPrinterForSlice(list, ""), studio);
+  // …and a default that's no longer paired also falls back, never returns null.
+  assert.equal(pickPrinterForSlice(list, "ghost-printer"), studio);
+  // No printers + a stale default still yields null (nothing to target).
+  assert.equal(pickPrinterForSlice([], "S1"), null);
+});
+
 test("pickPrinterForSlice prefers the Bambu Studio handoff when it's set up", () => {
   const studio = { id: "bambu-studio", transport: "bambustudio", hostName: "Open with Bambu Studio" };
   const lan = { id: "S1", transport: "lan", ipAddress: "10.0.0.1", hostName: "office" };

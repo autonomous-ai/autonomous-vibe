@@ -10,7 +10,7 @@
 
 use crate::ipc::types::{
     AppSettings, FilamentKind, SliceProgressEvent, SliceRequest, SliceStage, SliceStats,
-    SliceStatus,
+    SliceStatus, SliceValidation,
 };
 use crate::ipc::{IpcError, IpcResult};
 use crate::paths;
@@ -97,6 +97,11 @@ async fn run_slice_job(
             mesh_path.display()
         )));
     }
+    // Pre-slice gate (ported from the `gcode` skill's `inspect`): reject inputs
+    // OrcaSlicer can't usefully slice — non-mesh formats, mesh formats this flow
+    // doesn't convert, and already-sliced Bambu `.3mf` plates — with a clear
+    // message instead of letting the slicer fail opaquely minutes later.
+    inspect_mesh_input(&mesh_path)?;
 
     let settings = read_app_settings_for_slice().await;
     let slicer_bin = resolve_slicer_binary(settings.slicer_binary_path.as_str())?;
@@ -138,6 +143,13 @@ async fn run_slice_job(
         ),
         None => (settings_profile, filament_profile),
     };
+
+    // Pull the bed's printable area out of the (now inherit-resolved) machine
+    // profile so the post-slice validator can bounds-check the toolpath. Read it
+    // here, while the normalized temp copies still exist — they are removed right
+    // after the spawn below. `None` (e.g. an un-normalized inheritance profile
+    // with no resolved `printable_area`) just skips bounds checks.
+    let motion_bounds = bounds_from_settings_profile(&settings_profile);
 
     // Sliced project 3mf lands next to the gcode named after the model
     // (`<stem>.3mf`), so the exported plate matches the source model name.
@@ -235,6 +247,18 @@ async fn run_slice_job(
         None
     };
 
+    // Best-effort static validation of the produced toolpath (ported from the
+    // `gcode` skill's `validate`). Non-fatal: findings are attached for the UI to
+    // surface, but never turn a successful slice into a failure.
+    let validation = run_gcode_validation(&produced_gcode, motion_bounds).await;
+
+    // OrcaSlicer logs actionable findings about the *model* (floating regions,
+    // unsupported overhangs, …) to stdout tagged `[warning]` even when the slice
+    // succeeds — the same notices its GUI shows ("re-orient or enable support
+    // generation"). The success path otherwise discards stdout, so pull them out
+    // here for the UI to surface.
+    let slicer_warnings = extract_slicer_warnings(&exec_result.stdout, &exec_result.stderr);
+
     let stats = SliceStats {
         duration_seconds: parsed.duration_seconds.unwrap_or(0.0),
         filament_grams: parsed.filament_grams.unwrap_or(0.0),
@@ -243,6 +267,8 @@ async fn run_slice_job(
         supports_used: parsed.supports_used.unwrap_or(false),
         gcode_file: gcode_relpath,
         gcode_3mf_file,
+        validation,
+        slicer_warnings,
     };
 
     Ok(stats)
@@ -1014,6 +1040,419 @@ fn stderr_tail(stderr: &[u8], max_bytes: usize) -> String {
     s[start..].to_string()
 }
 
+/// Marker OrcaSlicer prints ahead of its per-plate model warnings. Both the
+/// non-critical and critical variants share it:
+///   `… [warning] plate 1: found NON_CRITICAL slicing warnings: <message>`
+///   `… [warning] plate 1: found slicing warnings: <message>, no_check=<n>`
+const SLICING_WARNINGS_MARKER: &str = "slicing warnings:";
+
+/// Extract OrcaSlicer's own model warnings from a *successful* run's captured
+/// output. On a clean (exit 0) slice OrcaSlicer still logs actionable findings —
+/// floating regions, unsupported overhangs, geometry outside the bed — to stdout
+/// tagged `[warning]`, in the form above. These are exactly the "re-orient or
+/// enable supports" notices the GUI surfaces; the CLI buries them in stdout,
+/// which the success path otherwise drops on the floor.
+///
+/// We take the human message after the last [`SLICING_WARNINGS_MARKER`] on a line
+/// (so the `[timestamp] [thread] [warning] plate N: found …` prefix is shed
+/// regardless of its exact shape), drop the critical variant's trailing
+/// `, no_check=<n>` bookkeeping, and de-duplicate. Scans stderr too, in case a
+/// future build routes them there. Returns the messages in first-seen order.
+fn extract_slicer_warnings(stdout: &[u8], stderr: &[u8]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in [stdout, stderr] {
+        let text = String::from_utf8_lossy(raw);
+        for line in text.lines() {
+            let Some(idx) = line.rfind(SLICING_WARNINGS_MARKER) else {
+                continue;
+            };
+            let tail = line[idx + SLICING_WARNINGS_MARKER.len()..].trim();
+            // The critical-warning log line appends `, no_check=<n>`; strip it so
+            // only the user-facing sentence survives.
+            let msg = match tail.rfind(", no_check=") {
+                Some(pos) => tail[..pos].trim(),
+                None => tail,
+            };
+            if !msg.is_empty() && !out.iter().any(|m| m == msg) {
+                out.push(msg.to_string());
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Pre-slice input inspection (ported from skills/gcode `inspect`)
+// ---------------------------------------------------------------------------
+
+/// Mesh extensions OrcaSlicer slices directly (no conversion).
+const DIRECT_MESH_EXTENSIONS: &[&str] = &["stl", "obj", "3mf"];
+/// Mesh extensions the `gcode` skill converts to STL via trimesh — this native
+/// flow has no converter, so we reject them with guidance rather than feed an
+/// unreadable input to OrcaSlicer.
+const CONVERT_TO_STL_EXTENSIONS: &[&str] = &["ply", "glb", "gltf"];
+/// Formats that are out of scope for slicing entirely (CAD/vector/robot).
+const UNSUPPORTED_MESH_EXTENSIONS: &[&str] = &["step", "stp", "dxf", "svg", "urdf", "sdf"];
+
+/// Classify a mesh input before slicing. Returns `Ok` only for a format
+/// OrcaSlicer can slice as-is; otherwise an `IpcError` whose code the frontend
+/// maps to actionable copy (`MESH_UNSUPPORTED` / `ALREADY_SLICED`).
+fn inspect_mesh_input(mesh: &Path) -> Result<(), IpcError> {
+    let ext = mesh
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    if ext.is_empty() || UNSUPPORTED_MESH_EXTENSIONS.contains(&ext.as_str()) {
+        let what = if ext.is_empty() {
+            "files without an extension".to_string()
+        } else {
+            format!(".{ext} files")
+        };
+        return Err(IpcError::new(
+            "MESH_UNSUPPORTED",
+            format!("{what} can't be sliced. Provide a printable mesh (.stl)."),
+        ));
+    }
+    if CONVERT_TO_STL_EXTENSIONS.contains(&ext.as_str()) {
+        return Err(IpcError::new(
+            "MESH_UNSUPPORTED",
+            format!(".{ext} meshes must be converted to STL before slicing."),
+        ));
+    }
+    if !DIRECT_MESH_EXTENSIONS.contains(&ext.as_str()) {
+        return Err(IpcError::new(
+            "MESH_UNSUPPORTED",
+            format!("Unsupported mesh type .{ext}. Provide an STL."),
+        ));
+    }
+    if ext == "3mf" && is_sliced_bambu_3mf(mesh) {
+        return Err(IpcError::new(
+            "ALREADY_SLICED",
+            "This .3mf is already a sliced plate. Open it to print directly instead of re-slicing it.",
+        ));
+    }
+    Ok(())
+}
+
+/// True when a `.3mf` is an already-sliced Bambu/OrcaSlicer project (it embeds
+/// `Metadata/plate_<n>.gcode` toolpath entries) rather than a plain model.
+///
+/// A `.3mf` is a ZIP; rather than add a zip dependency we scan the file's tail,
+/// where the ZIP central directory — which lists every entry name verbatim —
+/// always lives. A model `.3mf` has no `Metadata/plate_*.gcode` entry.
+fn is_sliced_bambu_3mf(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    const NEEDLE: &[u8] = b"Metadata/plate_";
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if len == 0 {
+        return false;
+    }
+    let window = len.min(512 * 1024);
+    if file.seek(SeekFrom::Start(len - window)).is_err() {
+        return false;
+    }
+    let mut buf = Vec::with_capacity(window as usize);
+    if file.take(window).read_to_end(&mut buf).is_err() {
+        return false;
+    }
+    buf.windows(NEEDLE.len()).enumerate().any(|(i, w)| {
+        if w != NEEDLE {
+            return false;
+        }
+        let rest = &buf[i + NEEDLE.len()..];
+        let digits = rest.iter().take_while(|b| b.is_ascii_digit()).count();
+        digits > 0 && rest.get(digits..digits + 6) == Some(&b".gcode"[..])
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Post-slice G-code validation (ported from skills/gcode `validate`)
+// ---------------------------------------------------------------------------
+
+/// G-code commands the skill's validator recognizes. Anything else is reported
+/// (as a warning) as "unrecognized" — not an error, since vendor firmware emits
+/// many non-standard M-codes.
+const SUPPORTED_GCODE_COMMANDS: &[&str] = &[
+    "G0", "G1", "G2", "G3", "G4", "G21", "G28", "G29", "G90", "G91", "G92", "M18", "M73", "M82",
+    "M83", "M84", "M104", "M106", "M107", "M109", "M117", "M118", "M140", "M190", "M201", "M203",
+    "M204", "M205", "M220", "M221", "M400", "M500", "M501", "M900",
+];
+
+/// Bed/printer travel limits the validator bounds-checks absolute moves against.
+#[derive(Debug, Clone, Copy)]
+struct MotionBounds {
+    x: (f64, f64),
+    y: (f64, f64),
+    z: (f64, f64),
+}
+
+/// Read the printable area from the first profile in a `--load-settings` list
+/// that declares one (the machine profile). `None` when none do.
+fn bounds_from_settings_profile(settings_profile: &str) -> Option<MotionBounds> {
+    settings_profile
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .find_map(|p| bounds_from_profile_file(Path::new(p)))
+}
+
+/// Parse `printable_area` (`["0x0","256x0","256x256","0x256"]`) and
+/// `printable_height` out of an OrcaSlicer machine profile into travel limits.
+/// Z is unbounded (`INFINITY`) when `printable_height` is absent so we never
+/// false-flag tall prints; X/Y default to `0..max(corner)`.
+fn bounds_from_profile_file(path: &Path) -> Option<MotionBounds> {
+    let bytes = std::fs::read(path).ok()?;
+    let obj: Map<String, Value> = serde_json::from_slice(&bytes).ok()?;
+    let area = obj.get("printable_area")?.as_array()?;
+    let (mut x_max, mut y_max) = (0.0_f64, 0.0_f64);
+    let mut saw = false;
+    for corner in area {
+        let s = corner.as_str()?;
+        let mut parts = s.split('x');
+        let x: f64 = parts.next()?.trim().parse().ok()?;
+        let y: f64 = parts.next()?.trim().parse().ok()?;
+        x_max = x_max.max(x);
+        y_max = y_max.max(y);
+        saw = true;
+    }
+    if !saw || x_max <= 0.0 || y_max <= 0.0 {
+        return None;
+    }
+    let z_max = obj
+        .get("printable_height")
+        .and_then(profile_number)
+        .filter(|z| *z > 0.0)
+        .unwrap_or(f64::INFINITY);
+    Some(MotionBounds {
+        x: (0.0, x_max),
+        y: (0.0, y_max),
+        z: (0.0, z_max),
+    })
+}
+
+/// A JSON value that may be a number or a numeric string (`"256"`).
+fn profile_number(v: &Value) -> Option<f64> {
+    v.as_f64()
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+}
+
+/// Read a produced `.gcode` and run the static validator. Best-effort: `None`
+/// if the file can't be read (never fails the slice).
+async fn run_gcode_validation(gcode: &Path, bounds: Option<MotionBounds>) -> Option<SliceValidation> {
+    let bytes = tokio::fs::read(gcode).await.ok()?;
+    Some(validate_gcode_text(&String::from_utf8_lossy(&bytes), bounds))
+}
+
+/// Static analysis of a sliced `.gcode`, ported from the `gcode` skill's
+/// `validate_gcode_file`. `ok` is driven only by structural integrity (non-empty
+/// + has movement + has extrusion) so it never false-fails real Bambu output;
+/// bed-bounds, missing-temperature, and unrecognized-command findings are
+/// warnings the caller can choose to surface.
+fn validate_gcode_text(text: &str, bounds: Option<MotionBounds>) -> SliceValidation {
+    let mut errors: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut unknown: Vec<(String, usize)> = Vec::new();
+    let mut movement = 0u32;
+    let mut extrusion = 0u32;
+    let mut temperature = 0u32;
+    let mut absolute = true;
+    let mut warned_relative = false;
+    let mut oob_count = 0u32;
+    let mut oob_example: Option<String> = None;
+
+    if text.trim().is_empty() {
+        errors.push("G-code file is empty.".into());
+    }
+
+    for (idx, line) in text.lines().enumerate() {
+        let line_no = idx + 1;
+        let Some(command) = parse_gcode_command(line) else {
+            continue;
+        };
+        let tokens = parse_gcode_axes(line);
+
+        let is_tool = command.len() > 1
+            && command.starts_with('T')
+            && command[1..].bytes().all(|b| b.is_ascii_digit());
+        if !SUPPORTED_GCODE_COMMANDS.contains(&command.as_str())
+            && !is_tool
+            && !unknown.iter().any(|(c, _)| c == &command)
+        {
+            unknown.push((command.clone(), line_no));
+        }
+
+        match command.as_str() {
+            "G90" => absolute = true,
+            "G91" => {
+                absolute = false;
+                if !warned_relative {
+                    warned_relative = true;
+                    warnings.push(
+                        "Relative positioning (G91) is used; bed-bounds checks are skipped while it is active."
+                            .into(),
+                    );
+                }
+            }
+            _ => {}
+        }
+
+        if matches!(command.as_str(), "G0" | "G1" | "G2" | "G3") {
+            movement += 1;
+            if command == "G1" && tokens.iter().any(|(k, _)| *k == 'E') {
+                extrusion += 1;
+            }
+            if absolute {
+                if let Some(b) = bounds {
+                    for (axis, lo, hi) in
+                        [('X', b.x.0, b.x.1), ('Y', b.y.0, b.y.1), ('Z', b.z.0, b.z.1)]
+                    {
+                        if let Some((_, v)) = tokens.iter().find(|(k, _)| *k == axis) {
+                            if *v < lo || *v > hi {
+                                oob_count += 1;
+                                oob_example.get_or_insert_with(|| {
+                                    format!("line {line_no}: {axis}={v} outside {lo}..{hi} mm")
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if matches!(command.as_str(), "M104" | "M109" | "M140" | "M190") {
+            temperature += 1;
+        }
+    }
+
+    if movement == 0 {
+        errors.push("No G0/G1/G2/G3 movement commands found.".into());
+    }
+    if extrusion == 0 {
+        errors.push("No extrusion moves (a G1 with an E value) found.".into());
+    }
+    if temperature == 0 {
+        // Detection is firmware-sensitive, so this is a heads-up, not a failure:
+        // a profile may set temperatures via custom start G-code we don't model.
+        warnings.push(
+            "No standard temperature commands (M104/M109/M140/M190) detected; the profile may set them in custom start G-code."
+                .into(),
+        );
+    }
+    if oob_count > 0 {
+        // Bounds are the profile's printable_area. Bambu firmware legitimately
+        // moves outside it (purge/flush, nozzle wipe), so this is a heads-up,
+        // not a failure.
+        let example = oob_example.unwrap_or_default();
+        warnings.push(format!(
+            "{oob_count} move(s) fall outside the bed's printable area ({example}). Often normal for Bambu purge/wipe moves; verify the model fits the plate."
+        ));
+    }
+    if !unknown.is_empty() {
+        let sample = unknown
+            .iter()
+            .take(12)
+            .map(|(c, l)| format!("{c} (line {l})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        warnings.push(format!("Unrecognized G-code commands left unchanged: {sample}."));
+    }
+
+    SliceValidation {
+        ok: errors.is_empty(),
+        errors,
+        warnings,
+        movement_commands: movement,
+        extrusion_moves: extrusion,
+        temperature_commands: temperature,
+    }
+}
+
+/// First token of a G-code line (comment stripped, uppercased). For a
+/// `[GMT]<digits>(.<digits>)?` command the fractional part is dropped
+/// (`G1.0` → `G1`). `None` for blank/comment-only lines.
+fn parse_gcode_command(line: &str) -> Option<String> {
+    let code = line.split(';').next().unwrap_or("").trim();
+    if code.is_empty() {
+        return None;
+    }
+    let first = code.split_whitespace().next()?.to_ascii_uppercase();
+    Some(canonical_gmt_command(&first).unwrap_or(first))
+}
+
+/// If `tok` matches `[GMT]\d+(\.\d+)?`, return it with any fraction stripped;
+/// otherwise `None` (caller keeps the raw token).
+fn canonical_gmt_command(tok: &str) -> Option<String> {
+    let mut chars = tok.chars();
+    let head = chars.next()?;
+    if !matches!(head, 'G' | 'M' | 'T') {
+        return None;
+    }
+    let body: String = chars.collect();
+    let (int_part, frac) = match body.split_once('.') {
+        Some((i, f)) => (i, Some(f)),
+        None => (body.as_str(), None),
+    };
+    if int_part.is_empty() || !int_part.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if let Some(f) = frac {
+        if f.is_empty() || !f.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+    }
+    Some(format!("{head}{int_part}"))
+}
+
+/// Extract `(letter, value)` pairs (`X12.3`, `E-0.5`, `.5`) from a G-code line,
+/// comment stripped and uppercased — mirrors the skill's token regex.
+fn parse_gcode_axes(line: &str) -> Vec<(char, f64)> {
+    let code = line.split(';').next().unwrap_or("").to_ascii_uppercase();
+    let bytes = code.as_bytes();
+    let mut out: Vec<(char, f64)> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !(bytes[i] as char).is_ascii_alphabetic() {
+            i += 1;
+            continue;
+        }
+        let letter = bytes[i] as char;
+        let mut j = i + 1;
+        let start = j;
+        if j < bytes.len() && (bytes[j] == b'+' || bytes[j] == b'-') {
+            j += 1;
+        }
+        let mut saw_digit = false;
+        let mut saw_dot = false;
+        while j < bytes.len() {
+            let b = bytes[j];
+            if b.is_ascii_digit() {
+                saw_digit = true;
+                j += 1;
+            } else if b == b'.' && !saw_dot {
+                saw_dot = true;
+                j += 1;
+            } else {
+                break;
+            }
+        }
+        if saw_digit {
+            // Rust's f64 parser rejects a trailing dot (`12.`); trim it.
+            let num = code[start..j].trim_end_matches('.');
+            if let Ok(v) = num.parse::<f64>() {
+                out.push((letter, v));
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // G-code header parsing
 // ---------------------------------------------------------------------------
@@ -1620,5 +2059,250 @@ G1 X0 Y0
         let out = std::env::temp_dir();
         assert_eq!(normalize_profile_to("", &out, "x.json"), "");
         assert_eq!(normalize_profile_to("   ", &out, "x.json"), "");
+    }
+
+    // --- Pre-slice input inspection --------------------------------------
+
+    #[test]
+    fn inspect_rejects_non_mesh_and_accepts_stl() {
+        // Extension-only checks don't touch the filesystem.
+        assert_eq!(
+            inspect_mesh_input(Path::new("/x/part.step")).unwrap_err().code,
+            "MESH_UNSUPPORTED"
+        );
+        assert_eq!(
+            inspect_mesh_input(Path::new("/x/part.ply")).unwrap_err().code,
+            "MESH_UNSUPPORTED"
+        );
+        assert_eq!(
+            inspect_mesh_input(Path::new("/x/noext")).unwrap_err().code,
+            "MESH_UNSUPPORTED"
+        );
+        // A plain STL passes (no `.3mf` content scan needed).
+        assert!(inspect_mesh_input(Path::new("/x/part.stl")).is_ok());
+        assert!(inspect_mesh_input(Path::new("/x/PART.STL")).is_ok());
+    }
+
+    #[test]
+    fn inspect_rejects_already_sliced_3mf() {
+        let tmp = std::env::temp_dir().join(format!("panda-3mf-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        // A model `.3mf` (no sliced-plate entry) is accepted...
+        let model = tmp.join("model.3mf");
+        std::fs::write(&model, b"PK\x03\x043D/3dmodel.model and other zip bytes").unwrap();
+        assert!(inspect_mesh_input(&model).is_ok());
+        // ...a sliced project `.3mf` (carries a `Metadata/plate_N.gcode` entry
+        // name in its zip directory) is refused.
+        let sliced = tmp.join("plate.3mf");
+        std::fs::write(&sliced, b"PK\x03\x04....Metadata/plate_1.gcode....PK\x05\x06").unwrap();
+        assert_eq!(
+            inspect_mesh_input(&sliced).unwrap_err().code,
+            "ALREADY_SLICED"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn is_sliced_bambu_3mf_matches_plate_entry_only() {
+        let tmp = std::env::temp_dir().join(format!("panda-3mf-scan-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let plain = tmp.join("a.3mf");
+        std::fs::write(&plain, b"Metadata/model_settings.config").unwrap();
+        assert!(!is_sliced_bambu_3mf(&plain)); // "Metadata/plate_" prefix absent
+        let with_letter = tmp.join("b.3mf");
+        std::fs::write(&with_letter, b"Metadata/plate_no.gcode").unwrap();
+        assert!(!is_sliced_bambu_3mf(&with_letter)); // needs a digit after the underscore
+        let sliced = tmp.join("c.3mf");
+        std::fs::write(&sliced, b"...Metadata/plate_12.gcode...").unwrap();
+        assert!(is_sliced_bambu_3mf(&sliced));
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // --- Bed-bounds extraction -------------------------------------------
+
+    #[test]
+    fn bounds_parse_printable_area_and_height() {
+        let tmp = std::env::temp_dir().join(format!("panda-bounds-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let machine = tmp.join("machine.json");
+        std::fs::write(
+            &machine,
+            r#"{"printable_area":["0x0","256x0","256x256","0x256"],"printable_height":"250"}"#,
+        )
+        .unwrap();
+        let b = bounds_from_profile_file(&machine).unwrap();
+        assert_eq!(b.x, (0.0, 256.0));
+        assert_eq!(b.y, (0.0, 256.0));
+        assert_eq!(b.z, (0.0, 250.0));
+
+        // A `;`-joined settings list: the first file with a printable_area wins.
+        let process = tmp.join("process.json");
+        std::fs::write(&process, r#"{"type":"process"}"#).unwrap();
+        let list = format!("{};{}", process.display(), machine.display());
+        assert!(bounds_from_settings_profile(&list).is_some());
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn bounds_height_absent_leaves_z_unbounded() {
+        let tmp = std::env::temp_dir().join(format!("panda-bounds-z-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let machine = tmp.join("m.json");
+        std::fs::write(&machine, r#"{"printable_area":["0x0","180x180"]}"#).unwrap();
+        let b = bounds_from_profile_file(&machine).unwrap();
+        assert_eq!(b.x, (0.0, 180.0));
+        assert!(b.z.1.is_infinite());
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // --- G-code token parsing --------------------------------------------
+
+    #[test]
+    fn parse_command_strips_fraction_and_skips_comments() {
+        assert_eq!(parse_gcode_command("G1 X0 Y0").as_deref(), Some("G1"));
+        assert_eq!(parse_gcode_command("g28").as_deref(), Some("G28")); // uppercased
+        assert_eq!(parse_gcode_command("G1.0 X1").as_deref(), Some("G1")); // fraction dropped
+        assert_eq!(parse_gcode_command("  ; just a comment").as_deref(), None);
+        assert_eq!(parse_gcode_command("").as_deref(), None);
+        // Non-GMT first token is returned verbatim (flagged as unknown later).
+        assert_eq!(parse_gcode_command("FOO 1").as_deref(), Some("FOO"));
+    }
+
+    #[test]
+    fn parse_axes_extracts_signed_and_decimal_values() {
+        let t = parse_gcode_axes("G1 X12.3 Y-0.5 E.25 ; move");
+        assert_eq!(t.iter().find(|(k, _)| *k == 'X').unwrap().1, 12.3);
+        assert_eq!(t.iter().find(|(k, _)| *k == 'Y').unwrap().1, -0.5);
+        assert_eq!(t.iter().find(|(k, _)| *k == 'E').unwrap().1, 0.25);
+        // Trailing-dot form parses too (`Z12.` → 12.0).
+        let t2 = parse_gcode_axes("G1 Z12.");
+        assert_eq!(t2.iter().find(|(k, _)| *k == 'Z').unwrap().1, 12.0);
+    }
+
+    // --- G-code validation -----------------------------------------------
+
+    fn bed(x: f64, y: f64, z: f64) -> MotionBounds {
+        MotionBounds {
+            x: (0.0, x),
+            y: (0.0, y),
+            z: (0.0, z),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_well_formed_gcode() {
+        let g = "\
+; header\n\
+M140 S60\n\
+M104 S210\n\
+G90\n\
+G28\n\
+G1 X10 Y10 Z0.2 E0.5\n\
+G1 X20 Y20 E1.0\n";
+        let v = validate_gcode_text(g, Some(bed(256.0, 256.0, 250.0)));
+        assert!(v.ok, "errors: {:?}", v.errors);
+        assert_eq!(v.movement_commands, 2);
+        assert_eq!(v.extrusion_moves, 2);
+        assert_eq!(v.temperature_commands, 2);
+    }
+
+    #[test]
+    fn validate_flags_structural_failures_as_errors() {
+        // Empty file.
+        assert!(!validate_gcode_text("", None).ok);
+        // Movement but no extrusion (E never appears).
+        let no_extrude = "M104 S200\nG1 X10 Y10\nG1 X20 Y20\n";
+        let v = validate_gcode_text(no_extrude, None);
+        assert!(!v.ok);
+        assert!(v.errors.iter().any(|e| e.contains("extrusion")));
+        // Only temperature, no movement.
+        let no_move = "M104 S200\nM140 S60\n";
+        assert!(!validate_gcode_text(no_move, None).ok);
+    }
+
+    #[test]
+    fn validate_missing_temperature_is_warning_not_error() {
+        // Has movement + extrusion but no temp commands: still structurally ok.
+        let g = "G1 X10 Y10 E0.5\nG1 X20 Y20 E1.0\n";
+        let v = validate_gcode_text(g, None);
+        assert!(v.ok);
+        assert!(v.warnings.iter().any(|w| w.contains("temperature")));
+    }
+
+    #[test]
+    fn validate_out_of_bounds_is_warning_not_error() {
+        // X=500 exceeds a 256 bed, but the slice is still structurally valid —
+        // bounds violations are warnings (Bambu purge/wipe moves are normal).
+        let g = "M104 S200\nG90\nG1 X500 Y10 E0.5\n";
+        let v = validate_gcode_text(g, Some(bed(256.0, 256.0, 250.0)));
+        assert!(v.ok);
+        assert!(v.warnings.iter().any(|w| w.contains("printable area")));
+    }
+
+    #[test]
+    fn validate_skips_bounds_in_relative_mode() {
+        // After G91 the big coordinate is a relative delta, not an absolute
+        // position, so it must not be bounds-checked.
+        let g = "M104 S200\nG91\nG1 X500 Y0 E0.5\n";
+        let v = validate_gcode_text(g, Some(bed(256.0, 256.0, 250.0)));
+        assert!(v.ok);
+        assert!(v.warnings.iter().any(|w| w.contains("Relative positioning")));
+        assert!(!v.warnings.iter().any(|w| w.contains("printable area")));
+    }
+
+    #[test]
+    fn validate_reports_unknown_commands_as_warning() {
+        let g = "M104 S200\nG1 X1 Y1 E0.1\nM9999 special\nT0\n";
+        let v = validate_gcode_text(g, None);
+        assert!(v.ok); // structurally fine
+        // M9999 is unrecognized; T0 (tool change) is allowed.
+        let unknown_warn = v
+            .warnings
+            .iter()
+            .find(|w| w.contains("Unrecognized"))
+            .expect("expected an unrecognized-command warning");
+        assert!(unknown_warn.contains("M9999"));
+        assert!(!unknown_warn.contains("T0"));
+    }
+
+    #[test]
+    fn extracts_orcaslicer_floating_warning_from_stdout() {
+        // Verbatim line OrcaSlicer 2.3.x prints on a *successful* slice (captured
+        // from the bundled CLI): the `[timestamp] [thread] [warning] plate N:
+        // found … slicing warnings:` prefix must be shed, leaving the message.
+        let stdout = b"[2026-06-08 18:07:55.406089] [0x00000001f94c4240] [warning] plate 1: found NON_CRITICAL slicing warnings: It seems object float.stl has floating cantilever. Please re-orient the object or enable support generation.\n[2026-06-08 18:07:55.4] [0x1] [warning] no filament colors found in projects\n";
+        let warnings = extract_slicer_warnings(stdout, b"");
+        assert_eq!(
+            warnings,
+            vec![
+                "It seems object float.stl has floating cantilever. Please re-orient the object or enable support generation."
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn extracts_critical_warning_and_strips_no_check_suffix() {
+        // The critical-warning variant appends `, no_check=<n>` bookkeeping; only
+        // the user-facing sentence should survive.
+        let stdout =
+            b"[ts] [t] [warning] plate 1: found slicing warnings: Object exceeds the bed., no_check=0\n";
+        let warnings = extract_slicer_warnings(stdout, b"");
+        assert_eq!(warnings, vec!["Object exceeds the bed.".to_string()]);
+    }
+
+    #[test]
+    fn extracts_slicer_warnings_dedups_and_ignores_noise() {
+        // Duplicate plates report the same finding once; lines without the marker
+        // (the version banner / orient cost dump) are ignored.
+        let stdout = b"[ts] [t] [warning] cli mode, Current OrcaSlicer Version 2.3.2\norientation:0 0 1, cost:1600\n[ts] [t] [warning] plate 1: found NON_CRITICAL slicing warnings: Floating regions detected.\n[ts] [t] [warning] plate 2: found NON_CRITICAL slicing warnings: Floating regions detected.\n";
+        let warnings = extract_slicer_warnings(stdout, b"");
+        assert_eq!(warnings, vec!["Floating regions detected.".to_string()]);
+    }
+
+    #[test]
+    fn extracts_no_warnings_from_clean_output() {
+        let stdout = b"[ts] [t] [warning] cli mode, Current OrcaSlicer Version 2.3.2\n[ts] [t] [info] slicing complete\n";
+        assert!(extract_slicer_warnings(stdout, b"").is_empty());
     }
 }

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   AppWindow,
+  Check,
   Cloud,
   Loader2,
   LogOut,
@@ -45,6 +46,8 @@ export default function PrinterStep({ onAdvance, onSkip }) {
           printers from anywhere, or hand models off to Bambu Studio.
         </p>
       </header>
+
+      <DefaultDeviceSection />
 
       <div className="inline-flex w-fit rounded-md border border-border p-0.5">
         <button
@@ -99,6 +102,147 @@ export default function PrinterStep({ onAdvance, onSkip }) {
           You can add a printer later from Settings.
         </p>
       </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Default device (Settings): pick which paired device the Print action targets
+// ---------------------------------------------------------------------------
+//
+// Lists the devices already paired (LAN, cloud, and the Bambu Studio handoff)
+// and lets the user mark one as the default. The choice persists to
+// AppSettings.defaultPrinterId; the viewer's Print action prefers it whenever it
+// still matches a paired device (see pickPrinterForSlice). Hidden until at least
+// one device is paired — with none there is nothing to choose.
+
+const DEVICE_ICONS = { lan: Wifi, cloud: Cloud, bambustudio: AppWindow };
+
+function deviceTransportLabel(transport) {
+  switch (transport) {
+    case "lan":
+      return "Local network";
+    case "cloud":
+      return "Bambu Cloud";
+    case "bambustudio":
+      return "Bambu Studio";
+    default:
+      return "Printer";
+  }
+}
+
+function DefaultDeviceSection() {
+  const [devices, setDevices] = useState([]);
+  const [defaultId, setDefaultId] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [savingId, setSavingId] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [list, settings] = await Promise.all([
+          transport.printer_list(),
+          transport.app_settings_read(),
+        ]);
+        if (cancelled) return;
+        setDevices(Array.isArray(list) ? list : []);
+        setDefaultId(String(settings?.defaultPrinterId || ""));
+      } catch (err) {
+        if (!cancelled) setError(errMessage(err, "Could not load your devices"));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const choose = async (id) => {
+    // Toggle: picking the current default clears it (back to auto-pick).
+    const next = id === defaultId ? "" : id;
+    const previous = defaultId;
+    setSavingId(id);
+    setError("");
+    setDefaultId(next); // optimistic
+    try {
+      // Read-modify-write the whole settings object so we never drop sibling
+      // fields (slicer profiles, auth tokens, autoUpdate, …).
+      const existing = await transport.app_settings_read();
+      await transport.app_settings_write({ ...existing, defaultPrinterId: next });
+    } catch (err) {
+      setDefaultId(previous); // revert on failure
+      setError(errMessage(err, "Could not save your default device"));
+    } finally {
+      setSavingId("");
+    }
+  };
+
+  // Nothing to choose yet — keep the add-a-printer flow uncluttered.
+  if (loading || devices.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="flex flex-col gap-2 rounded-md border border-border bg-muted/20 p-3">
+      <div className="flex flex-col gap-0.5">
+        <h3 className="text-sm font-semibold">Default print device</h3>
+        <p className="text-xs text-muted-foreground">
+          Print sends sliced models here. Pick the current default again to clear
+          it and let Panda choose automatically.
+        </p>
+      </div>
+      <div role="radiogroup" aria-label="Default print device" className="grid gap-2">
+        {devices.map((device) => {
+          const Icon = DEVICE_ICONS[device.transport] || Printer;
+          const active = device.id === defaultId;
+          const busy = savingId === device.id;
+          return (
+            <button
+              key={device.id}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              disabled={Boolean(savingId)}
+              onClick={() => void choose(device.id)}
+              className={cn(
+                "flex items-center gap-3 rounded-md border border-border bg-background p-2.5 text-left transition-colors disabled:opacity-60",
+                active ? "border-primary bg-primary/5" : "hover:border-primary/60 hover:bg-muted/40",
+              )}
+              data-testid={`default-device-${device.id}`}
+            >
+              <span
+                className={cn(
+                  "flex size-5 shrink-0 items-center justify-center rounded-full border",
+                  active ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/40",
+                )}
+                aria-hidden="true"
+              >
+                {busy ? (
+                  <Loader2 className="size-3 animate-spin" />
+                ) : active ? (
+                  <Check className="size-3" />
+                ) : null}
+              </span>
+              <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <span className="flex flex-1 flex-col">
+                <span className="text-sm font-medium">{device.model || "Bambu printer"}</span>
+                <span className="text-xs text-muted-foreground">
+                  {deviceTransportLabel(device.transport)}
+                  {device.hostName ? ` · ${device.hostName}` : ""}
+                </span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      {error ? (
+        <p className="text-xs text-destructive" role="alert">
+          {error}
+        </p>
+      ) : null}
     </section>
   );
 }

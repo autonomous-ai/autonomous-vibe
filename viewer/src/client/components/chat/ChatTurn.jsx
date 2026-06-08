@@ -5,6 +5,7 @@ import ToolUseBlock from "./ToolUseBlock";
 import ArtifactBadge from "./ArtifactBadge";
 import PlanBlock from "./PlanBlock";
 import Markdown from "./Markdown";
+import ChatCopyButton from "./ChatCopyButton";
 import { phaseLabel, toolLabel } from "./activityLabels";
 import { useStuck } from "./useStuck";
 
@@ -67,6 +68,29 @@ function ErrorBlock({ message }) {
   );
 }
 
+function turnCopyText(turn) {
+  return (turn.blocks || [])
+    .map((block) => {
+      switch (block.kind) {
+        case "text":
+        case "thinking":
+          return block.text;
+        case "plan":
+          return block.plan;
+        case "artifact":
+          return block.file;
+        case "error":
+          return block.message;
+        case "tool_use":
+          return block.tool;
+        default:
+          return "";
+      }
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 function StatusLine({ turn }) {
   if (turn.role !== "assistant") return null;
   // "running" is conveyed by the live pulse inside PhaseBadge — no separate
@@ -111,6 +135,7 @@ export default function ChatTurn({ turn, onOpenArtifact, scrollRootRef }) {
     turn.phase === "implement" &&
     turn.status === "complete" &&
     turn.blocks.some((block) => block.kind === "artifact");
+  const copyText = turnCopyText(turn);
   return (
     <>
       {isUser ? (
@@ -145,25 +170,36 @@ export default function ChatTurn({ turn, onOpenArtifact, scrollRootRef }) {
           : undefined
       }
       className={cn(
-        "rounded-lg px-3.5 py-2.5 shadow-[var(--ui-shadow-soft)] transition-colors",
+        "group/turn relative rounded-xl px-3.5 py-2.5 shadow-(--ui-shadow-soft) transition-colors",
         isUser
-          ? cn("sticky top-0 z-20 border border-primary/25", stuck && "shadow-md")
-          : "border border-border/60 bg-card/70",
+          ? cn("sticky top-0 z-20 border border-primary/20", stuck && "shadow-md")
+          : "border border-border/60 bg-card/65",
       )}
     >
-      <header className="mb-1.5 flex items-center justify-between gap-2">
-        <span className="flex items-center gap-1.5">
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            {isUser ? "You" : "Claude"}
-          </span>
-          {!isUser ? (
+      {isUser ? (
+        <ChatCopyButton
+          value={copyText}
+          className="absolute right-1.5 top-1.5 opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100"
+        />
+      ) : (
+        <header className="mb-1.5 flex items-center justify-between gap-2">
+          <span className="flex items-center gap-1.5">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Claude
+            </span>
             <PhaseBadge phase={turn.phase} running={turn.status === "running"} />
-          ) : null}
-        </span>
-        <StatusLine turn={turn} />
-      </header>
+          </span>
+          <span className="flex items-center gap-1.5">
+            <StatusLine turn={turn} />
+            <ChatCopyButton
+              value={copyText}
+              className="opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100"
+            />
+          </span>
+        </header>
+      )}
       <div className={cn("relative", condensed && "max-h-11 overflow-hidden")}>
-        <div ref={isUser ? contentRef : null} className="flex flex-col gap-2">
+        <div ref={isUser ? contentRef : null} className={cn("flex flex-col gap-2", isUser && "pr-7")}>
         {isUser && turn.images?.length ? (
           <div data-slot="chat-turn-images" className="flex flex-wrap gap-1.5">
             {turn.images.map((image, index) => (
@@ -233,7 +269,7 @@ export default function ChatTurn({ turn, onOpenArtifact, scrollRootRef }) {
           <div
             data-slot="chat-prompt-fade"
             aria-hidden
-            className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-[var(--ui-surface-solid)] to-transparent"
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-linear-to-t from-(--ui-surface-solid) to-transparent"
           />
         ) : null}
       </div>

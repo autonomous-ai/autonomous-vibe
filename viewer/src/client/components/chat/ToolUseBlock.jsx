@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ChevronRight, ChevronDown, Wrench, CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import { cn } from "@/ui/utils";
+import ChatCopyButton from "./ChatCopyButton";
 
 const STATUS_PILL = {
   ok: {
@@ -73,9 +74,19 @@ export default function ToolUseBlock({ tool, label, input, status }) {
         </span>
       </button>
       {open && detail ? (
-        <pre className="mt-1.5 max-h-48 overflow-auto rounded bg-background/60 p-2 text-[11px] leading-snug text-foreground/80">
-          {detail}
-        </pre>
+        <div className="mt-2 overflow-hidden rounded-lg border border-white/10 bg-[#2f2f2f] text-[#f4f4f5]">
+          <div className="flex h-8 items-center justify-between border-b border-white/5 px-2.5 text-[11px] text-zinc-300">
+            <span className="font-medium">json</span>
+            <ChatCopyButton
+              value={detail}
+              label="Copy input"
+              className="size-6 text-zinc-300 hover:bg-white/10 hover:text-white"
+            />
+          </div>
+          <pre className="max-h-48 overflow-auto px-2.5 py-2 text-[11px] leading-relaxed">
+            <code className="font-mono text-[#f4f4f5]">{detail}</code>
+          </pre>
+        </div>
       ) : null}
     </div>
   );

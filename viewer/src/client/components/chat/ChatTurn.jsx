@@ -161,45 +161,35 @@ export default function ChatTurn({ turn, onOpenArtifact, scrollRootRef }) {
       data-status={turn.status}
       data-stuck={isUser && stuck ? "true" : undefined}
       // The user prompt is always sticky, so it must stay opaque even before
-      // `stuck` flips — an opaque tinted surface keeps the response from
-      // bleeding through. Inline style avoids any reliance on a theme var that
-      // could resolve translucent.
+      // `stuck` flips — an opaque surface keeps the response from bleeding
+      // through while still matching the compact Codex-style prompt bubble.
       style={
         isUser
-          ? { backgroundColor: "color-mix(in srgb, var(--primary) 7%, var(--ui-surface-solid))" }
+          ? { backgroundColor: "color-mix(in srgb, var(--foreground) 7%, var(--ui-surface-solid))" }
           : undefined
       }
       className={cn(
         "group/turn relative rounded-xl px-3.5 py-2.5 shadow-(--ui-shadow-soft) transition-colors",
         isUser
-          ? cn("sticky top-0 z-20 border border-primary/20", stuck && "shadow-md")
-          : "border border-border/60 bg-card/65",
+          ? cn("sticky top-0 z-20 ml-auto mb-7 w-fit max-w-[85%] rounded-2xl", stuck && "shadow-md")
+          : "bg-card/65",
       )}
     >
       {isUser ? (
         <ChatCopyButton
           value={copyText}
-          className="absolute right-1.5 top-1.5 opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100"
+          className="absolute right-1 top-full z-10 mt-1 opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100"
         />
       ) : (
         <header className="mb-1.5 flex items-center justify-between gap-2">
           <span className="flex items-center gap-1.5">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              Claude
-            </span>
             <PhaseBadge phase={turn.phase} running={turn.status === "running"} />
           </span>
-          <span className="flex items-center gap-1.5">
-            <StatusLine turn={turn} />
-            <ChatCopyButton
-              value={copyText}
-              className="opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100"
-            />
-          </span>
+          <StatusLine turn={turn} />
         </header>
       )}
       <div className={cn("relative", condensed && "max-h-11 overflow-hidden")}>
-        <div ref={isUser ? contentRef : null} className={cn("flex flex-col gap-2", isUser && "pr-7")}>
+        <div ref={isUser ? contentRef : null} className="flex flex-col gap-2">
         {isUser && turn.images?.length ? (
           <div data-slot="chat-turn-images" className="flex flex-wrap gap-1.5">
             {turn.images.map((image, index) => (
@@ -287,6 +277,12 @@ export default function ChatTurn({ turn, onOpenArtifact, scrollRootRef }) {
           )}
           {expanded ? "Show less" : "Show more"}
         </button>
+      ) : null}
+      {!isUser ? (
+        <ChatCopyButton
+          value={copyText}
+          className="absolute left-1 top-full z-10 mt-1 opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100"
+        />
       ) : null}
     </article>
     </>

@@ -8,6 +8,65 @@ function flattenText(children) {
   return Array.isArray(children) ? children.join("") : String(children || "");
 }
 
+function isKeyword(token, lang) {
+  const lower = String(token || "").toLowerCase();
+  const language = String(lang || "").toLowerCase();
+  if (language === "powershell" || language === "ps1") {
+    return /^[a-z][a-z0-9]*-[a-z][a-z0-9-]*$/i.test(token) ||
+      [
+        "if",
+        "else",
+        "elseif",
+        "foreach",
+        "function",
+        "param",
+        "return",
+        "switch",
+        "while",
+      ].includes(lower);
+  }
+  return [
+    "async",
+    "await",
+    "class",
+    "const",
+    "def",
+    "else",
+    "export",
+    "for",
+    "from",
+    "function",
+    "if",
+    "import",
+    "let",
+    "return",
+    "var",
+    "while",
+  ].includes(lower);
+}
+
+function highlightedCode(raw, lang) {
+  const parts = String(raw || "").split(/("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`|#[^\n]*|\/\/[^\n]*|\b\d+(?:\.\d+)?\b|\b[A-Za-z_][\w-]*\b)/g);
+  return parts.map((part, index) => {
+    if (!part) return null;
+    let className = "";
+    if (/^["'`]/.test(part)) {
+      className = "text-emerald-400";
+    } else if (/^(#|\/\/)/.test(part)) {
+      className = "text-zinc-500";
+    } else if (/^\d/.test(part)) {
+      className = "text-sky-300";
+    } else if (isKeyword(part, lang)) {
+      className = "text-amber-400";
+    }
+    return className ? (
+      <span key={index} className={className}>{part}</span>
+    ) : (
+      <span key={index}>{part}</span>
+    );
+  });
+}
+
 function CodeBlock({ lang, children }) {
   const raw = flattenText(children).replace(/\n$/, "");
   const label = String(lang || "text").toLowerCase();
@@ -25,7 +84,7 @@ function CodeBlock({ lang, children }) {
         />
       </div>
       <pre className="max-h-72 overflow-auto px-3 py-2.5 text-[12px] leading-relaxed">
-        <code className="font-mono text-[#f4f4f5]">{raw}</code>
+        <code className="font-mono text-[#f4f4f5]">{highlightedCode(raw, label)}</code>
       </pre>
     </div>
   );

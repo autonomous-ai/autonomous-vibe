@@ -54,12 +54,17 @@ export default function ChatInput({ className }) {
         return;
       }
       if (candidates.length > room) setNotice(`Up to ${MAX_ATTACHMENTS} images`);
+      let attached = false;
       for (const file of candidates.slice(0, room)) {
         try {
           addPendingAttachment(await blobToAttachment(file));
+          attached = true;
         } catch (error) {
           setNotice(error instanceof Error ? error.message : "Could not attach image");
         }
+      }
+      if (attached) {
+        window.requestAnimationFrame?.(() => textareaRef.current?.focus());
       }
     },
     [pendingAttachments.length],
@@ -157,6 +162,7 @@ export default function ChatInput({ className }) {
   const clearRefs = useCallback(() => {
     consumePendingTokens();
     consumePendingAttachments();
+    window.requestAnimationFrame?.(() => textareaRef.current?.focus());
   }, []);
 
   // Auto-dismiss the notice so it doesn't linger.
@@ -236,7 +242,7 @@ export default function ChatInput({ className }) {
             <button
               type="button"
               onClick={clearRefs}
-              className="ml-auto text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+              className="ml-auto text-[11px] text-muted-foreground hover:text-foreground"
             >
               clear
             </button>

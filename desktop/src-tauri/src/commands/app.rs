@@ -2,8 +2,8 @@
 
 use crate::ipc::types::{
     AppInfo, AppSettings, ClaudeAuthStatus, ClaudeCliStatus, ClaudeInstallProgress,
-    ClaudeLoginProgress, InstalledClaude, InstalledSlicer, PrereqCheck, PythonStatus,
-    SlicerInstallProgress, SlicerStatus,
+    ClaudeLoginProgress, InstalledClaude, InstalledSlicer, PandaLoginProgress, PandaLoginResult,
+    PrereqCheck, PythonStatus, SlicerInstallProgress, SlicerStatus,
 };
 use crate::ipc::{IpcError, IpcResult};
 use crate::paths;
@@ -21,6 +21,9 @@ pub const CLAUDE_INSTALL_PROGRESS_EVENT: &str = "claude_install_progress";
 
 /// Tauri event channel for `claude_login_progress` payloads.
 pub const CLAUDE_LOGIN_PROGRESS_EVENT: &str = "claude_login_progress";
+
+/// Tauri event channel for `panda_login_progress` payloads.
+pub const PANDA_LOGIN_PROGRESS_EVENT: &str = "panda_login_progress";
 
 /// How long to wait for the user to finish the browser OAuth flow before
 /// giving up and killing `claude setup-token`. Generous: the user has to
@@ -834,6 +837,72 @@ async fn store_oauth_token(token: &str) -> IpcResult<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// app_panda_login — proxy sign-in to Panda's hosted Claude server
+// ---------------------------------------------------------------------------
+//
+// The "Sign in with Panda" path on the welcome screen. On success Panda issues
+// a token that we persist as `panda_token` with `use_panda_cloud = true`; the
+// chat driver then routes `claude -p` through `ANTHROPIC_BASE_URL` with that
+// token (see `claude_driver::build_env`), so the user runs Panda's Claude
+// without a Claude subscription of their own. Note the local `claude` binary is
+// still the runtime even on this path — the welcome screen installs it first if
+// missing — the proxy only redirects the API.
+//
+// TODO(panda-auth): the Panda account backend is still being built. This is the
+// single swappable boundary: replace the placeholder body below with the real
+// sign-in (browser-OAuth callback / email-code / token exchange — UX TBD),
+// emitting `PandaLoginProgress` along the way and persisting the issued token
+// via `store_panda_token`. The IPC signature, the `panda_login_progress` event,
+// and all the frontend wiring are designed to survive that swap unchanged.
+
+/// Persist a Panda proxy token and enable `use_panda_cloud` (preserving the
+/// rest of settings). Mirrors [`store_oauth_token`]. The chat driver reads
+/// these two fields to route through Panda's hosted proxy.
+async fn store_panda_token(token: &str) -> IpcResult<()> {
+    let mut settings = load_settings().await.unwrap_or_default();
+    settings.panda_token = Some(token.to_string());
+    settings.use_panda_cloud = true;
+    app_settings_write(settings).await
+}
+
+/// Drive the Panda proxy sign-in. Placeholder until the backend ships: with
+/// `PANDA_DEV_TOKEN` set it completes against that token (so the full
+/// store → `use_panda_cloud` → chat path is exercisable today); otherwise it
+/// reports `PANDA_BACKEND_PENDING` so the UI shows a clear "not available yet"
+/// state and the user falls back to their own Claude.
+#[tauri::command]
+pub async fn app_panda_login(app: tauri::AppHandle) -> IpcResult<PandaLoginResult> {
+    let emit = |progress: PandaLoginProgress| {
+        let _ = app.emit(PANDA_LOGIN_PROGRESS_EVENT, &progress);
+    };
+
+    emit(PandaLoginProgress::Starting);
+
+    // Dev escape hatch: complete the flow against a fake token so the whole UI
+    // path can be tested before the real endpoint exists.
+    if let Ok(token) = std::env::var("PANDA_DEV_TOKEN") {
+        let token = token.trim();
+        if !token.is_empty() {
+            emit(PandaLoginProgress::Verifying);
+            store_panda_token(token).await?;
+            emit(PandaLoginProgress::Done);
+            return Ok(PandaLoginResult {
+                token: token.to_string(),
+            });
+        }
+    }
+
+    let msg = "Panda sign-in isn't available yet — the Panda account service is \
+               still being set up. For now choose \"Use my own Claude Code\" or \
+               set up your own Claude."
+        .to_string();
+    emit(PandaLoginProgress::Error {
+        message: msg.clone(),
+    });
+    Err(IpcError::new("PANDA_BACKEND_PENDING", msg))
+}
+
 /// Strip ANSI/VT escape sequences (CSI `ESC [ … final` and OSC
 /// `ESC ] … BEL/ST`) from PTY output so URL/token scanning sees clean text.
 /// A small hand-rolled scanner — we only need it good enough to recover
@@ -929,6 +998,22 @@ fn find_login_url(text: &str) -> Option<String> {
     None
 }
 
+/// True if `url` is the legacy interactive-login *loopback* flow — an
+/// `…/oauth/authorize` whose `redirect_uri` points at a `localhost`/`127.0.0.1`
+/// callback. Our headless `setup-token` paste-code flow uses a hosted callback
+/// (`platform.claude.com/oauth/code/callback`) and prints a code to paste back.
+/// A loopback redirect means the resolved `claude` binary is old enough to drive
+/// the *interactive* login instead: it expects a browser to hit a local server
+/// we never run, so the user is stranded on a link that can't complete. We
+/// detect it and fail with a clear "update your CLI" error rather than surfacing
+/// the dead link (the bug behind the `claude.ai/oauth/authorize?...localhost...`
+/// URL old builds produced).
+fn is_loopback_login_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.contains("/oauth/authorize")
+        && (lower.contains("localhost") || lower.contains("127.0.0.1"))
+}
+
 /// Byte offsets of every occurrence of `needle` in `hay`.
 fn find_all(hay: &str, needle: &str) -> Vec<usize> {
     let mut out = Vec::new();
@@ -989,6 +1074,8 @@ pub async fn app_login_claude(
 ) -> IpcResult<ClaudeAuthStatus> {
     use portable_pty::{native_pty_system, CommandBuilder, PtySize};
     use std::io::Read;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     let emit = |progress: ClaudeLoginProgress| {
         let _ = app.emit(CLAUDE_LOGIN_PROGRESS_EVENT, &progress);
@@ -1057,6 +1144,12 @@ pub async fn app_login_claude(
     // sign-in is in flight. Cleared once the reader finishes (below).
     state.set_login_pty_writer(writer);
 
+    // Set if the CLI emits a legacy loopback sign-in URL (outdated `claude`):
+    // the reader stops immediately and the main path reports `CLAUDE_OUTDATED`
+    // instead of surfacing a link the paste-code flow can never finish.
+    let outdated = Arc::new(AtomicBool::new(false));
+    let outdated_for_reader = outdated.clone();
+
     let app_for_reader = app.clone();
     let reader_handle = tokio::task::spawn_blocking(move || -> Option<String> {
         let mut buf: Vec<u8> = Vec::new();
@@ -1070,6 +1163,13 @@ pub async fn app_login_claude(
                     if !url_emitted {
                         let text = strip_ansi(&String::from_utf8_lossy(&buf));
                         if let Some(url) = find_login_url(&text) {
+                            if is_loopback_login_url(&url) {
+                                // Outdated CLI: bail now. The main path turns this
+                                // into a clear error; reading on would only block
+                                // on a callback that never arrives.
+                                outdated_for_reader.store(true, Ordering::SeqCst);
+                                break;
+                            }
                             url_emitted = true;
                             let _ = app_for_reader.emit(
                                 CLAUDE_LOGIN_PROGRESS_EVENT,
@@ -1103,6 +1203,21 @@ pub async fn app_login_claude(
             ));
         }
     };
+
+    // Outdated CLI produced a loopback link we bailed on: the child is still
+    // waiting on a callback that will never arrive, so kill it before reaping.
+    if outdated.load(Ordering::SeqCst) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(fail(
+            &emit,
+            "CLAUDE_OUTDATED",
+            "Your installed Claude Code CLI is outdated and produced a sign-in \
+             link this app can't complete. Update it (run `claude update`, or \
+             reinstall Claude Code) and try signing in again."
+                .to_string(),
+        ));
+    }
 
     // Reap the child so it doesn't linger.
     let _ = child.wait();
@@ -1495,6 +1610,28 @@ mod tests {
             Some("https://claude.ai/oauth/authorize?code=abc"),
         );
         assert!(find_login_url("no urls here").is_none());
+    }
+
+    #[test]
+    fn is_loopback_login_url_flags_legacy_interactive_flow() {
+        // Legacy interactive login: claude.ai authorize with a localhost
+        // loopback callback (URL-encoded) — the dead-link our paste-code flow
+        // can't complete. The encoded `http%3A%2F%2Flocalhost` still contains
+        // the literal "localhost".
+        let legacy = "https://claude.ai/oauth/authorize?code=true&\
+            redirect_uri=http%3A%2F%2Flocalhost%3A56317%2Fcallback&scope=user%3Ainference";
+        assert!(is_loopback_login_url(legacy));
+        assert!(is_loopback_login_url(
+            "https://claude.ai/oauth/authorize?redirect_uri=http://127.0.0.1:8080/callback"
+        ));
+
+        // Current setup-token paste-code flow: hosted callback, no loopback.
+        let modern = "https://claude.com/cai/oauth/authorize?code=true&\
+            redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&\
+            scope=org%3Acreate_api_key+user%3Ainference";
+        assert!(!is_loopback_login_url(modern));
+        // A non-authorize URL that merely mentions localhost must not trip it.
+        assert!(!is_loopback_login_url("https://localhost:1234/health"));
     }
 
     #[test]

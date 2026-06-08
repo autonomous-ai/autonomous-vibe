@@ -7,20 +7,22 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import SlicerCheckStep from "@/components/onboarding/SlicerCheckStep.jsx";
 import PrinterStep from "@/components/onboarding/PrinterStep.jsx";
 import FilamentStep from "@/components/onboarding/FilamentStep.jsx";
 
-// Standalone entry point to the printer-pairing flow for users who skipped it
-// during onboarding (or want to add another printer later). It replays the
-// exact onboarding Printer (step 2) and Filament (step 3) screens — same step
-// components, same step-label chrome — so there is a single source of truth for
-// the flow; the only difference is this mounts it on demand in a dialog instead
-// of inside the wizard.
-const STEPS = Object.freeze(["printer", "filament"]);
+// Standalone device-setup hub. Onboarding is now a single welcome+auth screen,
+// so slicer / printer / filament live here instead: this dialog (reachable from
+// ProjectMenu → "Add printer") replays the same step components so there is one
+// source of truth for each flow. The Slicer step auto-advances when OrcaSlicer
+// is already present, so an existing install is a no-op pass-through — it only
+// stops to install/re-detect when the slicer is missing.
+const STEPS = Object.freeze(["slicer", "printer", "filament"]);
 
 const STEP_TITLES = {
-  printer: "Step 1 of 2 · Printer",
-  filament: "Step 2 of 2 · Filament",
+  slicer: "Step 1 of 3 · OrcaSlicer",
+  printer: "Step 2 of 3 · Printer",
+  filament: "Step 3 of 3 · Filament",
 };
 
 export default function AddPrinterDialog({ open, onOpenChange, onAdded }) {
@@ -47,6 +49,9 @@ export default function AddPrinterDialog({ open, onOpenChange, onAdded }) {
           {STEP_TITLES[step]}
         </p>
         <div className="mt-3">
+          {step === "slicer" ? (
+            <SlicerCheckStep onAdvance={() => setStep("printer")} />
+          ) : null}
           {step === "printer" ? (
             <PrinterStep
               onAdvance={() => {

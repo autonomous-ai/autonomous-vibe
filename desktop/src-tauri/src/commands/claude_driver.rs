@@ -1003,13 +1003,22 @@ where
 
     let pre_snapshot = snapshot_workspace(workspace_dir);
 
+    // Honor the "Sign in with Panda" path: when the user picked the proxy during
+    // onboarding, route this turn through Panda's hosted Claude server. Settings
+    // are the source of truth (set by `app_panda_login`); `build_env` turns these
+    // two fields into `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY`. Best-effort: a
+    // settings read failure just falls back to the user's own host auth.
+    let settings = crate::commands::app::load_settings().await.ok();
+    let use_panda_cloud = settings.as_ref().map(|s| s.use_panda_cloud).unwrap_or(false);
+    let panda_token = settings.and_then(|s| s.panda_token);
+
     let cfg = ClaudeRunConfig {
         prompt: user_message.to_string(),
         workspace: workspace_dir.to_path_buf(),
         claude_session_id: Some(session_id.to_string()),
         model: Some("opus".into()),
-        use_panda_cloud: false,
-        panda_token: None,
+        use_panda_cloud,
+        panda_token,
         phase,
     };
     let argv = build_command(&cfg);

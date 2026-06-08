@@ -346,6 +346,28 @@ export type ClaudeLoginProgress =
   | { stage: "done" }
   | { stage: "error"; message: string };
 
+/**
+ * Result of `app_panda_login` — the Panda-issued proxy token. Mirrors the serde
+ * struct in `desktop/src-tauri/src/ipc/types.rs::PandaLoginResult`. The token is
+ * persisted Rust-side (as `panda_token` with `use_panda_cloud = true`); the
+ * frontend only needs to know the call succeeded.
+ */
+export interface PandaLoginResult {
+  token: string;
+}
+
+/**
+ * Discriminated union streamed via the `panda_login_progress` Tauri event while
+ * `app_panda_login` drives the (TBD) Panda proxy sign-in. Mirrors the serde enum
+ * in `desktop/src-tauri/src/ipc/types.rs::PandaLoginProgress`.
+ */
+export type PandaLoginProgress =
+  | { stage: "starting" }
+  | { stage: "awaiting_browser"; url: string }
+  | { stage: "verifying" }
+  | { stage: "done" }
+  | { stage: "error"; message: string };
+
 /** Result of `app_install_orcaslicer`. */
 export interface InstalledSlicer {
   version: string;
@@ -627,6 +649,14 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
     case "app_submit_login_code":
       // Feeds the live PTY — Tauri only. No-op in browser dev.
       return undefined as unknown as T;
+    case "app_panda_login":
+      // Proxy sign-in talks to Panda's backend — Tauri only. Surface the same
+      // "not available yet" shape the placeholder command returns so the
+      // welcome screen's error/retry path is exercisable in browser dev.
+      throw {
+        code: "PANDA_BACKEND_PENDING",
+        message: `${STUB_TAG} Panda sign-in only runs inside Tauri`,
+      } as IpcError;
     case "catalog_read":
     case "project_catalog_read":
       return {
@@ -758,6 +788,10 @@ const transportBase = {
   // in-flight `claude setup-token` PTY (see app_login_claude).
   app_submit_login_code: (code: string) =>
     invoke<void>("app_submit_login_code", { code }),
+  // Proxy sign-in to Panda's hosted Claude server ("Sign in with Panda"). On
+  // success Rust persists the token + flips use_panda_cloud; progress streams
+  // via the `panda_login_progress` event (see onPandaLoginProgress).
+  app_panda_login: () => invoke<PandaLoginResult>("app_panda_login"),
   app_install_orcaslicer: () =>
     invoke<InstalledSlicer>("app_install_orcaslicer"),
 
@@ -876,6 +910,8 @@ const transportBase = {
     listenEvent<ClaudeInstallProgress>("claude_install_progress", handler),
   onClaudeLoginProgress: (handler: (event: ClaudeLoginProgress) => void) =>
     listenEvent<ClaudeLoginProgress>("claude_login_progress", handler),
+  onPandaLoginProgress: (handler: (event: PandaLoginProgress) => void) =>
+    listenEvent<PandaLoginProgress>("panda_login_progress", handler),
   onSlicerInstallProgress: (handler: (event: SlicerInstallProgress) => void) =>
     listenEvent<SlicerInstallProgress>("slicer_install_progress", handler),
   onUpdateEvent: (handler: (event: UpdateEvent) => void) =>

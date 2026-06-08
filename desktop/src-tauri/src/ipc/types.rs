@@ -725,6 +725,44 @@ pub enum ClaudeLoginProgress {
 }
 
 // ---------------------------------------------------------------------------
+// Panda proxy sign-in (placeholder — backend in progress)
+// ---------------------------------------------------------------------------
+
+/// Result of `app_panda_login` — the Panda-issued proxy token. On success it is
+/// persisted as `panda_token` with `use_panda_cloud = true`, so the chat driver
+/// routes `claude -p` through Panda's hosted proxy (`ANTHROPIC_BASE_URL`) and
+/// the user needs no Claude subscription of their own.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PandaLoginResult {
+    pub token: String,
+}
+
+/// Streamed via the `panda_login_progress` Tauri event while `app_panda_login`
+/// drives the (TBD) Panda proxy sign-in. Deliberately mirrors
+/// `ClaudeLoginProgress` so the welcome screen can reuse the same
+/// starting/awaiting/verifying/done/error states regardless of which sign-in
+/// UX the backend ultimately ships. Mirrors the TS union in
+/// `viewer/src/client/lib/transport.ts`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "stage", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum PandaLoginProgress {
+    /// Beginning the sign-in flow.
+    Starting,
+    /// A hosted sign-in URL is ready; the UI can surface `url` as a fallback
+    /// link if the browser didn't open. (Only emitted by a browser-OAuth UX.)
+    AwaitingBrowser {
+        url: String,
+    },
+    /// Sign-in finished; we captured a token and are persisting it.
+    Verifying,
+    Done,
+    Error {
+        message: String,
+    },
+}
+
+// ---------------------------------------------------------------------------
 // OrcaSlicer auto-install
 // ---------------------------------------------------------------------------
 

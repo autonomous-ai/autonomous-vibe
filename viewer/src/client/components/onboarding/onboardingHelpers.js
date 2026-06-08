@@ -505,3 +505,85 @@ export function buildClaudeLoginFlow({ runLogin, subscribe, onComplete, onChange
  * gates share one tested code path.
  */
 export const buildInstallFlow = buildClaudeInstallFlow;
+
+// ---------------------------------------------------------------------------
+// Welcome screen (single-screen onboarding) helpers
+// ---------------------------------------------------------------------------
+
+export const PANDA_SETUP_URL = CLAUDE_INSTALL_URL;
+
+/**
+ * Collapse a prereq check + auth check into the welcome screen's decision
+ * state. `canUseOwn` gates the "Use my own Claude Code" path: it's only safe
+ * when the CLI is installed AND already authenticated, since the chat turn
+ * would otherwise fail with no recourse. `ownBlockedReason` ("not_installed" |
+ * "not_signed_in" | "") drives the disabled-state copy.
+ */
+export function evaluateWelcomeState({ check, auth } = {}) {
+  const claude = evaluateClaudeCheck(check);
+  const cliFound = Boolean(claude.proceed);
+  const cliVersion = cliFound ? String(claude.version || "") : "";
+  const authStatus = evaluateAuthCheck(auth);
+  const authed = Boolean(authStatus.proceed);
+  const authSource = authed ? String(authStatus.source || "") : "";
+  return {
+    cliFound,
+    cliVersion,
+    authed,
+    authSource,
+    canUseOwn: cliFound && authed,
+    ownBlockedReason: cliFound ? (authed ? "" : "not_signed_in") : "not_installed",
+  };
+}
+
+/**
+ * Translate a `panda_login_progress` event into a short status label for the
+ * "Sign in with Panda" button + progress card. Defensive: unknown stages
+ * report a generic "Working…" rather than throwing.
+ */
+export function describePandaLoginProgress(event) {
+  if (!event || typeof event !== "object") {
+    return "Working…";
+  }
+  switch (event.stage) {
+    case "starting":
+      return "Starting sign-in…";
+    case "awaiting_browser":
+      return "Waiting for you to approve in your browser…";
+    case "verifying":
+      return "Finishing sign-in…";
+    case "done":
+      return "Signed in";
+    case "error":
+      return String(event.message || "Sign-in failed");
+    default:
+      return "Working…";
+  }
+}
+
+/**
+ * The Panda proxy sign-in reuses the generic install/login state machine: it
+ * resolves on success (with a `PandaLoginResult`) and an `error` event or a
+ * rejection flips it to "error". One tested code path, three call sites.
+ */
+export const buildPandaLoginFlow = buildClaudeInstallFlow;
+
+/**
+ * Build the settings object that completes onboarding, preserving the rest of
+ * `existing` (re-read just before writing so we never clobber a token the
+ * sign-in step persisted) and forcing `hasOnboarded: true`. `overrides` carries
+ * the auth choice: `{ usePandaCloud, pandaToken }` for the Panda path, or
+ * `{ usePandaCloud: false }` for the bring-your-own-Claude path.
+ */
+export function buildOnboardedSettings(existing, overrides = {}) {
+  const base = existing || {};
+  return {
+    defaultFilament: base.defaultFilament ?? "PLA",
+    slicerBinaryPath: base.slicerBinaryPath ?? "",
+    usePandaCloud: overrides.usePandaCloud ?? base.usePandaCloud ?? false,
+    pandaToken: overrides.pandaToken ?? base.pandaToken,
+    claudeOauthToken: base.claudeOauthToken,
+    hasOnboarded: true,
+    autoUpdate: base.autoUpdate ?? false,
+  };
+}

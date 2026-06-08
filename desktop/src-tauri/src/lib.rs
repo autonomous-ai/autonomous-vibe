@@ -107,6 +107,7 @@ pub fn run() {
             app::app_auth_check,
             app::app_login_claude,
             app::app_submit_login_code,
+            app::app_panda_login,
             app::app_install_orcaslicer,
             // catalog
             catalog::catalog_read,

@@ -5,7 +5,7 @@ import ChatSidebar, { readStoredChatSidebarWidth, persistChatSidebarWidth } from
 import { CHAT_MIN_WIDTH, maxChatWidth } from "./workbench/chatLayout.js";
 import { bindCadRefSelectionToChatInput } from "./components/chat/cadRefEvents";
 import ProjectMenu from "./components/project/ProjectMenu.jsx";
-import OnboardingWizard from "./components/onboarding/OnboardingWizard.jsx";
+import WelcomeScreen from "./components/onboarding/WelcomeScreen.jsx";
 import UpdateNotifier from "./components/update/UpdateNotifier.jsx";
 import faviconUrl from "./assets/favicon.ico";
 import "./styles/globals.css";
@@ -243,7 +243,7 @@ function AppRoot() {
   }
 
   if (needsOnboarding) {
-    return <OnboardingWizard onComplete={completeOnboarding} />;
+    return <WelcomeScreen onComplete={completeOnboarding} />;
   }
 
   return (

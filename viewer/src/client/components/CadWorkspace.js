@@ -636,6 +636,9 @@ export default function CadWorkspace({
   const [printing, setPrinting] = useState(false);
   const [printStatus, setPrintStatus] = useState("");
   const [printStatusError, setPrintStatusError] = useState(false);
+  // In-flight flag for the dedicated "Open in Bambu Studio" button (the STL
+  // hand-off, independent of the Print flow / a configured handoff printer).
+  const [openingInStudio, setOpeningInStudio] = useState(false);
   // Live job from polling `printer_status` after a print starts (the backend
   // emits no `print_progress` event). `monitoredPrinterId` drives the poll loop;
   // `printJob` is the latest status shown on the toolbar button.
@@ -6266,6 +6269,41 @@ export default function CadWorkspace({
     }
   }, [selectedEntry, bambuStudioConfigured]);
 
+  // Dedicated "Open in Bambu Studio" hand-off for the model (STL) view. Unlike
+  // Print, this needs no paired/handoff printer and no slice: it resolves the
+  // STL being viewed (else the project's latest model STL) and hands it straight
+  // to the locally installed Bambu Studio via `printer_open_in_studio`. Always
+  // available on an STL view so the user can jump to Studio in one click.
+  const handleOpenInStudio = useCallback(async () => {
+    const selectedFmt = selectedEntry ? entrySourceFormat(selectedEntry) : null;
+    const stlFile =
+      selectedFmt === RENDER_FORMAT.STL
+        ? fileKey(selectedEntry)
+        : selectSliceTargetStl(getChatState());
+    if (!stlFile) {
+      console.warn("[studio] no model STL to open");
+      setPrintStatus("No model to open in Bambu Studio");
+      setPrintStatusError(true);
+      return;
+    }
+    console.info("[studio] opening in Bambu Studio", { stlFile });
+    setPrintStatus("Opening in Bambu Studio…");
+    setPrintStatusError(false);
+    setOpeningInStudio(true);
+    try {
+      await getTransport().printer_open_in_studio({ file: stlFile });
+      console.info("[studio] opened in Bambu Studio", { stlFile });
+      setPrintStatus("Opened in Bambu Studio");
+      setPrintStatusError(false);
+    } catch (error) {
+      console.error("[studio] open failed", error);
+      setPrintStatus(describePrintError(error));
+      setPrintStatusError(true);
+    } finally {
+      setOpeningInStudio(false);
+    }
+  }, [selectedEntry]);
+
   // Live print progress: the backend's print monitor (spawned by
   // `printer_start_print`) emits `print_progress` events; we subscribe and drive
   // the toolbar button label + terminal toast. Stops on a terminal state
@@ -6686,13 +6724,14 @@ export default function CadWorkspace({
                 sliceLabel={slicing ? sliceProgressLabel(sliceProgress) : "Slice plate"}
                 sliceError={sliceError}
                 handleSlicePlate={handleSlicePlate}
-                canPrint={
-                  selectedEntrySourceFormat === RENDER_FORMAT.GCODE ||
-                  (bambuStudioConfigured && selectedEntrySourceFormat === RENDER_FORMAT.STL)
-                }
+                canPrint={selectedEntrySourceFormat === RENDER_FORMAT.GCODE}
                 printing={printing || Boolean(monitoredPrinterId)}
                 printLabel={printButtonLabel(printing, printJob, bambuStudioConfigured)}
                 handlePrint={handlePrint}
+                canOpenInStudio={selectedEntrySourceFormat === RENDER_FORMAT.STL}
+                openingInStudio={openingInStudio}
+                openInStudioLabel={openingInStudio ? "Opening…" : "Open in Bambu Studio"}
+                handleOpenInStudio={handleOpenInStudio}
               />
 
               <ViewerLoadingOverlay

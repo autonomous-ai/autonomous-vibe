@@ -18,8 +18,8 @@
 //! responses). The path comes from `paths::printers_path()`.
 
 use crate::ipc::types::{
-    AddPrinterRequest, PrintProgressEvent, PrinterCard, PrinterJob, PrinterState, PrinterStatus,
-    PrinterTransport, StartPrintRequest, UploadGcodeRequest,
+    AddCloudPrinterRequest, AddPrinterRequest, PrintProgressEvent, PrinterCard, PrinterJob,
+    PrinterState, PrinterStatus, PrinterTransport, StartPrintRequest, UploadGcodeRequest,
 };
 use crate::ipc::{IpcError, IpcResult};
 use crate::paths;
@@ -202,6 +202,49 @@ pub async fn printer_add(
         host_name: ip.clone(),
         access_code: Some(access_code),
         serial,
+        online: None,
+    };
+
+    persist_add_record(&record).await?;
+    let card = record.to_card();
+    state.add_printer(card.clone());
+    Ok(card)
+}
+
+/// Register a cloud printer directly from its serial + access code (no bind-list
+/// discovery). The cloud upload/print path authenticates with the signed-in
+/// account token; the serial drives the MQTT topic (`device/<serial>/request`)
+/// and the access code is stored for completeness / future LAN use.
+#[tauri::command]
+pub async fn printer_add_cloud(
+    req: AddCloudPrinterRequest,
+    state: State<'_, AppState>,
+) -> IpcResult<PrinterCard> {
+    let serial = req.serial.trim().to_string();
+    let access_code = req.access_code.trim().to_string();
+    if serial.is_empty() {
+        return Err(IpcError::invalid_argument("serial is required"));
+    }
+    if access_code.is_empty() {
+        return Err(IpcError::invalid_argument("accessCode is required"));
+    }
+    let name = req
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    // Namespaced id keeps a cloud record from colliding with a LAN record for
+    // the same serial — matches `records_from_bind_response`.
+    let record = PrinterRecord {
+        id: format!("cloud:{serial}"),
+        model: infer_model_from_serial(Some(&serial)).to_string(),
+        transport: PrinterTransport::Cloud,
+        ip_address: None,
+        host_name: name.unwrap_or_else(|| serial.clone()),
+        access_code: Some(access_code),
+        serial: Some(serial),
         online: None,
     };
 

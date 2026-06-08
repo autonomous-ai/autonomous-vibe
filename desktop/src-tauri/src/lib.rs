@@ -165,6 +165,7 @@ pub fn run() {
             // printer
             printer::printer_discover,
             printer::printer_add,
+            printer::printer_add_cloud,
             printer::printer_list,
             printer::printer_status,
             printer::printer_upload_gcode,
@@ -172,6 +173,7 @@ pub fn run() {
             // cloud (Bambu account + cloud-transport printing)
             cloud::cloud_login_request_code,
             cloud::cloud_login_submit_code,
+            cloud::cloud_login_password,
             cloud::cloud_account_status,
             cloud::cloud_logout,
             cloud::printer_discover_cloud,

@@ -36,6 +36,16 @@ test("pickPrinterForSlice returns the first printer in the list, null when empty
   assert.equal(pickPrinterForSlice(undefined), null);
 });
 
+test("pickPrinterForSlice prefers a LAN printer over a cloud one (working upload path)", () => {
+  const cloud = { id: "cloud:S1", transport: "cloud", hostName: "office" };
+  const lan = { id: "S1", transport: "lan", ipAddress: "10.0.0.1", hostName: "office" };
+  // LAN wins regardless of order…
+  assert.equal(pickPrinterForSlice([cloud, lan]), lan);
+  assert.equal(pickPrinterForSlice([lan, cloud]), lan);
+  // …but a cloud-only pairing still yields a target (off-LAN fallback).
+  assert.equal(pickPrinterForSlice([cloud]), cloud);
+});
+
 test("Slice action is offered only when an STL artifact exists in history", () => {
   resetChatStore();
   setProject("p-1");

@@ -230,6 +230,18 @@ export interface CloudLoginSubmit {
   code: string;
 }
 
+export interface CloudPasswordLogin {
+  account: string;
+  password: string;
+  region?: CloudRegion;
+}
+
+export interface AddCloudPrinterRequest {
+  serial: string;
+  accessCode: string;
+  name?: string;
+}
+
 export interface CloudLoginChallenge {
   /** "codeSent" | "success" | "needPassword" | "tfa" */
   kind: string;
@@ -743,6 +755,15 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
         hostName: String(addReq.ipAddress ?? ""),
       } as unknown as T;
     }
+    case "printer_add_cloud": {
+      const cloudReq = (args.req ?? args) as Partial<AddCloudPrinterRequest>;
+      return {
+        id: `cloud:${String(cloudReq.serial ?? "0")}`,
+        model: "X1C",
+        transport: "cloud",
+        hostName: String(cloudReq.name ?? cloudReq.serial ?? ""),
+      } as unknown as T;
+    }
     case "printer_list":
       return [] as unknown as T;
     case "printer_status":
@@ -756,6 +777,8 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
       return { kind: "codeSent" } as unknown as T;
     case "cloud_login_submit_code":
       return { signedIn: false, needsReauth: false } as unknown as T;
+    case "cloud_login_password":
+      return { kind: "success" } as unknown as T;
     case "cloud_account_status":
       return { signedIn: false, needsReauth: false } as unknown as T;
     case "cloud_logout":
@@ -867,6 +890,8 @@ const transportBase = {
   printer_discover: () => invoke<PrinterCard[]>("printer_discover"),
   printer_add: (req: AddPrinterRequest) =>
     invoke<PrinterCard>("printer_add", { req }),
+  printer_add_cloud: (req: AddCloudPrinterRequest) =>
+    invoke<PrinterCard>("printer_add_cloud", { req }),
   printer_list: () => invoke<PrinterCard[]>("printer_list"),
   printer_status: (printerId: string) =>
     invoke<PrinterStatus>("printer_status", { printerId }),
@@ -880,6 +905,8 @@ const transportBase = {
     invoke<CloudLoginChallenge>("cloud_login_request_code", { req }),
   cloud_login_submit_code: (req: CloudLoginSubmit, region?: CloudRegion) =>
     invoke<CloudAccountStatus>("cloud_login_submit_code", { req, region }),
+  cloud_login_password: (req: CloudPasswordLogin) =>
+    invoke<CloudLoginChallenge>("cloud_login_password", { req }),
   cloud_account_status: () =>
     invoke<CloudAccountStatus>("cloud_account_status"),
   cloud_logout: () => invoke<void>("cloud_logout"),

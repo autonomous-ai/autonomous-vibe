@@ -746,6 +746,34 @@ fn claude_credentials_path() -> Option<PathBuf> {
     user_home().map(|h| h.join(".claude").join(".credentials.json"))
 }
 
+/// On macOS, Claude Code stores its OAuth credentials in the login **Keychain**
+/// (generic-password service `Claude Code-credentials`), NOT in
+/// `~/.claude/.credentials.json` (the Linux/Windows location, also used by macOS
+/// only as a fallback when the Keychain is unavailable, e.g. headless SSH). So a
+/// user who ran `claude` and signed in on macOS has *no* credentials file — the
+/// file-only check reports "not signed in" and the welcome screen wrongly
+/// disables "Use my own Claude Code". Probe the Keychain item's existence to
+/// detect them.
+///
+/// We do an attribute-only lookup (no `-w`/`-g`): it returns exit 0 when the
+/// item exists and, crucially, does **not** read the secret, so macOS shows no
+/// "Panda wants to access the keychain" prompt. `security` lives at
+/// `/usr/bin/security`, on the minimal launchd PATH, so a Finder-launched app
+/// finds it.
+#[cfg(target_os = "macos")]
+fn claude_keychain_login() -> bool {
+    std::process::Command::new("security")
+        .args(["find-generic-password", "-s", "Claude Code-credentials"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn claude_keychain_login() -> bool {
+    false
+}
+
 /// Non-empty env var → `true`. Treats whitespace-only as unset.
 fn env_set(key: &str) -> bool {
     std::env::var(key)
@@ -797,10 +825,13 @@ async fn detect_claude_auth() -> ClaudeAuthStatus {
         .and_then(|s| s.claude_oauth_token)
         .map(|t| !t.trim().is_empty())
         .unwrap_or(false);
-    let credentials_file = claude_credentials_path()
+    // An interactive `claude` login elsewhere: the credentials file (Linux/
+    // Windows, or the macOS SSH fallback) OR the macOS login Keychain.
+    let credentials_present = claude_credentials_path()
         .map(|p| p.is_file())
-        .unwrap_or(false);
-    resolve_auth_status(env_token, stored_token, credentials_file)
+        .unwrap_or(false)
+        || claude_keychain_login();
+    resolve_auth_status(env_token, stored_token, credentials_present)
 }
 
 /// Is the user authenticated to Claude Code? Onboarding gates the chat on this

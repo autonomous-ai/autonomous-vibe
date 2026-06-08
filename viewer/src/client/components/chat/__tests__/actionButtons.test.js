@@ -46,6 +46,17 @@ test("pickPrinterForSlice prefers a LAN printer over a cloud one (working upload
   assert.equal(pickPrinterForSlice([cloud]), cloud);
 });
 
+test("pickPrinterForSlice prefers the Bambu Studio handoff when it's set up", () => {
+  const studio = { id: "bambu-studio", transport: "bambustudio", hostName: "Open with Bambu Studio" };
+  const lan = { id: "S1", transport: "lan", ipAddress: "10.0.0.1", hostName: "office" };
+  const cloud = { id: "cloud:S1", transport: "cloud", hostName: "office" };
+  // The explicit Bambu Studio opt-in wins over a paired printer, in any order.
+  assert.equal(pickPrinterForSlice([lan, cloud, studio]), studio);
+  assert.equal(pickPrinterForSlice([studio, lan]), studio);
+  // …but with no studio handoff, LAN still wins (unchanged behavior).
+  assert.equal(pickPrinterForSlice([cloud, lan]), lan);
+});
+
 test("Slice action is offered only when an STL artifact exists in history", () => {
   resetChatStore();
   setProject("p-1");

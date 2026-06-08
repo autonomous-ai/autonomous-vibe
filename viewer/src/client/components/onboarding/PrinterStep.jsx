@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  AppWindow,
   Cloud,
   Loader2,
   LogOut,
@@ -31,7 +32,8 @@ function errMessage(err, fallback) {
 
 export default function PrinterStep({ onAdvance, onSkip }) {
   // "lan" pairs over the local network; "cloud" signs in to a Bambu account
-  // and reaches printers through Bambu's cloud (works off-LAN).
+  // and reaches printers through Bambu's cloud (works off-LAN); "studio" skips
+  // pairing entirely and hands models off to the local Bambu Studio app.
   const [mode, setMode] = useState("lan");
 
   return (
@@ -39,8 +41,8 @@ export default function PrinterStep({ onAdvance, onSkip }) {
       <header className="flex flex-col gap-1">
         <h2 className="text-2xl font-semibold">Add your Bambu printer</h2>
         <p className="text-sm text-muted-foreground">
-          Pair over your local network, or sign in to Bambu Cloud to reach
-          your printers from anywhere.
+          Pair over your local network, sign in to Bambu Cloud to reach your
+          printers from anywhere, or hand models off to Bambu Studio.
         </p>
       </header>
 
@@ -67,13 +69,22 @@ export default function PrinterStep({ onAdvance, onSkip }) {
         >
           <Cloud className="size-4" /> Bambu Cloud
         </button>
+        <button
+          type="button"
+          onClick={() => setMode("studio")}
+          className={cn(
+            "flex items-center gap-2 rounded px-3 py-1.5 text-sm transition-colors",
+            mode === "studio" ? "bg-muted font-medium" : "text-muted-foreground",
+          )}
+          data-testid="printer-mode-studio"
+        >
+          <AppWindow className="size-4" /> Bambu Studio
+        </button>
       </div>
 
-      {mode === "lan" ? (
-        <LanPairing onAdvance={onAdvance} />
-      ) : (
-        <CloudPairing onAdvance={onAdvance} />
-      )}
+      {mode === "lan" ? <LanPairing onAdvance={onAdvance} /> : null}
+      {mode === "cloud" ? <CloudPairing onAdvance={onAdvance} /> : null}
+      {mode === "studio" ? <StudioHandoff onAdvance={onAdvance} /> : null}
 
       <div className="mt-2 flex items-center justify-between gap-2">
         <Button
@@ -89,6 +100,57 @@ export default function PrinterStep({ onAdvance, onSkip }) {
         </p>
       </div>
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Bambu Studio handoff (no pairing — opens the model in the local app)
+// ---------------------------------------------------------------------------
+
+function StudioHandoff({ onAdvance }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const use = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await transport.printer_add_studio();
+      onAdvance?.();
+    } catch (err) {
+      setError(errMessage(err, "Could not set up Bambu Studio"));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-muted-foreground">
+        Skip pairing and hand your model off to Bambu Studio instead. When you
+        press Print, Panda opens the model in Bambu Studio so you can slice and
+        send it to your printer from there. Requires Bambu Studio to be
+        installed.
+      </p>
+      {error ? (
+        <p className="text-sm text-destructive" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <div>
+        <Button
+          onClick={() => void use()}
+          disabled={busy}
+          data-testid="printer-studio-use"
+        >
+          {busy ? (
+            <Loader2 className="mr-2 size-4 animate-spin" />
+          ) : (
+            <AppWindow className="mr-2 size-4" />
+          )}
+          Use Bambu Studio
+        </Button>
+      </div>
+    </div>
   );
 }
 

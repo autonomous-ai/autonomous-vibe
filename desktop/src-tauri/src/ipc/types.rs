@@ -388,13 +388,17 @@ pub struct SliceProgressEvent {
 
 /// How Panda reaches a printer. `Lan` is the original direct-to-IP path
 /// (SSDP/mDNS + FTPS + MQTT to the printer); `Cloud` routes through the
-/// signed-in Bambu account (cloud MQTT + REST upload/print-job).
+/// signed-in Bambu account (cloud MQTT + REST upload/print-job). `BambuStudio`
+/// is not a real printer at all — it hands the model off to the locally
+/// installed Bambu Studio app (`printer_open_in_studio`) so the user slices and
+/// prints from there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum PrinterTransport {
     #[default]
     Lan,
     Cloud,
+    BambuStudio,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -486,6 +490,14 @@ pub struct PrintProgressEvent {
     pub printer_id: String,
     pub state: String,
     pub progress: f64,
+}
+
+/// Hand a model (or G-code) file off to the locally installed Bambu Studio app.
+/// `file` is workspace-relative (a catalog key like `model.stl`) or absolute.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenInStudioRequest {
+    pub file: String,
 }
 
 // ---------------------------------------------------------------------------

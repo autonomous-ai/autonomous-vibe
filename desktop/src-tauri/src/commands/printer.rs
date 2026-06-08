@@ -18,8 +18,9 @@
 //! responses). The path comes from `paths::printers_path()`.
 
 use crate::ipc::types::{
-    AddCloudPrinterRequest, AddPrinterRequest, PrintProgressEvent, PrinterCard, PrinterJob,
-    PrinterState, PrinterStatus, PrinterTransport, StartPrintRequest, UploadGcodeRequest,
+    AddCloudPrinterRequest, AddPrinterRequest, OpenInStudioRequest, PrintProgressEvent,
+    PrinterCard, PrinterJob, PrinterState, PrinterStatus, PrinterTransport, StartPrintRequest,
+    UploadGcodeRequest,
 };
 use crate::ipc::{IpcError, IpcResult};
 use crate::paths;
@@ -254,6 +255,31 @@ pub async fn printer_add_cloud(
     Ok(card)
 }
 
+/// Stable id for the single Bambu Studio handoff record. Fixed (not serial-
+/// derived) so re-adding is idempotent and `pick`-ing it is unambiguous.
+pub(crate) const BAMBU_STUDIO_ID: &str = "bambu-studio";
+
+/// Register the "Open with Bambu Studio" handoff as a pseudo-printer. There is
+/// no pairing or network setup — the user just opts to route printing through
+/// their local Bambu Studio install. Idempotent: a fixed id upserts in place.
+#[tauri::command]
+pub async fn printer_add_studio(state: State<'_, AppState>) -> IpcResult<PrinterCard> {
+    let record = PrinterRecord {
+        id: BAMBU_STUDIO_ID.to_string(),
+        model: "Bambu Studio".to_string(),
+        transport: PrinterTransport::BambuStudio,
+        ip_address: None,
+        host_name: "Open with Bambu Studio".to_string(),
+        access_code: None,
+        serial: None,
+        online: None,
+    };
+    persist_add_record(&record).await?;
+    let card = record.to_card();
+    state.add_printer(card.clone());
+    Ok(card)
+}
+
 #[tauri::command]
 pub async fn printer_list(state: State<'_, AppState>) -> IpcResult<Vec<PrinterCard>> {
     let from_disk = load_printers_file().await.unwrap_or_default();
@@ -284,6 +310,9 @@ pub async fn printer_status(printer_id: String) -> IpcResult<PrinterStatus> {
         PrinterTransport::Cloud => {
             crate::commands::cloud::cloud_printer_status(&record, Duration::from_secs(5)).await
         }
+        // The Bambu Studio handoff is not a network printer — there is nothing to
+        // poll. Report it as available so the UI keeps the Print button live.
+        PrinterTransport::BambuStudio => Ok(studio_idle_status()),
     };
     match polled {
         Ok(s) => Ok(s),
@@ -311,7 +340,7 @@ pub async fn printer_upload_gcode(
             ));
         }
     };
-    let local_path = resolve_gcode_path(state.active_project().as_deref(), &req.gcode_file)?;
+    let local_path = resolve_local_path(state.active_project().as_deref(), &req.gcode_file)?;
     if !local_path.exists() {
         return Err(IpcError::invalid_argument(format!(
             "gcodeFile does not exist on disk: {}",
@@ -334,6 +363,7 @@ pub async fn printer_upload_gcode(
         PrinterTransport::Cloud => {
             crate::commands::cloud::cloud_upload_file(&record, &local_path, &remote_name).await
         }
+        PrinterTransport::BambuStudio => Err(studio_not_a_printer_err()),
     }
 }
 
@@ -382,8 +412,129 @@ async fn run_start_print(req: &StartPrintRequest) -> IpcResult<PrinterRecord> {
         PrinterTransport::Cloud => {
             crate::commands::cloud::cloud_start_print(&record, &req.remote_name).await?;
         }
+        PrinterTransport::BambuStudio => return Err(studio_not_a_printer_err()),
     }
     Ok(record)
+}
+
+// ---------------------------------------------------------------------------
+// Bambu Studio handoff
+// ---------------------------------------------------------------------------
+
+/// Open a model (or G-code) file in the locally installed Bambu Studio app.
+/// This is the action behind the `BambuStudio` transport: instead of uploading
+/// to a printer, Panda hands the file to Bambu Studio so the user slices and
+/// prints from there. Errors `BAMBU_STUDIO_NOT_FOUND` when the app is not
+/// installed in a standard location.
+#[tauri::command]
+pub async fn printer_open_in_studio(
+    req: OpenInStudioRequest,
+    state: State<'_, AppState>,
+) -> IpcResult<()> {
+    printer_open_in_studio_inner(state.active_project().as_deref(), &req).await
+}
+
+/// Validate the request, resolve the file, locate Bambu Studio, and open it.
+/// Split from the command so the validation/resolution path is testable without
+/// a Tauri `State` (the `open` step is a no-op when the file is missing/invalid).
+async fn printer_open_in_studio_inner(
+    active_project: Option<&str>,
+    req: &OpenInStudioRequest,
+) -> IpcResult<()> {
+    if req.file.trim().is_empty() {
+        return Err(IpcError::invalid_argument("file is required"));
+    }
+    let local_path = resolve_local_path(active_project, &req.file)?;
+    if !local_path.exists() {
+        return Err(IpcError::invalid_argument(format!(
+            "file does not exist on disk: {}",
+            local_path.display()
+        )));
+    }
+    let app = locate_bambu_studio().ok_or_else(|| {
+        IpcError::new(
+            "BAMBU_STUDIO_NOT_FOUND",
+            "Bambu Studio is not installed in a standard location",
+        )
+    })?;
+    open_file_with_app(&local_path, &app)
+}
+
+fn studio_idle_status() -> PrinterStatus {
+    PrinterStatus {
+        online: true,
+        state: PrinterState::Idle,
+        job: None,
+    }
+}
+
+fn studio_not_a_printer_err() -> IpcError {
+    IpcError::new(
+        "PRINTER_IS_BAMBU_STUDIO",
+        "this target opens files in Bambu Studio — call printer_open_in_studio instead",
+    )
+}
+
+/// Locate the installed Bambu Studio app, returning the path to hand to the OS
+/// "open with" facility (the `.app` bundle on macOS, the executable elsewhere).
+fn locate_bambu_studio() -> Option<PathBuf> {
+    bambu_studio_app_candidates()
+        .into_iter()
+        .find(|p| p.exists())
+}
+
+/// Well-known Bambu Studio install locations per platform, in priority order.
+/// Pure (no filesystem access) so the candidate set is unit-testable; the
+/// caller filters to the one that exists.
+fn bambu_studio_app_candidates() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mut out = Vec::new();
+
+    #[cfg(target_os = "macos")]
+    {
+        // On macOS we hand `open -a` the `.app` bundle path directly.
+        let mut roots = vec![PathBuf::from("/Applications")];
+        if let Some(h) = &home {
+            roots.push(h.join("Applications"));
+        }
+        for root in &roots {
+            out.push(root.join("BambuStudio.app"));
+            out.push(root.join("Bambu Studio.app"));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        for dir in ["/usr/bin", "/usr/local/bin", "/var/lib/flatpak/exports/bin"] {
+            out.push(PathBuf::from(dir).join("bambu-studio"));
+            out.push(PathBuf::from(dir).join("BambuStudio"));
+        }
+        if let Some(h) = &home {
+            out.push(h.join(".local/bin/bambu-studio"));
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        for root in ["C:/Program Files", "C:/Program Files (x86)"] {
+            out.push(PathBuf::from(root).join("Bambu Studio/bambu-studio.exe"));
+            out.push(PathBuf::from(root).join("BambuStudio/bambu-studio.exe"));
+        }
+    }
+
+    let _ = &home; // silence unused warning on platforms that don't read it
+    out
+}
+
+/// Hand a file to an installed app via the OS "open with" facility, detached so
+/// Bambu Studio keeps running after this call returns.
+fn open_file_with_app(file: &Path, app: &Path) -> IpcResult<()> {
+    open::with_detached(file, app.to_string_lossy().to_string()).map_err(|e| {
+        IpcError::new(
+            "BAMBU_STUDIO_OPEN_FAILED",
+            format!("could not open {} in Bambu Studio: {e}", file.display()),
+        )
+    })
 }
 
 /// Map the typed `PrinterState` to the lowercase wire string carried by
@@ -418,6 +569,7 @@ fn spawn_print_monitor(app: AppHandle, record: PrinterRecord) {
                 PrinterTransport::Cloud => {
                     crate::commands::cloud::cloud_printer_status(&record, POLL_TIMEOUT).await
                 }
+                PrinterTransport::BambuStudio => Ok(studio_idle_status()),
             };
             if let Ok(status) = polled {
                 let progress = status.job.as_ref().map(|j| j.progress).unwrap_or(0.0);
@@ -941,7 +1093,7 @@ fn validate_upload_fields(req: &UploadGcodeRequest) -> IpcResult<()> {
     Ok(())
 }
 
-fn resolve_gcode_path(active_project: Option<&str>, rel_or_abs: &str) -> Result<PathBuf, IpcError> {
+fn resolve_local_path(active_project: Option<&str>, rel_or_abs: &str) -> Result<PathBuf, IpcError> {
     let p = PathBuf::from(rel_or_abs.trim());
     if p.is_absolute() {
         return Ok(p);
@@ -1506,6 +1658,43 @@ mod tests {
             remote_name: None,
         })
         .unwrap_err();
+        assert_eq!(err.code, "INVALID_ARGUMENT");
+    }
+
+    #[test]
+    fn bambu_studio_candidates_are_platform_specific() {
+        let cands = bambu_studio_app_candidates();
+        assert!(!cands.is_empty(), "expected at least one candidate path");
+        #[cfg(target_os = "macos")]
+        assert!(
+            cands
+                .iter()
+                .any(|p| p.ends_with("BambuStudio.app")),
+            "macOS candidates should include /Applications/BambuStudio.app"
+        );
+    }
+
+    #[test]
+    fn upload_to_studio_record_is_rejected() {
+        // The Bambu Studio handoff is not a network printer: upload/start must
+        // funnel through printer_open_in_studio, not the FTPS/MQTT path.
+        let err = studio_not_a_printer_err();
+        assert_eq!(err.code, "PRINTER_IS_BAMBU_STUDIO");
+    }
+
+    #[test]
+    fn studio_status_is_online_idle() {
+        let status = studio_idle_status();
+        assert!(status.online);
+        assert_eq!(status.state, PrinterState::Idle);
+        assert!(status.job.is_none());
+    }
+
+    #[tokio::test]
+    async fn open_in_studio_requires_a_file() {
+        let err = printer_open_in_studio_inner(None, &OpenInStudioRequest { file: "  ".into() })
+            .await
+            .unwrap_err();
         assert_eq!(err.code, "INVALID_ARGUMENT");
     }
 }

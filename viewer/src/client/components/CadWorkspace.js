@@ -257,7 +257,7 @@ import {
 import { emitCadRefSelection } from "@/components/chat/cadRefEvents";
 import { basename, pickPrinterForSlice } from "@/components/chat/actionButtonsHelpers";
 import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
-import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, getChatState, useChatStore } from "@/store/chat";
+import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, selectSliceTargetStl, getChatState, useChatStore } from "@/store/chat";
 import { useProjectsStore } from "@/store/projects.ts";
 import { sortProjects } from "@/components/library/projectListHelpers.js";
 import { useProjectsFileTree } from "./workbench/hooks/useProjectsFileTree";
@@ -346,6 +346,10 @@ function describePrintError(err) {
       return "This Bambu cloud session can't send print commands (no MQTT identity). Sign out and sign in again.";
     case "NO_ACTIVE_PROJECT":
       return "Open a project before printing.";
+    case "BAMBU_STUDIO_NOT_FOUND":
+      return "Bambu Studio isn't installed. Install it from bambulab.com, then try again.";
+    case "BAMBU_STUDIO_OPEN_FAILED":
+      return `Couldn't open Bambu Studio: ${raw || "unknown error"}`;
     default:
       return raw || "Print failed";
   }
@@ -367,8 +371,13 @@ function sliceProgressLabel(progress) {
 }
 
 // Toolbar Print button label. `printing` is the brief upload+start window;
-// `printJob` is the live status polled from `printer_status` afterwards.
-function printButtonLabel(printing, printJob) {
+// `printJob` is the live status polled from `printer_status` afterwards. When
+// the Bambu Studio handoff is set up there is no network print job — the button
+// just opens the model in Bambu Studio, so it reads accordingly.
+function printButtonLabel(printing, printJob, studio = false) {
+  if (studio) {
+    return printing ? "Opening…" : "Open in Bambu Studio";
+  }
   if (printJob) {
     const pct = Math.round((Number(printJob.progress) || 0) * 100);
     if (printJob.state === "paused") {
@@ -625,6 +634,10 @@ export default function CadWorkspace({
   // `printJob` is the latest status shown on the toolbar button.
   const [printJob, setPrintJob] = useState(null);
   const [monitoredPrinterId, setMonitoredPrinterId] = useState("");
+  // True when the "Open with Bambu Studio" handoff is set up. It makes Print
+  // available on the model (STL) view too — not just a sliced gcode — since the
+  // handoff opens the model in Bambu Studio to slice & print from there.
+  const [bambuStudioConfigured, setBambuStudioConfigured] = useState(false);
   // Gcode path to auto-select once it lands in the refreshed catalog after a
   // slice — drives the "view slice on viewer" step.
   const [autoSelectGcodePath, setAutoSelectGcodePath] = useState("");
@@ -6087,19 +6100,38 @@ export default function CadWorkspace({
     }
   }, [selectedEntry]);
 
-  // Print the `.gcode` the user is currently viewing. One-click: pick the first
-  // paired printer (dropping into pairing when there is none), then upload + start
-  // immediately (confirmed=true per contract §2) and begin polling status so the
-  // toolbar shows live progress.
+  // Track whether the "Open with Bambu Studio" handoff is set up. Printers are
+  // global (not per-project), so this is loaded once on mount and refreshed when
+  // the Add-printer dialog closes (a fresh handoff must light up the button).
+  const refreshBambuStudioConfigured = useCallback(async () => {
+    try {
+      const printers = await getTransport().printer_list();
+      const has = Array.isArray(printers)
+        && printers.some((p) => p && p.transport === "bambustudio");
+      setBambuStudioConfigured(has);
+    } catch {
+      // Non-fatal: leave the flag as-is (Print still works for gcode views).
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshBambuStudioConfigured();
+  }, [refreshBambuStudioConfigured]);
+
+  // Print the file the user is currently viewing. One-click: pick the target
+  // printer (dropping into pairing when there is none), then either upload +
+  // start a direct print (LAN/cloud, confirmed=true per contract §2) and poll
+  // status, or — for the "Open with Bambu Studio" handoff — open the model in
+  // Bambu Studio so the user slices & prints from there.
   const handlePrint = useCallback(async () => {
-    const gcodeFile =
-      selectedEntry && entrySourceFormat(selectedEntry) === RENDER_FORMAT.GCODE
-        ? fileKey(selectedEntry)
-        : "";
-    if (!gcodeFile) {
+    const selectedFmt = selectedEntry ? entrySourceFormat(selectedEntry) : null;
+    const gcodeFile = selectedFmt === RENDER_FORMAT.GCODE ? fileKey(selectedEntry) : "";
+    // Actionable when a gcode is selected (direct print) or the Bambu Studio
+    // handoff is set up (it opens the model STL — available on the model view).
+    if (!gcodeFile && !bambuStudioConfigured) {
       return;
     }
-    console.info("[print] requested", { gcodeFile });
+    console.info("[print] requested", { gcodeFile, bambuStudioConfigured });
     setPrintStatus("");
     setPrintStatusError(false);
     setPrinting(true);
@@ -6119,6 +6151,35 @@ export default function CadWorkspace({
         printerId: targetPrinter.id,
         transport: targetPrinter.transport
       });
+      // Bambu Studio handoff: open the MODEL (the user slices & prints there).
+      // Prefer the STL being viewed; else the project's latest model STL.
+      if (targetPrinter.transport === "bambustudio") {
+        const stlFile =
+          selectedFmt === RENDER_FORMAT.STL
+            ? fileKey(selectedEntry)
+            : selectSliceTargetStl(getChatState());
+        if (!stlFile) {
+          console.warn("[print] bambu studio handoff: no model STL to open");
+          setPrintStatus("No model to open in Bambu Studio");
+          setPrintStatusError(true);
+          return;
+        }
+        console.info("[print] opening in Bambu Studio", { stlFile });
+        setPrintStatus("Opening in Bambu Studio…");
+        setPrintStatusError(false);
+        await transport.printer_open_in_studio({ file: stlFile });
+        console.info("[print] opened in Bambu Studio", { stlFile });
+        setPrintStatus("Opened in Bambu Studio");
+        setPrintStatusError(false);
+        return;
+      }
+      if (!gcodeFile) {
+        // A direct printer needs a sliced gcode; the user is on a non-gcode view.
+        console.info("[print] direct printer needs a sliced gcode — none selected");
+        setPrintStatus("Slice the model first, then print");
+        setPrintStatusError(true);
+        return;
+      }
       // Cloud print prefers the sliced `.gcode.3mf`, but only when it belongs to
       // the gcode being printed (a stale slice of a different model must not be
       // sent). LAN always uploads the plain gcode. Upload + start reference the
@@ -6158,7 +6219,7 @@ export default function CadWorkspace({
     } finally {
       setPrinting(false);
     }
-  }, [selectedEntry]);
+  }, [selectedEntry, bambuStudioConfigured]);
 
   // Live print progress: the backend's print monitor (spawned by
   // `printer_start_print`) emits `print_progress` events; we subscribe and drive
@@ -6580,9 +6641,12 @@ export default function CadWorkspace({
                 sliceLabel={slicing ? sliceProgressLabel(sliceProgress) : "Slice plate"}
                 sliceError={sliceError}
                 handleSlicePlate={handleSlicePlate}
-                canPrint={selectedEntrySourceFormat === RENDER_FORMAT.GCODE}
+                canPrint={
+                  selectedEntrySourceFormat === RENDER_FORMAT.GCODE ||
+                  (bambuStudioConfigured && selectedEntrySourceFormat === RENDER_FORMAT.STL)
+                }
                 printing={printing || Boolean(monitoredPrinterId)}
-                printLabel={printButtonLabel(printing, printJob)}
+                printLabel={printButtonLabel(printing, printJob, bambuStudioConfigured)}
                 handlePrint={handlePrint}
               />
 
@@ -6864,6 +6928,11 @@ export default function CadWorkspace({
           open={addPrinterOpen}
           onOpenChange={(next) => {
             setAddPrinterOpen(next);
+            if (!next) {
+              // A handoff may have just been set up — re-read so the Print button
+              // updates (label + STL-view availability) without an app reload.
+              void refreshBambuStudioConfigured();
+            }
             // Resume the print once the dialog closes, but only if a printer was
             // actually added (`onAdded` arms it — cancelling leaves it false → no
             // re-trigger, no reopen loop).

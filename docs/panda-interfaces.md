@@ -351,7 +351,9 @@ function slice_status(): Promise<SliceStatus>;
 #### Printer (Bambu)
 
 ```typescript
-type PrinterTransport = "lan" | "cloud";
+// "bambustudio" is not a network printer — it hands the model off to the
+// locally installed Bambu Studio app (printer_open_in_studio).
+type PrinterTransport = "lan" | "cloud" | "bambustudio";
 interface PrinterCard {
   id: string;                   // serial-derived (dev_id for cloud)
   model: string;                // "X1C", "P1S", "A1", …
@@ -368,6 +370,10 @@ interface AddPrinterRequest {
   serial?: string;              // optional override; else pulled from TLS cert
 }
 function printer_add(req: AddPrinterRequest): Promise<PrinterCard>;
+
+// Register the "Open with Bambu Studio" handoff (a pseudo-printer, fixed id
+// "bambu-studio", transport "bambustudio"). No pairing or network setup.
+function printer_add_studio(): Promise<PrinterCard>;
 
 function printer_list(): Promise<PrinterCard[]>;
 
@@ -391,13 +397,23 @@ interface StartPrintRequest {
   confirmed: true;              // explicit consumer-facing confirm — see plan
 }
 function printer_start_print(req: StartPrintRequest): Promise<void>;
+
+interface OpenInStudioRequest {
+  file: string;                 // workspace-relative (catalog key) or absolute
+}
+// Hand a model/gcode file off to the locally installed Bambu Studio app. This
+// is the action behind the "bambustudio" transport — no upload/start. Errors
+// BAMBU_STUDIO_NOT_FOUND when the app is not installed in a standard location.
+function printer_open_in_studio(req: OpenInStudioRequest): Promise<void>;
 ```
 
 `printer_status` / `printer_upload_gcode` / `printer_start_print` dispatch on
 the stored record's `transport`: LAN uses FTPS + direct-to-IP MQTT; cloud
 routes through the signed-in account (cloud MQTT + REST upload/print-job). The
 cloud upload uploads the sliced `.gcode.3mf` (it auto-prefers the sibling 3mf
-when handed a `.gcode`).
+when handed a `.gcode`). A `"bambustudio"` record is not a network printer —
+`printer_upload_gcode` / `printer_start_print` reject it (`PRINTER_IS_BAMBU_STUDIO`);
+the Print button instead calls `printer_open_in_studio` with the model STL.
 
 #### Cloud account (Bambu)
 

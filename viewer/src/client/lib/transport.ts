@@ -173,7 +173,9 @@ export interface SliceProgressEvent {
 
 // Printer --------------------------------------------------------------------
 
-export type PrinterTransport = "lan" | "cloud";
+// "bambustudio" is not a network printer — it hands the model off to the
+// locally installed Bambu Studio app (see printer_open_in_studio).
+export type PrinterTransport = "lan" | "cloud" | "bambustudio";
 
 export interface PrinterCard {
   id: string;
@@ -214,6 +216,11 @@ export interface PrintProgressEvent {
   printerId: string;
   state: string;
   progress: number;
+}
+
+export interface OpenInStudioRequest {
+  /** Workspace-relative (catalog key) or absolute path to the model / gcode. */
+  file: string;
 }
 
 // Bambu cloud account --------------------------------------------------------
@@ -765,12 +772,20 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
         hostName: String(cloudReq.name ?? cloudReq.serial ?? ""),
       } as unknown as T;
     }
+    case "printer_add_studio":
+      return {
+        id: "bambu-studio",
+        model: "Bambu Studio",
+        transport: "bambustudio",
+        hostName: "Open with Bambu Studio",
+      } as unknown as T;
     case "printer_list":
       return [] as unknown as T;
     case "printer_status":
       return { online: false, state: "idle" } as unknown as T;
     case "printer_upload_gcode":
     case "printer_start_print":
+    case "printer_open_in_studio":
       return undefined as unknown as T;
     case "printer_discover_cloud":
       return [] as unknown as T;
@@ -893,6 +908,8 @@ const transportBase = {
     invoke<PrinterCard>("printer_add", { req }),
   printer_add_cloud: (req: AddCloudPrinterRequest) =>
     invoke<PrinterCard>("printer_add_cloud", { req }),
+  // Register the "Open with Bambu Studio" handoff (a pseudo-printer; no pairing).
+  printer_add_studio: () => invoke<PrinterCard>("printer_add_studio"),
   printer_list: () => invoke<PrinterCard[]>("printer_list"),
   printer_status: (printerId: string) =>
     invoke<PrinterStatus>("printer_status", { printerId }),
@@ -900,6 +917,9 @@ const transportBase = {
     invoke<void>("printer_upload_gcode", { req }),
   printer_start_print: (req: StartPrintRequest) =>
     invoke<void>("printer_start_print", { req }),
+  // Open a model / gcode file in the locally installed Bambu Studio app.
+  printer_open_in_studio: (req: OpenInStudioRequest) =>
+    invoke<void>("printer_open_in_studio", { req }),
 
   // cloud (Bambu account + cloud-transport printing)
   cloud_login_request_code: (req: CloudLoginRequest) =>

@@ -68,6 +68,18 @@ pub fn run() {
                     window.open_devtools();
                 }
             }
+            // Windows: drop the native title bar. The in-window `WindowMenuBar`
+            // (gated Windows-only in the frontend — see `main.jsx`) renders
+            // custom minimize/maximize/close controls and a draggable region in
+            // its place. macOS/Linux keep their native chrome (config
+            // `decorations: true`); macOS also carries the native app menu (see
+            // `crate::menu`). Done at runtime rather than in `tauri.conf.json`
+            // because that flag can't be platform-scoped — this leaves macOS,
+            // the dev platform, completely untouched. Best-effort.
+            #[cfg(target_os = "windows")]
+            if let Some(window) = tauri::Manager::get_webview_window(app, "main") {
+                let _ = window.set_decorations(false);
+            }
             // Install the app's bundled Claude Code skills into
             // ~/.claude/skills so the `claude` subprocess (and cadcode's
             // generator) can find them. Best-effort; symlinked skill dirs are

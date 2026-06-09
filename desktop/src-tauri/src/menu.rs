@@ -56,13 +56,27 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?;
+    // About panel metadata. `AboutMetadata::default()` leaves every field
+    // `None`, so the native panel renders with no version. Populate it from
+    // Tauri's `PackageInfo` (derived from `tauri.conf.json`'s `version` — the
+    // authoritative app/bundle version), mirroring muda's own cargo default:
+    // `version` → macOS `ApplicationVersion` (shown in parens), `short_version`
+    // → `Version` (the "Version X" line).
+    let pkg = app.package_info();
+    let about_metadata = AboutMetadata {
+        name: Some(pkg.name.clone()),
+        version: Some(pkg.version.to_string()),
+        short_version: Some(format!("{}.{}", pkg.version.major, pkg.version.minor)),
+        ..Default::default()
+    };
+
     // First submenu = the macOS app menu (shown as "Panda").
     let app_menu = Submenu::with_items(
         app,
         "Panda",
         true,
         &[
-            &PredefinedMenuItem::about(app, None, Some(AboutMetadata::default()))?,
+            &PredefinedMenuItem::about(app, None, Some(about_metadata))?,
             &PredefinedMenuItem::separator(app)?,
             &check_updates,
             &PredefinedMenuItem::separator(app)?,

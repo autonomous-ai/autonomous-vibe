@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Copy, Minus, Square, X } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -20,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
 import { isEditableTarget } from "@/ui/dom";
 import { transport, isTauriRuntime } from "@/lib/transport.ts";
+import pandaLogoUrl from "@/assets/favicon.png";
 
 /**
  * In-window menu bar (Windows-style row) mirroring the native macOS application
@@ -39,6 +41,15 @@ const MENU_TRIGGER_CLASS =
   "hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent " +
   "data-[state=open]:bg-accent data-[state=open]:text-accent-foreground";
 
+// Native-feeling window control buttons: full-bar height, ~46px wide, no
+// rounding so they read as part of the chrome. Close gets a red hover.
+const WINDOW_CONTROL_CLASS =
+  "inline-flex h-7 w-11 cursor-default items-center justify-center text-foreground/80 " +
+  "outline-none transition-colors hover:bg-accent hover:text-accent-foreground";
+const WINDOW_CLOSE_CLASS =
+  "inline-flex h-7 w-11 cursor-default items-center justify-center text-foreground/80 " +
+  "outline-none transition-colors hover:bg-red-600 hover:text-white";
+
 // Edit commands run against the webview's currently-focused editable element.
 // Mirrors the native Edit menu's predefined items.
 function runEditCommand(command) {
@@ -53,6 +64,11 @@ export default function WindowMenuBar() {
   const [aboutOpen, setAboutOpen] = useState(false);
   const [addPrinterOpen, setAddPrinterOpen] = useState(false);
   const [version, setVersion] = useState("");
+  const [isMaximized, setIsMaximized] = useState(false);
+
+  // Window controls only mean anything inside Tauri (outside, `windowAction`
+  // no-ops); gate the render so a plain browser doesn't show dead buttons.
+  const showWindowControls = isTauriRuntime();
 
   // Opening a dropdown steals focus from whatever field the user was editing,
   // which would make cut/copy/paste/select-all act on nothing. Snapshot the
@@ -74,6 +90,38 @@ export default function WindowMenuBar() {
       cancelled = true;
     };
   }, []);
+
+  // Keep the maximize/restore icon in sync with the actual window state — the
+  // user can maximize via the OS (snap, double-click drag region) too, so poll
+  // the window on every resize rather than just toggling our own state.
+  useEffect(() => {
+    if (!showWindowControls) return undefined;
+    let cancelled = false;
+    let unlisten;
+    (async () => {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const appWindow = getCurrentWindow();
+        const sync = async () => {
+          try {
+            const maximized = await appWindow.isMaximized();
+            if (!cancelled) setIsMaximized(maximized);
+          } catch {
+            /* window gone — ignore */
+          }
+        };
+        await sync();
+        unlisten = await appWindow.onResized(() => void sync());
+        if (cancelled) unlisten?.();
+      } catch {
+        /* not in Tauri / window API unavailable — leave default */
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [showWindowControls]);
 
   const captureEditTarget = useCallback(() => {
     const el = document.activeElement;
@@ -161,6 +209,13 @@ export default function WindowMenuBar() {
       data-slot="window-menu-bar"
       className="flex h-7 w-full shrink-0 select-none items-center gap-0.5 border-b border-border/60 bg-background/95 px-1.5 text-xs font-medium text-foreground/90 backdrop-blur"
     >
+      <img
+        src={pandaLogoUrl}
+        alt="Panda"
+        draggable={false}
+        className="ml-0.5 mr-1 size-4 shrink-0 rounded-[3px]"
+      />
+
       <DropdownMenu>
         <DropdownMenuTrigger className={MENU_TRIGGER_CLASS}>Panda</DropdownMenuTrigger>
         <DropdownMenuContent align="start" sideOffset={4} className="min-w-44">
@@ -212,6 +267,49 @@ export default function WindowMenuBar() {
           <DropdownMenuItem onSelect={() => void windowAction("close")}>Close Window</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      {/* Draggable region: fills the gap between the menus and the window
+          controls so the user can move the (undecorated, Windows-only) window
+          by dragging the bar. `data-tauri-drag-region` is a no-op outside Tauri. */}
+      <div className="h-full flex-1 self-stretch" data-tauri-drag-region />
+
+      {showWindowControls && (
+        // -mr-1.5 cancels the bar's right padding so the close button reaches
+        // the window edge, the way native controls do.
+        <div className="-mr-1.5 flex items-center self-stretch">
+          <button
+            type="button"
+            aria-label="Minimize"
+            title="Minimize"
+            className={WINDOW_CONTROL_CLASS}
+            onClick={() => void windowAction("minimize")}
+          >
+            <Minus className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            aria-label={isMaximized ? "Restore" : "Maximize"}
+            title={isMaximized ? "Restore" : "Maximize"}
+            className={WINDOW_CONTROL_CLASS}
+            onClick={() => void windowAction("zoom")}
+          >
+            {isMaximized ? (
+              <Copy className="h-3 w-3" aria-hidden="true" />
+            ) : (
+              <Square className="h-3 w-3" aria-hidden="true" />
+            )}
+          </button>
+          <button
+            type="button"
+            aria-label="Close"
+            title="Close"
+            className={WINDOW_CLOSE_CLASS}
+            onClick={() => void windowAction("close")}
+          >
+            <X className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        </div>
+      )}
 
       <Dialog open={aboutOpen} onOpenChange={setAboutOpen}>
         <DialogContent className="max-w-xs">

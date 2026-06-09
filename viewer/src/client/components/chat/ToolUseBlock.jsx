@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight, ChevronDown, Wrench, Check, XCircle, Loader2 } from "lucide-react";
+import { ChevronRight, ChevronDown, Wrench, Check, XCircle, Loader2, Ban } from "lucide-react";
 import { cn } from "@/ui/utils";
 import ChatCodeBlock from "./ChatCodeBlock";
 
@@ -18,6 +18,11 @@ const STATUS_PILL = {
     icon: <Loader2 className="size-3 animate-spin" aria-hidden />,
     label: "Running",
     cls: "border-white/10 bg-white/5 text-zinc-400",
+  },
+  cancelled: {
+    icon: <Ban className="size-3" aria-hidden />,
+    label: "Cancelled",
+    cls: "border-white/10 bg-white/5 text-zinc-500",
   },
 };
 

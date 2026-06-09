@@ -726,9 +726,10 @@ pub fn diff_snapshots(
 // ---------------------------------------------------------------------------
 
 /// Translation state carried across stream-json lines. We track tool
-/// names so `ToolUseEnd` can echo the matching `ToolUseStart`'s name, and
-/// whether text has streamed so the consolidated `assistant` message can
-/// emit its text exactly once (see `from_assistant`).
+/// names so `ToolUseEnd` can echo the matching `ToolUseStart`'s name (the UI
+/// pairs the two by `tool_use_id`, not name), and whether text has streamed
+/// so the consolidated `assistant` message can emit its text exactly once
+/// (see `from_assistant`).
 #[derive(Debug, Default)]
 pub struct StreamState {
     pending_tools: HashMap<String, String>, // tool_use_id -> tool name
@@ -985,6 +986,7 @@ fn from_assistant(o: &Value, turn_id: &str, state: &mut StreamState) -> Vec<Chat
                 out.push(ChatEvent::ToolUseStart {
                     turn_id: turn_id.to_string(),
                     tool: name,
+                    tool_use_id: tu_id,
                     input,
                 });
             }
@@ -1040,6 +1042,7 @@ fn from_user(o: &Value, turn_id: &str, state: &mut StreamState) -> Vec<ChatEvent
         out.push(ChatEvent::ToolUseEnd {
             turn_id: turn_id.to_string(),
             tool: tool_name,
+            tool_use_id: tu_id.to_string(),
             ok: !is_error,
         });
     }
@@ -2138,15 +2141,28 @@ mod tests {
         let start = parse_stream_line(asst, "T1", &mut state);
         assert_eq!(start.len(), 1);
         match &start[0] {
-            ChatEvent::ToolUseStart { tool, .. } => assert_eq!(tool, "Write"),
+            ChatEvent::ToolUseStart {
+                tool, tool_use_id, ..
+            } => {
+                assert_eq!(tool, "Write");
+                assert_eq!(tool_use_id, "tu_1");
+            }
             other => panic!("expected ToolUseStart, got {other:?}"),
         }
         let user = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","is_error":false}]}}"#;
         let end = parse_stream_line(user, "T1", &mut state);
         assert_eq!(end.len(), 1);
         match &end[0] {
-            ChatEvent::ToolUseEnd { tool, ok, .. } => {
+            ChatEvent::ToolUseEnd {
+                tool,
+                tool_use_id,
+                ok,
+                ..
+            } => {
                 assert_eq!(tool, "Write"); // looked up from pending_tools
+                // The id round-trips so the UI can pair start↔end without
+                // relying on the (collision-prone) tool name.
+                assert_eq!(tool_use_id, "tu_1");
                 assert!(*ok);
             }
             other => panic!("expected ToolUseEnd, got {other:?}"),

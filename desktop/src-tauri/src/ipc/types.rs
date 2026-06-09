@@ -284,11 +284,17 @@ pub enum ChatEvent {
     ToolUseStart {
         turn_id: String,
         tool: String,
+        /// Stable `tool_use_id` from the stream so the UI can pair this start
+        /// with its `ToolUseEnd` by id (names collide when several tools of the
+        /// same kind run in one turn).
+        tool_use_id: String,
         input: serde_json::Value,
     },
     ToolUseEnd {
         turn_id: String,
         tool: String,
+        /// Matches the `ToolUseStart.tool_use_id` this result completes.
+        tool_use_id: String,
         ok: bool,
     },
     ArtifactChanged {

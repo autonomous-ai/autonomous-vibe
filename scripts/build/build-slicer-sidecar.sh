@@ -12,8 +12,16 @@
 #   desktop/src-tauri/resources/slicer/orcaslicer-<triple>  ← Tauri sidecar
 #   desktop/src-tauri/resources/slicer/.installed           ← marker
 #
-# v1 supports macOS (universal DMG → arm64 + x86_64). Linux + Windows
-# branches are sketched but untested.
+# Platforms differ in how OrcaSlicer is delivered:
+#   - macOS: copy the universal .app into resources/; the sidecar symlinks into
+#     it so the bundled frameworks (@rpath) resolve.
+#   - Linux: the self-contained AppImage IS the sidecar (one file, no deps).
+#   - Windows: the portable build is orca-slicer.exe PLUS ~50 sibling DLLs
+#     (Qt/wxWidgets and the bundled VC++ runtime — VCRUNTIME140_1.dll, …) that a
+#     single externalBin file can't carry. So we do NOT bundle a Windows sidecar:
+#     we keep the committed 4-byte `stub` placeholder and let the runtime
+#     auto-installer (commands/app.rs::app_install_orcaslicer) fetch the full
+#     portable tree at first slice. See the windows branch below.
 
 set -euo pipefail
 
@@ -199,39 +207,33 @@ case "${TRIPLE}" in
     ;;
 
   x86_64-pc-windows-msvc)
-    echo "==> extracting portable zip"
-    UNZIP_DIR="${TMP_DIR}/unzipped"
-    mkdir -p "${UNZIP_DIR}"
-    # Git-Bash on a GitHub windows runner may ship none of these; try them in
-    # order of preference. `7z` and PowerShell are always present on the runner.
-    if command -v unzip >/dev/null; then
-      unzip -q "${DOWNLOAD}" -d "${UNZIP_DIR}"
-    elif command -v 7z >/dev/null; then
-      7z x -y -o"${UNZIP_DIR}" "${DOWNLOAD}" >/dev/null
-    elif command -v powershell >/dev/null; then
-      powershell -NoProfile -Command \
-        "Expand-Archive -Force -LiteralPath '${DOWNLOAD}' -DestinationPath '${UNZIP_DIR}'"
-    else
-      echo "error: need one of unzip / 7z / powershell to extract the portable zip" >&2
-      exit 1
-    fi
-    # Find the executable inside the portable zip. As of v2.3.x the Windows
-    # binary is named `orca-slicer.exe` (hyphenated, lowercase) and sits at the
-    # zip root alongside its DLLs; older releases shipped `OrcaSlicer.exe`. Match
-    # either.
-    EXE="$(find "${UNZIP_DIR}" -maxdepth 4 \( -iname 'orca-slicer.exe' -o -iname 'OrcaSlicer.exe' \) | head -1)"
-    if [[ -z "${EXE}" ]]; then
-      echo "error: orca-slicer.exe not found inside portable zip" >&2
-      exit 1
-    fi
-    # Windows binary depends on adjacent DLLs — copy the whole directory and
-    # point the sidecar at the main exe via a .cmd shim. Untested.
-    PORTABLE_DST="${RESOURCES_DIR}/OrcaSlicer_portable"
-    rm -rf "${PORTABLE_DST}"
-    cp -R "$(dirname "${EXE}")" "${PORTABLE_DST}"
-    # Tauri appends .exe on Windows triples, so the externalBin entry must
-    # actually be `orcaslicer-x86_64-pc-windows-msvc.exe`.
-    cp "${EXE}" "${SIDECAR_PATH}.exe"
+    # The Windows portable build is orca-slicer.exe + ~50 sibling DLLs (Qt,
+    # wxWidgets, and the bundled VC++ runtime: VCRUNTIME140_1.dll, MSVCP140.dll,
+    # …) plus resource folders. Tauri's externalBin can only stage ONE file next
+    # to Panda.exe, so copying just the exe leaves every DLL behind — the staged
+    # binary then dies the instant it's spawned with the System Error
+    # "VCRUNTIME140_1.dll was not found". (That was the bug here.)
+    #
+    # So we ship NO real Windows sidecar. We write back the committed 4-byte
+    # `stub` placeholder: Tauri's externalBin check is satisfied by the file
+    # merely existing, while the resolver's PE "MZ"-magic gate
+    # (commands/slicer.rs::file_is_executable) rejects a non-PE stub — so slicer
+    # resolution falls through to the runtime auto-installer
+    # (commands/app.rs::app_install_orcaslicer), which downloads THIS exact
+    # pinned zip and extracts the WHOLE tree (DLLs included) into
+    # %LOCALAPPDATA%\Panda\OrcaSlicer. That mirrors how macOS gets OrcaSlicer in
+    # production (DMG auto-install) and is the only Windows path that delivers
+    # the runtime DLLs intact.
+    #
+    # The download above is kept on purpose: it validates at build time that the
+    # pinned asset URL the auto-installer will hit actually resolves (a 404 here
+    # would otherwise be a silent first-slice failure on every Windows machine)
+    # and records its SHA in the marker. We don't extract it.
+    echo "==> Windows: writing stub sidecar (OrcaSlicer is delivered by the runtime auto-installer)"
+    printf 'stub' > "${SIDECAR_PATH}.exe"
+    # Scrub any real exe / portable tree a prior buggy run may have dropped, so a
+    # stale DLL-less binary can never shadow the stub and get spawned.
+    rm -rf "${RESOURCES_DIR}/OrcaSlicer_portable"
     ;;
 esac
 

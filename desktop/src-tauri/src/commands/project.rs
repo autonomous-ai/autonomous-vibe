@@ -81,7 +81,10 @@ async fn read_project_summary(dir: &Path) -> Option<ProjectSummary> {
         }
     }
     // Project dir without metadata — synthesize a summary from the
-    // directory mtime so the list never silently drops folders.
+    // directory mtime so the list never silently drops folders. With no
+    // stored name, never expose the raw UUID: adopt Claude Code's AI title if
+    // the session JSONL has one, otherwise leave the name empty so the UI
+    // shows its "Untitled project" placeholder instead of the directory id.
     let stat = fs::metadata(dir).await.ok()?;
     let updated = stat
         .modified()
@@ -89,9 +92,10 @@ async fn read_project_summary(dir: &Path) -> Option<ProjectSummary> {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
+    let name = resolve_ai_title(dir, &id).await.unwrap_or_default();
     Some(ProjectSummary {
-        id: id.clone(),
-        name: id,
+        id,
+        name,
         created_at: updated,
         updated_at: updated,
         has_model,
@@ -539,6 +543,13 @@ mod tests {
         let persisted: StoredProjectMeta =
             serde_json::from_slice(&fs::read(dir.join("project.json")).await.unwrap()).unwrap();
 
+        // 3) A project dir with NO project.json must never surface its raw
+        //    UUID as the name — with no session title it stays empty so the UI
+        //    shows "Untitled project" rather than the directory id.
+        let bare = root.path().join("bare-no-meta");
+        fs::create_dir_all(&bare).await.unwrap();
+        let bare_summary = read_project_summary(&bare).await.expect("summary");
+
         // Restore env before asserting so a failure can't leak HOME.
         match &old_home {
             Some(h) => std::env::set_var("HOME", h),
@@ -548,5 +559,11 @@ mod tests {
         assert_eq!(before.name, PLACEHOLDER_PROJECT_NAME, "placeholder kept until title exists");
         assert_eq!(after.name, "Headphone Wall Hook", "last ai-title wins");
         assert_eq!(persisted.name, "Headphone Wall Hook", "upgrade persisted to project.json");
+        assert_eq!(bare_summary.id, "bare-no-meta");
+        assert!(
+            bare_summary.name.is_empty(),
+            "no-metadata dir must not expose its UUID as the name (was {:?})",
+            bare_summary.name
+        );
     }
 }

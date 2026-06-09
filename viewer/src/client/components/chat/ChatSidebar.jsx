@@ -65,6 +65,7 @@ export default function ChatSidebar({
   onWidthChange,
   layout,
   onRequestCloseLeftSidebar,
+  menuBarVisible = false,
   className,
 }) {
   const lastError = useChatStore((state) => state.lastError);
@@ -177,7 +178,12 @@ export default function ChatSidebar({
       data-slot="chat-sidebar"
       data-project-id={projectId || ""}
       className={cn(
-        "pointer-events-auto fixed right-0 top-0 z-30 flex h-svh flex-col border-l border-border/60 bg-background/95 shadow-xl backdrop-blur",
+        "pointer-events-auto fixed right-0 z-30 flex flex-col border-l border-border/60 bg-background/95 shadow-xl backdrop-blur",
+        // When the in-window menu bar is shown (Windows only), pin below it
+        // (h-7 / 1.75rem) so the menu row isn't overlapped; otherwise fill the
+        // viewport. Keep the offset in sync with the menu-bar height in
+        // WindowMenuBar / main.jsx.
+        menuBarVisible ? "top-7 h-[calc(100svh-1.75rem)]" : "top-0 h-svh",
         className,
       )}
       style={{ width }}

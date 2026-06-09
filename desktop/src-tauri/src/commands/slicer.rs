@@ -113,6 +113,16 @@ async fn run_slice_job(
         .unwrap_or_else(|| std::env::temp_dir());
     tokio::fs::create_dir_all(&out_dir).await.ok();
 
+    // Clear this model's prior gcode before slicing so a stale file can't shadow
+    // the fresh result. `pick_produced_gcode` returns an existing `<stem>.gcode`
+    // as-is, and OrcaSlicer always writes a *new* `plate_N.gcode` (never
+    // `<stem>.gcode`), so without this a re-slice keeps returning the FIRST
+    // slice's gcode — e.g. one made before support was enabled — while the freshly
+    // produced `plate_N.gcode` is orphaned and never used. Removing it first makes
+    // the `<stem>.gcode` shortcut valid again (it then only exists if OrcaSlicer,
+    // or our rename, wrote it *this* run).
+    remove_stale_gcode_outputs(&out_dir, &gcode_path).await;
+
     // When the user has configured no profile at all, OrcaSlicer would fall
     // back to its own internal default config — which enables relative-extruder
     // addressing without a matching `G92 E0` in the layer-change G-code and so
@@ -143,6 +153,11 @@ async fn run_slice_job(
         ),
         None => (settings_profile, filament_profile),
     };
+
+    // Read the on-disk `--load-settings` files back and print their support keys
+    // before they're deleted post-slice, so the actual JSON handed to OrcaSlicer
+    // is visible (proves `enable_support` persisted into the process profile).
+    log_loaded_support_settings(&settings_profile);
 
     // Pull the bed's printable area out of the (now inherit-resolved) machine
     // profile so the post-slice validator can bounds-check the toolpath. Read it
@@ -175,8 +190,15 @@ async fn run_slice_job(
     let exec_result = spawn_slicer(&slicer_bin, &args).await;
     // The normalized profiles are consumed by the spawn; drop the temp copies
     // however the slice ended (best-effort — they also sit in the OS temp dir).
+    // `PANDA_KEEP_SLICE_PROFILES=1` keeps them and logs the dir so the exact
+    // `settings-*.json` handed to OrcaSlicer can be inspected (e.g. to confirm
+    // `enable_support` was injected into the process profile).
     if let Some(dir) = &profile_tmp {
-        let _ = std::fs::remove_dir_all(dir);
+        if keep_slice_profiles() {
+            eprintln!("[panda] kept slice profiles for inspection: {}", dir.display());
+        } else {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
     let exec_result = exec_result?;
 
@@ -427,6 +449,17 @@ fn make_profile_tmpdir() -> Option<PathBuf> {
     std::fs::create_dir_all(&dir).ok().map(|_| dir)
 }
 
+/// `PANDA_KEEP_SLICE_PROFILES=1` (or any non-empty value other than `0`) keeps
+/// the normalized profile temp dir after a slice instead of deleting it, so the
+/// `settings-*.json` actually loaded by OrcaSlicer can be inspected. Off by
+/// default. Note: a `.app` launched via Finder/`open` won't inherit the var —
+/// run the binary (or `scripts/dev.sh`) from a shell that exports it.
+fn keep_slice_profiles() -> bool {
+    std::env::var("PANDA_KEEP_SLICE_PROFILES")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false)
+}
+
 /// Normalize a `;`-joined `--load-settings` value (machine;process), writing a
 /// self-contained copy of each entry into `out_dir` and returning the rejoined
 /// list. OrcaSlicer keys profile *type* off the JSON `"type"` field, not the
@@ -465,7 +498,81 @@ fn normalize_profile_to(path: &str, out_dir: &Path, out_name: &str) -> String {
 fn flatten_and_collapse(src: &Path) -> Option<Map<String, Value>> {
     let mut obj = flatten_inherits(src, &mut Vec::new())?;
     collapse_variants(&mut obj);
+    force_enable_support(&mut obj);
     Some(obj)
+}
+
+/// Force support generation on for the slice by setting `enable_support` on the
+/// *process* profile. OrcaSlicer has no safe `--enable-support` CLI flag (unknown
+/// flags crash it — see `build_orcaslicer_args`), so we mutate the normalized
+/// process JSON instead, the same way the bed/variant fixes are applied. Booleans
+/// in OrcaSlicer config are the strings `"0"`/`"1"`. Gated on `"type":"process"`
+/// so the machine and filament profiles (which also pass through here) are never
+/// touched. Default Bambu/system process profiles inherit `enable_support: "0"`;
+/// this overrides that to `"1"` and leaves `support_type` at the profile default
+/// (`normal(auto)` / `tree(auto)`), so support is added only where the geometry
+/// needs it.
+fn force_enable_support(obj: &mut Map<String, Value>) {
+    // Only the process profile gets support turned on; machine/filament profiles
+    // pass through here too but must not gain an `enable_support` key.
+    let profile_type = obj
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("<none>")
+        .to_string();
+    if profile_type == "process" {
+        obj.insert("enable_support".to_string(), Value::String("1".to_string()));
+    }
+    // Force-print the resolved support settings for EVERY normalized profile.
+    // Support is a key inside the loaded JSON, not a CLI flag (OrcaSlicer has
+    // none — an unknown flag crashes it), so it never shows in the logged
+    // `--load-settings` invocation. Printing unconditionally proves which file is
+    // `type:process` and that `enable_support=1` actually landed on it; if no
+    // line reads `type=process enable_support=1`, support is not being injected.
+    let enable_support = obj
+        .get("enable_support")
+        .and_then(Value::as_str)
+        .unwrap_or("-");
+    let support_type = obj
+        .get("support_type")
+        .and_then(Value::as_str)
+        .unwrap_or("-");
+    eprintln!(
+        "[panda] normalized profile: type={profile_type} enable_support={enable_support} support_type={support_type}"
+    );
+}
+
+/// Read each `;`-joined `--load-settings` file from disk and print its
+/// support-related keys (`type` + every key containing `support`, e.g.
+/// `enable_support`, `support_type`, `tree_support_*`). Ground-truth dump of the
+/// on-disk JSON OrcaSlicer is about to load — unlike `force_enable_support`,
+/// which logs the in-memory map, this confirms the value actually persisted to
+/// the temp file. Best-effort: an unreadable/non-JSON entry is noted and skipped.
+fn log_loaded_support_settings(settings_profile: &str) {
+    for path in settings_profile
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let Ok(bytes) = std::fs::read(path) else {
+            eprintln!("[panda] settings file unreadable: {path}");
+            continue;
+        };
+        let Ok(obj) = serde_json::from_slice::<Map<String, Value>>(&bytes) else {
+            eprintln!("[panda] settings file not JSON: {path}");
+            continue;
+        };
+        let mut keys: Vec<String> = obj
+            .iter()
+            .filter(|(k, _)| k.as_str() == "type" || k.contains("support"))
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        keys.sort();
+        eprintln!(
+            "[panda] support settings in {path}:\n    {}",
+            keys.join("\n    ")
+        );
+    }
 }
 
 /// Merge a profile with its parents (`"inherits"`), child keys overriding the
@@ -843,6 +950,23 @@ fn gcode_path_for(mesh: &Path) -> PathBuf {
         .unwrap_or_else(|| "model".to_string());
     let dir = mesh.parent().unwrap_or_else(|| Path::new(""));
     dir.join(format!("{stem}.gcode"))
+}
+
+/// Remove this model's prior gcode output from `out_dir` before a slice: the
+/// renamed `<stem>.gcode` and any orphaned `plate_*.gcode` OrcaSlicer left from a
+/// previous run. Keeps `pick_produced_gcode` from returning a stale slice's
+/// output. Best-effort — missing files / unreadable dir are ignored.
+async fn remove_stale_gcode_outputs(out_dir: &Path, gcode_path: &Path) {
+    let _ = tokio::fs::remove_file(gcode_path).await;
+    if let Ok(mut rd) = tokio::fs::read_dir(out_dir).await {
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let p = entry.path();
+            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if name.starts_with("plate_") && name.ends_with(".gcode") {
+                let _ = tokio::fs::remove_file(&p).await;
+            }
+        }
+    }
 }
 
 /// Path for the sliced project `.3mf`. Named after the model (`<stem>.3mf`,
@@ -2413,6 +2537,49 @@ G1 X0 Y0
         let out = std::env::temp_dir();
         assert_eq!(normalize_profile_to("", &out, "x.json"), "");
         assert_eq!(normalize_profile_to("   ", &out, "x.json"), "");
+    }
+
+    #[test]
+    fn normalize_forces_support_on_process_profile_only() {
+        let tmp = std::env::temp_dir().join(format!("panda-prof-support-{}", std::process::id()));
+        let pdir = tmp.join("process");
+        std::fs::create_dir_all(&pdir).unwrap();
+        // A process profile inheriting the common's `enable_support: "0"`.
+        std::fs::write(
+            pdir.join("base.json"),
+            r#"{"type":"process","enable_support":"0","support_type":"normal(auto)"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            pdir.join("leaf.json"),
+            r#"{"type":"process","inherits":"base","name":"leaf"}"#,
+        )
+        .unwrap();
+        let out = tmp.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+
+        // Process profile: inherited disable is overridden to "1"; the profile's
+        // own support_type is left untouched.
+        let process = pdir.join("leaf.json").display().to_string();
+        let res = normalize_profile_to(&process, &out, "settings-1.json");
+        let written: Map<String, Value> =
+            serde_json::from_slice(&std::fs::read(&res).unwrap()).unwrap();
+        assert_eq!(written["enable_support"], serde_json::json!("1"));
+        assert_eq!(written["support_type"], serde_json::json!("normal(auto)"));
+
+        // A machine profile is never given an enable_support key.
+        std::fs::write(
+            pdir.join("machine.json"),
+            r#"{"type":"machine","printable_area":["0x0","256x256"]}"#,
+        )
+        .unwrap();
+        let machine = pdir.join("machine.json").display().to_string();
+        let mres = normalize_profile_to(&machine, &out, "settings-0.json");
+        let mwritten: Map<String, Value> =
+            serde_json::from_slice(&std::fs::read(&mres).unwrap()).unwrap();
+        assert!(!mwritten.contains_key("enable_support"));
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     // --- Pre-slice input inspection --------------------------------------

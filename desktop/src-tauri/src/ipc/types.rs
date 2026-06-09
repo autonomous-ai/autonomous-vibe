@@ -534,12 +534,36 @@ pub struct PrintProgressEvent {
     pub progress: f64,
 }
 
-/// Hand a model (or G-code) file off to the locally installed Bambu Studio app.
+/// Hand a model (or G-code) file off to a locally installed slicer app.
 /// `file` is workspace-relative (a catalog key like `model.stl`) or absolute.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenInStudioRequest {
     pub file: String,
+}
+
+/// Which locally-installed slicer app the "open in studio" handoff will launch.
+/// Bambu Studio is preferred when present; otherwise Panda falls back to
+/// OrcaSlicer (a standalone install or the bundled sidecar). `None` only when
+/// neither is available. Drives the open-button label so it names the app that
+/// will actually open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OpenTargetApp {
+    BambuStudio,
+    OrcaSlicer,
+    None,
+}
+
+impl OpenTargetApp {
+    /// Human-readable app name for status / error messages.
+    pub fn label(self) -> &'static str {
+        match self {
+            OpenTargetApp::BambuStudio => "Bambu Studio",
+            OpenTargetApp::OrcaSlicer => "OrcaSlicer",
+            OpenTargetApp::None => "a slicer",
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

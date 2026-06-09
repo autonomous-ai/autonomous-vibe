@@ -68,6 +68,7 @@ export default function ChatCodeBlock({
   lang,
   label,
   copyLabel = "Copy code",
+  showCopy = true,
   className = "",
   maxHeightClassName = "max-h-72",
 }) {
@@ -137,14 +138,16 @@ export default function ChatCodeBlock({
           color: #d4d4d8;
         }
       `}</style>
-      <div className="flex h-9 items-center justify-between border-b border-white/5 px-3 text-xs text-zinc-300">
-        <span className="truncate font-medium">{displayLabel}</span>
-        <ChatCopyButton
-          value={raw}
-          label={copyLabel}
-          className="size-6 text-zinc-300 opacity-80 hover:bg-white/10 hover:text-white"
-        />
-      </div>
+      {showCopy ? (
+        <div className="flex h-9 items-center justify-between border-b border-white/5 px-3 text-xs text-zinc-300">
+          <span className="truncate font-medium">{displayLabel}</span>
+          <ChatCopyButton
+            value={raw}
+            label={copyLabel}
+            className="size-6 text-zinc-300 opacity-80 hover:bg-white/10 hover:text-white"
+          />
+        </div>
+      ) : null}
       <pre className={`${maxHeightClassName} overflow-auto px-3 py-2.5 text-[12px] leading-relaxed`}>
         <code
           className="font-mono text-[#f4f4f5]"

@@ -179,6 +179,7 @@ pub fn run() {
             printer::printer_upload_gcode,
             printer::printer_start_print,
             printer::printer_open_in_studio,
+            printer::printer_open_in_studio_target,
             // cloud (Bambu account + cloud-transport printing)
             cloud::cloud_login_request_code,
             cloud::cloud_login_submit_code,

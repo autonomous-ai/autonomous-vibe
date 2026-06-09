@@ -86,7 +86,7 @@ export default function ToolUseBlock({ tool, label, input, status }) {
         <ChatCodeBlock
           code={detail}
           lang="json"
-          copyLabel="Copy input"
+          showCopy={false}
           className="mt-2"
           maxHeightClassName="max-h-48"
         />

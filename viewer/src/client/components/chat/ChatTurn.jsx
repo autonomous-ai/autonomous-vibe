@@ -85,6 +85,12 @@ function turnCopyText(turn) {
     .join("\n\n");
 }
 
+function turnShowsCopyButton(turn) {
+  return (turn.blocks || []).some((block) =>
+    block.kind === "text" || block.kind === "thinking" || block.kind === "plan",
+  );
+}
+
 function StatusLine({ turn }) {
   if (turn.role !== "assistant") return null;
   // "running" is conveyed by the live pulse inside PhaseBadge — no separate
@@ -103,6 +109,7 @@ export default function ChatTurn({ turn, onOpenArtifact }) {
     turn.status === "complete" &&
     turn.blocks.some((block) => block.kind === "artifact");
   const copyText = turnCopyText(turn);
+  const showCopyButton = turnShowsCopyButton(turn);
   return (
     <article
       data-slot="chat-turn"
@@ -202,7 +209,7 @@ export default function ChatTurn({ turn, onOpenArtifact }) {
         ) : null}
         </div>
       </div>
-      {!isUser ? (
+      {!isUser && showCopyButton ? (
         <ChatCopyButton
           value={copyText}
           className="absolute bottom-1 right-1 z-10 opacity-0 group-hover/turn:opacity-100 group-focus-within/turn:opacity-100"

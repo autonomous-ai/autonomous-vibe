@@ -249,6 +249,10 @@ function appendError(turn, message) {
   };
 }
 
+function isUserCancelled(message) {
+  return String(message || "").trim().toLowerCase() === "cancelled";
+}
+
 function dedupe(values) {
   const seen = new Set();
   const out = [];
@@ -360,22 +364,33 @@ function applyChatEventToSession(session, event, now) {
         turnInProgress: false,
         history: updateAssistantTurn(session.history, turnId, (turn) => ({
           ...finalizeRunningTools(turn),
-          status: turn.status === "error" ? "error" : "complete",
+          status:
+            turn.status === "error" || turn.status === "cancelled"
+              ? turn.status
+              : "complete",
           endedAt: now,
         })),
       };
-    case "error":
+    case "error": {
+      const cancelled = isUserCancelled(event.message);
       return {
         ...session,
         currentTurnId: session.currentTurnId === turnId ? "" : session.currentTurnId,
         turnInProgress: false,
-        lastError: event.message,
+        lastError: cancelled ? session.lastError : event.message,
         history: updateAssistantTurn(
           ensureAssistantTurn(session.history, turnId, now),
           turnId,
-          (turn) => ({ ...appendError(finalizeRunningTools(turn), event.message), endedAt: now }),
+          (turn) => {
+            const finalized = finalizeRunningTools(turn);
+            if (cancelled) {
+              return { ...finalized, status: "cancelled", endedAt: now };
+            }
+            return { ...appendError(finalized, event.message), endedAt: now };
+          },
         ),
       };
+    }
     case "auth_expired":
       // Same turn lifecycle as `error`, with fixed copy. The top-level
       // `needsPandaReauth` flag (set in chatReducer) drives the action banner.

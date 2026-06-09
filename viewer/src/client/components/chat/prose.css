@@ -1,0 +1,279 @@
+/*
+ * Long-form chat answer typography. Everything an assistant reply can contain,
+ * styled as one cohesive `.chat-prose` system on top of the design tokens.
+ * Tailwind preflight resets headings/lists, so each element is restated here.
+ */
+
+.chat-prose {
+  --prose-marker: color-mix(in srgb, currentColor 55%, transparent);
+  --prose-check: #2cad7e; /* filled-accent "done" state */
+  font-size: 0.8125rem;
+  line-height: 1.65;
+}
+
+.chat-prose > :first-child {
+  margin-top: 0;
+}
+.chat-prose > :last-child {
+  margin-bottom: 0;
+}
+
+/* ---- Paragraphs / inline ------------------------------------------------ */
+.chat-prose p {
+  margin: 0.6rem 0;
+  color: var(--foreground);
+  opacity: 0.88;
+}
+
+.chat-prose strong {
+  font-weight: 600;
+  color: var(--foreground);
+  opacity: 1;
+}
+.chat-prose em {
+  font-style: italic;
+}
+
+.chat-prose a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: color-mix(in srgb, var(--primary) 45%, transparent);
+}
+.chat-prose a:hover {
+  text-decoration-color: var(--primary);
+}
+
+/* <kbd> rendered from inline code that looks like a key/spec chip */
+.chat-prose kbd {
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 0.35rem;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  background: color-mix(in srgb, var(--muted) 50%, transparent);
+  color: var(--foreground);
+}
+
+/* ---- Headings: section / sub-section / label --------------------------- */
+.chat-prose h1 {
+  margin: 1.15rem 0 0.6rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--foreground);
+}
+.chat-prose h2 {
+  margin: 1.05rem 0 0.45rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--foreground);
+}
+.chat-prose h3 {
+  margin: 0.95rem 0 0.45rem;
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+/* ---- Blockquote -------------------------------------------------------- */
+.chat-prose blockquote {
+  margin: 0.7rem 0;
+  padding: 0.1rem 0 0.1rem 0.85rem;
+  border-left: 2px solid color-mix(in srgb, var(--border) 140%, transparent);
+  color: var(--foreground);
+  opacity: 0.72;
+}
+.chat-prose blockquote p {
+  margin: 0.25rem 0;
+  opacity: 1;
+}
+
+/* ---- Divider ----------------------------------------------------------- */
+.chat-prose hr {
+  margin: 1.2rem 0;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
+}
+
+/* ---- Bullet lists: nesting-aware markers ------------------------------- */
+.chat-prose ul:not(.contains-task-list) {
+  list-style: none;
+  margin: 0.55rem 0;
+  padding-left: 1.3rem;
+}
+.chat-prose ul:not(.contains-task-list) > li {
+  position: relative;
+  margin: 0.28rem 0;
+  color: var(--foreground);
+  opacity: 0.88;
+}
+/* level 1 — filled dot */
+.chat-prose ul:not(.contains-task-list) > li::before {
+  content: "";
+  position: absolute;
+  left: -0.98rem;
+  top: 0.62em;
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background: var(--prose-marker);
+}
+/* level 2 — hollow ring */
+.chat-prose ul:not(.contains-task-list) ul:not(.contains-task-list) > li::before {
+  background: transparent;
+  border: 1.25px solid var(--prose-marker);
+  width: 6px;
+  height: 6px;
+  top: 0.58em;
+}
+/* level 3 — dash */
+.chat-prose
+  ul:not(.contains-task-list)
+  ul:not(.contains-task-list)
+  ul:not(.contains-task-list)
+  > li::before {
+  background: var(--prose-marker);
+  border: 0;
+  border-radius: 1px;
+  width: 7px;
+  height: 1.5px;
+  top: 0.85em;
+}
+
+/* ---- Numbered lists: rounded number chips via counters ----------------- */
+.chat-prose ol {
+  list-style: none;
+  counter-reset: prose-ol;
+  margin: 0.55rem 0;
+  padding-left: 0;
+}
+.chat-prose ol > li {
+  counter-increment: prose-ol;
+  position: relative;
+  margin: 0.4rem 0;
+  padding-left: 2rem;
+  min-height: 1.4rem;
+  color: var(--foreground);
+  opacity: 0.88;
+}
+.chat-prose ol > li::before {
+  content: counter(prose-ol);
+  position: absolute;
+  left: 0;
+  top: 0.05em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 0.4rem;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+  color: var(--muted-foreground);
+  font-size: 0.7rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  opacity: 1;
+}
+
+/* ---- Checklist: custom checkboxes -------------------------------------- */
+.chat-prose .contains-task-list {
+  list-style: none;
+  margin: 0.55rem 0;
+  padding-left: 0;
+}
+.chat-prose .contains-task-list .contains-task-list {
+  margin: 0.28rem 0 0.28rem 1.6rem;
+}
+.chat-prose .task-list-item {
+  position: relative;
+  margin: 0.28rem 0;
+  padding-left: 1.7rem;
+  color: var(--muted-foreground);
+}
+.chat-prose .task-list-item:has(input:checked) {
+  color: var(--foreground);
+}
+.chat-prose .task-list-item > input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  position: absolute;
+  left: 0;
+  top: 0.16em;
+  width: 1.05rem;
+  height: 1.05rem;
+  margin: 0;
+  border: 1.5px solid color-mix(in srgb, var(--border) 160%, transparent);
+  border-radius: 0.3rem;
+  background: transparent;
+  cursor: default;
+}
+.chat-prose .task-list-item > input[type="checkbox"]:checked {
+  background: var(--prose-check);
+  border-color: var(--prose-check);
+}
+/* drawn checkmark */
+.chat-prose .task-list-item > input[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 0.33rem;
+  top: 0.13rem;
+  width: 0.28rem;
+  height: 0.55rem;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+/* ---- Callout notes ----------------------------------------------------- */
+.chat-prose .prose-callout {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  margin: 0.9rem 0;
+  padding: 0.7rem 0.85rem;
+  border-radius: 0.6rem;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--muted) 32%, transparent);
+  color: var(--muted-foreground);
+}
+.chat-prose .prose-callout .prose-callout-icon {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  margin-top: 0.12rem;
+  opacity: 0.9;
+}
+.chat-prose .prose-callout-body > :first-child {
+  margin-top: 0;
+}
+.chat-prose .prose-callout-body > :last-child {
+  margin-bottom: 0;
+}
+.chat-prose .prose-callout-body p {
+  opacity: 1;
+  color: inherit;
+}
+.chat-prose .prose-callout strong {
+  color: var(--foreground);
+}
+
+.chat-prose .prose-callout[data-callout="warning"],
+.chat-prose .prose-callout[data-callout="caution"] {
+  /* --ui-warning-bg is a saturated red; the design wants a muted amber-brown,
+     so derive it from the warning text token over the surface. */
+  border-color: color-mix(in srgb, var(--ui-warning-text) 24%, transparent);
+  background: color-mix(in srgb, var(--ui-warning-text) 18%, var(--background));
+  color: var(--ui-warning-text);
+}
+.chat-prose .prose-callout[data-callout="warning"] strong,
+.chat-prose .prose-callout[data-callout="caution"] strong {
+  color: var(--ui-warning-text);
+}

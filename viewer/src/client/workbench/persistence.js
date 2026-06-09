@@ -502,7 +502,9 @@ function browserSessionStorage() {
 
 export function createCadWorkspaceSessionState(overrides = {}, options = {}) {
   return {
-    fileViewerOpen: normalizeBoolean(overrides?.fileViewerOpen, false),
+    // The Models sidebar defaults open; users hide/show it with the floating
+    // toggle icon. A persisted `false` (user closed it) still wins over this.
+    fileViewerOpen: normalizeBoolean(overrides?.fileViewerOpen, true),
     fileViewerExpandedDirectoryIds: normalizeNullableUniqueStringList(overrides?.fileViewerExpandedDirectoryIds),
     fileViewerWidthPx: fileViewerWidthPxForSessionState(
       overrides?.fileViewerWidthPx,
@@ -522,7 +524,11 @@ function buildCadWorkspaceSessionStoragePayload(state = {}, options = {}) {
   const payload = {
     version: CAD_WORKSPACE_SESSION_STORAGE_VERSION
   };
-  if (normalizedState.fileViewerOpen || hasOwn(state || {}, "fileViewerOpen")) {
+  // Persist the sidebar open flag only when the caller explicitly set it (the
+  // workspace always does). The default is now open, so we must not key this on
+  // `normalizedState.fileViewerOpen` being truthy — that would force-store the
+  // default on every write and defeat the "only custom values" minimal payload.
+  if (hasOwn(state || {}, "fileViewerOpen")) {
     payload.fileViewerOpen = normalizedState.fileViewerOpen;
   }
   if (Array.isArray(normalizedState.fileViewerExpandedDirectoryIds)) {

@@ -1,13 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  CheckCircle2,
-  ExternalLink,
-  Loader2,
-  Sparkles,
-  Terminal,
-} from "lucide-react";
+import { CheckCircle2, ExternalLink, Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { transport } from "@/lib/transport.ts";
 import {
@@ -19,20 +13,18 @@ import {
   describePandaLoginProgress,
   evaluateWelcomeState,
   installErrorHint,
-  PANDA_SETUP_URL,
 } from "./onboardingHelpers.js";
 
 /**
- * Single-screen onboarding. Auto-detects the local `claude` CLI + its auth
- * state, then offers three ways to connect Claude:
+ * Single-screen onboarding for non-technical users. The only user-facing path is
+ * "Sign in with Panda" — a proxy login to Panda's hosted Claude server. The
+ * `claude` binary is still the runtime, so a missing CLI is installed first;
+ * then `app_panda_login` issues a token and we complete with `usePandaCloud:
+ * true`.
  *
- *  1. Sign in with Panda — proxy login to Panda's hosted Claude server. The
- *     `claude` binary is still the runtime, so a missing CLI is installed first;
- *     then `app_panda_login` issues a token and we complete with
- *     `usePandaCloud: true`.
- *  2. Use my own Claude Code — bring-your-own auth. Enabled only when the CLI is
- *     detected AND already authenticated (otherwise a chat turn would dead-end).
- *  3. Set up your own Claude — a help link for BYO users who aren't ready.
+ * The bring-your-own-Claude path is intentionally NOT surfaced here — regular
+ * users don't configure Claude Code. Experienced users reach local Claude via
+ * the hidden developer gesture in the chat header (see AuthModeControl).
  *
  * Everything else (slicer / printer / filament) moved out of onboarding into the
  * in-app "Add Printer" flow.
@@ -66,8 +58,8 @@ export default function WelcomeScreen({ onComplete }) {
     finishing || pandaState === "installing" || pandaState === "signing_in";
 
   // Re-run detection. Read-only and idempotent, so it doubles as the poll tick:
-  // a user who installs Claude or signs in out-of-band sees the screen update
-  // (and "Use my own Claude Code" unlock) without a manual refresh.
+  // a user who installs Claude or signs in out-of-band sees the readiness line
+  // update without a manual refresh.
   const runDetect = useCallback(async () => {
     try {
       const [check, auth] = await Promise.all([
@@ -192,7 +184,7 @@ export default function WelcomeScreen({ onComplete }) {
 
   // Abandon an in-flight sign-in: tell Rust to drop the pending login (so it
   // doesn't wait out the 10-min timeout), stop the local flow, and reset to idle
-  // so "Use my own Claude Code" is immediately usable again.
+  // so the sign-in button is immediately usable again.
   const cancelPandaLogin = useCallback(() => {
     cancelledRef.current = true;
     if (activeFlowRef.current) activeFlowRef.current.cancel();
@@ -226,7 +218,6 @@ export default function WelcomeScreen({ onComplete }) {
   }, [busy, finish, runInstallStep, runPandaLoginStep]);
 
   const cliFound = welcome?.cliFound ?? false;
-  const cliVersion = welcome?.cliVersion ?? "";
   const authed = welcome?.authed ?? false;
 
   const progressLabel = pandaProgress
@@ -245,43 +236,26 @@ export default function WelcomeScreen({ onComplete }) {
         <header className="flex flex-col gap-1">
           <h1 className="text-2xl font-semibold">Welcome to Panda</h1>
           <p className="text-sm text-muted-foreground">
-            Panda turns a chat into a printable model. Choose how you’d like to
-            connect Claude — sign in with Panda for the easiest start, or bring
-            your own Claude Code.
+            Panda turns a chat into a printable model. Sign in to get started —
+            no account or Claude subscription needed.
           </p>
         </header>
 
-        {/* Detection status */}
+        {/* Readiness — plain language, no CLI / version / auth jargon */}
         <div className="mt-4 flex flex-col gap-1 rounded-md border border-border bg-muted/30 p-3 text-sm">
           {checking ? (
             <span className="flex items-center gap-2 text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" /> Checking your computer…
+              <Loader2 className="size-4 animate-spin" /> Getting things ready…
+            </span>
+          ) : cliFound && authed ? (
+            <span className="flex items-center gap-2">
+              <CheckCircle2 className="size-4 text-emerald-600" /> Ready to go
             </span>
           ) : (
-            <>
-              <span className="flex items-center gap-2">
-                <Terminal className="size-4 text-muted-foreground" />
-                Claude Code:{" "}
-                {cliFound ? (
-                  <span className="font-medium text-emerald-600">
-                    detected{cliVersion ? ` (${cliVersion})` : ""}
-                  </span>
-                ) : (
-                  <span className="font-medium text-muted-foreground">
-                    not found
-                  </span>
-                )}
-              </span>
-              <span className="flex items-center gap-2">
-                {authed ? (
-                  <CheckCircle2 className="size-4 text-emerald-600" />
-                ) : (
-                  <CheckCircle2 className="size-4 text-muted-foreground/40" />
-                )}
-                Signed in:{" "}
-                <span className="font-medium">{authed ? "yes" : "no"}</span>
-              </span>
-            </>
+            <span className="flex items-center gap-2 text-muted-foreground">
+              <CheckCircle2 className="size-4 text-muted-foreground/40" /> We’ll
+              finish setting up when you sign in.
+            </span>
           )}
           {checkError ? (
             <span className="text-destructive" role="alert">
@@ -382,40 +356,10 @@ export default function WelcomeScreen({ onComplete }) {
           </div>
         </div>
 
-        {/* Secondary: Use my own Claude Code — shown for transparency but
-            disabled in v1. Panda manages Claude for everyone; the bring-your-own
-            path is reachable only through the developer backdoor in the chat
-            header (see AuthModeControl). */}
-        <div className="mt-3 flex flex-col gap-2 rounded-md border border-border p-4 opacity-60">
-          <div className="flex items-start justify-between gap-3">
-            <div className="space-y-1">
-              <p className="font-medium">Use my own Claude Code</p>
-              <p className="text-sm text-muted-foreground">
-                Panda manages Claude for you — just sign in with Panda above.
-              </p>
-            </div>
-            <Button
-              variant="outline"
-              disabled
-              data-testid="use-own-claude"
-            >
-              Unavailable
-            </Button>
-          </div>
-        </div>
-
-        {/* Tertiary: set up your own / re-check */}
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm">
-          <Button asChild variant="link" className="h-auto p-0">
-            <a
-              href={PANDA_SETUP_URL}
-              target="_blank"
-              rel="noreferrer noopener"
-              data-testid="setup-own-claude"
-            >
-              <ExternalLink className="mr-1 size-4" /> Set up your own Claude
-            </a>
-          </Button>
+        {/* Re-check. The bring-your-own-Claude path is intentionally absent —
+            experienced users reach it via the hidden developer gesture in the
+            chat header (see AuthModeControl). */}
+        <div className="mt-3 flex items-center justify-end text-sm">
           <Button
             variant="ghost"
             onClick={() => void runDetect()}

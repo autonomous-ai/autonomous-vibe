@@ -225,29 +225,15 @@ export default function WelcomeScreen({ onComplete }) {
     await finish({ usePandaCloud: true });
   }, [busy, finish, runInstallStep, runPandaLoginStep]);
 
-  const useOwnClaude = useCallback(() => {
-    if (busy || !welcomeRef.current?.canUseOwn) return;
-    void finish({ usePandaCloud: false });
-  }, [busy, finish]);
-
   const cliFound = welcome?.cliFound ?? false;
   const cliVersion = welcome?.cliVersion ?? "";
   const authed = welcome?.authed ?? false;
-  const canUseOwn = welcome?.canUseOwn ?? false;
-  const ownBlockedReason = welcome?.ownBlockedReason ?? "";
 
   const progressLabel = pandaProgress
     ? pandaState === "installing"
       ? describeClaudeInstallProgress(pandaProgress)
       : describePandaLoginProgress(pandaProgress)
     : null;
-
-  const ownBlockedCopy =
-    ownBlockedReason === "not_installed"
-      ? "Claude Code isn’t installed yet."
-      : ownBlockedReason === "not_signed_in"
-        ? "Claude Code is installed, but not signed in yet."
-        : "";
 
   return (
     <div
@@ -396,24 +382,24 @@ export default function WelcomeScreen({ onComplete }) {
           </div>
         </div>
 
-        {/* Secondary: Use my own Claude Code */}
-        <div className="mt-3 flex flex-col gap-2 rounded-md border border-border p-4">
+        {/* Secondary: Use my own Claude Code — shown for transparency but
+            disabled in v1. Panda manages Claude for everyone; the bring-your-own
+            path is reachable only through the developer backdoor in the chat
+            header (see AuthModeControl). */}
+        <div className="mt-3 flex flex-col gap-2 rounded-md border border-border p-4 opacity-60">
           <div className="flex items-start justify-between gap-3">
             <div className="space-y-1">
               <p className="font-medium">Use my own Claude Code</p>
               <p className="text-sm text-muted-foreground">
-                {canUseOwn
-                  ? "You’re already set up — skip sign-in and use your own Claude."
-                  : `Available once Claude Code is installed and signed in. ${ownBlockedCopy}`}
+                Panda manages Claude for you — just sign in with Panda above.
               </p>
             </div>
             <Button
               variant="outline"
-              onClick={() => useOwnClaude()}
-              disabled={busy || checking || !canUseOwn}
+              disabled
               data-testid="use-own-claude"
             >
-              {finishing ? "Finishing…" : "Use my own"}
+              Unavailable
             </Button>
           </div>
         </div>

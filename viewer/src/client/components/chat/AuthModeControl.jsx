@@ -3,13 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Cloud, Laptop, Loader2, ShieldAlert } from "lucide-react";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { cn } from "@/ui/utils";
 import { transport } from "@/lib/transport.ts";
 import {
@@ -17,14 +16,21 @@ import {
   describePandaLoginProgress,
 } from "@/components/onboarding/onboardingHelpers.js";
 
+// Secret developer gesture: this many clicks on the badge within
+// DEV_GESTURE_WINDOW_MS opens the access chooser. v1 forces every user onto the
+// Panda proxy, so there is no normal-user switch UI — the chooser is the only
+// way to reach local Claude Code, kept deliberately undiscoverable.
+const DEV_GESTURE_CLICKS = 5;
+const DEV_GESTURE_WINDOW_MS = 1500;
+
 /**
  * Compact badge in the chat header showing which Claude access the next turn
- * will use — the Panda proxy (`usePandaCloud`) or the user's own local Claude
- * Code — and a dropdown to switch between them without re-onboarding.
- *
- * Switching is a settings flip (`app_set_auth_mode`). Choosing Panda when no
- * token is stored yet runs the full browser sign-in (`app_panda_login`), which
- * persists the token and flips the mode on success.
+ * will use. v1 forces the Panda proxy, so a normal click does nothing visible —
+ * there is no user-facing switch. A developer backdoor remains: clicking the
+ * badge {@link DEV_GESTURE_CLICKS} times in quick succession opens a hidden
+ * dialog that toggles between the Panda proxy and the user's own local Claude
+ * Code (`app_set_auth_mode`). Choosing Panda with no stored token runs the full
+ * browser sign-in (`app_panda_login`) first.
  */
 export default function AuthModeControl() {
   const [settings, setSettings] = useState(null);
@@ -32,11 +38,16 @@ export default function AuthModeControl() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [pandaProgress, setPandaProgress] = useState(null);
+  const [devOpen, setDevOpen] = useState(false);
   const flowRef = useRef(null);
 
-  // Re-read settings + local auth. Cheap and idempotent — also runs each time
-  // the dropdown opens so the badge reflects changes made elsewhere (e.g. Run
-  // Setup Again).
+  // Click-gesture bookkeeping. A ref (not state) so counting never re-renders
+  // the badge; the window timer resets the count if the clicks aren't quick.
+  const clickCountRef = useRef(0);
+  const clickTimerRef = useRef(0);
+
+  // Re-read settings + local auth. Cheap and idempotent — runs each time the
+  // dev dialog opens so the badge reflects changes made elsewhere.
   const refresh = useCallback(async () => {
     try {
       const [s, auth] = await Promise.all([
@@ -53,12 +64,31 @@ export default function AuthModeControl() {
   useEffect(() => {
     void refresh();
     return () => {
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
       if (flowRef.current) flowRef.current.cancel();
     };
   }, [refresh]);
 
   const usePanda = Boolean(settings?.usePandaCloud);
   const hasToken = Boolean(settings?.pandaToken);
+
+  // Count badge clicks; open the dev chooser once the threshold is hit inside
+  // the window. Any pause longer than DEV_GESTURE_WINDOW_MS resets the count.
+  const handleBadgeClick = useCallback(() => {
+    if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+    clickCountRef.current += 1;
+    if (clickCountRef.current >= DEV_GESTURE_CLICKS) {
+      clickCountRef.current = 0;
+      setError("");
+      setPandaProgress(null);
+      void refresh();
+      setDevOpen(true);
+      return;
+    }
+    clickTimerRef.current = setTimeout(() => {
+      clickCountRef.current = 0;
+    }, DEV_GESTURE_WINDOW_MS);
+  }, [refresh]);
 
   const switchTo = useCallback(
     async (panda) => {
@@ -113,82 +143,88 @@ export default function AuthModeControl() {
   const dotClass = usePanda ? "bg-emerald-500" : "bg-sky-500";
 
   return (
-    <DropdownMenu
-      onOpenChange={(open) => {
-        if (open) void refresh();
-      }}
-    >
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className="inline-flex items-center gap-1.5 rounded-full border border-border/60 px-2 py-0.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/50"
-          data-testid="auth-mode-trigger"
-          title="Claude access — click to switch"
-        >
-          {busy ? (
-            <Loader2 className="size-3 animate-spin" />
-          ) : (
-            <span className={cn("size-2 rounded-full", dotClass)} aria-hidden />
-          )}
-          {label}
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-64">
-        <DropdownMenuLabel>Claude access for this chat</DropdownMenuLabel>
-        <DropdownMenuItem
-          disabled={busy}
-          onSelect={(e) => {
-            e.preventDefault();
-            void switchTo(true);
-          }}
-          data-testid="auth-mode-panda"
-        >
-          <Cloud className="size-4" aria-hidden />
-          <span className="flex flex-1 flex-col">
-            <span>Panda{!usePanda && !hasToken ? " · sign in" : ""}</span>
-            <span className="text-xs text-muted-foreground">
-              Use Panda’s Claude — no subscription of your own
-            </span>
-          </span>
-          {usePanda ? <Check className="size-4" aria-hidden /> : null}
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          disabled={busy}
-          onSelect={(e) => {
-            e.preventDefault();
-            void switchTo(false);
-          }}
-          data-testid="auth-mode-local"
-        >
-          <Laptop className="size-4" aria-hidden />
-          <span className="flex flex-1 flex-col">
-            <span>Your Claude Code</span>
-            <span className="text-xs text-muted-foreground">
-              {localAuthed
-                ? "Your own local Claude auth"
-                : "Heads up: not signed in locally"}
-            </span>
-          </span>
-          {!usePanda ? <Check className="size-4" aria-hidden /> : null}
-        </DropdownMenuItem>
-        {pandaProgress ? (
-          <>
-            <DropdownMenuSeparator />
-            <div className="px-2 py-1 text-xs text-muted-foreground">
+    <>
+      <button
+        type="button"
+        onClick={handleBadgeClick}
+        className="inline-flex items-center gap-1.5 rounded-full border border-border/60 px-2 py-0.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/50"
+        data-testid="auth-mode-trigger"
+        title="Claude access"
+      >
+        {busy ? (
+          <Loader2 className="size-3 animate-spin" />
+        ) : (
+          <span className={cn("size-2 rounded-full", dotClass)} aria-hidden />
+        )}
+        {label}
+      </button>
+
+      <Dialog open={devOpen} onOpenChange={setDevOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Developer · Claude access</DialogTitle>
+            <DialogDescription>
+              Panda normally handles Claude for everyone. This developer-only
+              switch routes chat through the Panda proxy or your own local
+              Claude Code.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void switchTo(true)}
+              data-testid="auth-mode-panda"
+              className="flex items-start gap-2 rounded-md border border-border p-3 text-left transition-colors hover:bg-muted/50 disabled:opacity-50"
+            >
+              <Cloud className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <span className="flex flex-1 flex-col">
+                <span className="text-sm font-medium">
+                  Panda{!usePanda && !hasToken ? " · sign in" : ""}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  Use Panda’s Claude — no subscription of your own
+                </span>
+              </span>
+              {usePanda ? <Check className="mt-0.5 size-4" aria-hidden /> : null}
+            </button>
+
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void switchTo(false)}
+              data-testid="auth-mode-local"
+              className="flex items-start gap-2 rounded-md border border-border p-3 text-left transition-colors hover:bg-muted/50 disabled:opacity-50"
+            >
+              <Laptop className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <span className="flex flex-1 flex-col">
+                <span className="text-sm font-medium">Your Claude Code</span>
+                <span className="text-xs text-muted-foreground">
+                  {localAuthed
+                    ? "Your own local Claude auth"
+                    : "Heads up: not signed in locally"}
+                </span>
+              </span>
+              {!usePanda ? (
+                <Check className="mt-0.5 size-4" aria-hidden />
+              ) : null}
+            </button>
+          </div>
+
+          {pandaProgress ? (
+            <div className="text-xs text-muted-foreground">
               {describePandaLoginProgress(pandaProgress)}
             </div>
-          </>
-        ) : null}
-        {error ? (
-          <>
-            <DropdownMenuSeparator />
-            <div className="flex items-start gap-1.5 px-2 py-1 text-xs text-destructive">
+          ) : null}
+          {error ? (
+            <div className="flex items-start gap-1.5 text-xs text-destructive">
               <ShieldAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
               <span>{error}</span>
             </div>
-          </>
-        ) : null}
-      </DropdownMenuContent>
-    </DropdownMenu>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

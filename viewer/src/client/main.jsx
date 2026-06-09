@@ -91,7 +91,15 @@ function useOnboardingGate() {
       .app_settings_read()
       .then((settings) => {
         if (cancelled) return;
-        setNeedsOnboarding(!settings?.hasOnboarded);
+        // v1 forces the Panda proxy. A user who finished onboarding but has no
+        // Panda token is a legacy local-Claude user from before the proxy was
+        // mandatory — send them back through Welcome to sign in with Panda.
+        // Developers who picked local via the AuthModeControl backdoor still
+        // carry the token from their required Panda sign-in, so this leaves
+        // them alone.
+        const onboarded = Boolean(settings?.hasOnboarded);
+        const hasPandaToken = Boolean(settings?.pandaToken);
+        setNeedsOnboarding(!onboarded || !hasPandaToken);
       })
       .catch(() => {
         if (cancelled) return;

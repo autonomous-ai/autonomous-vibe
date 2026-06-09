@@ -324,6 +324,13 @@ pub fn build_env(cfg: &ClaudeRunConfig) -> Vec<(String, String)> {
     // rewrites the binary the other is being loaded from. The app pins/ships its
     // own `claude`; it must not mutate itself underneath a turn.
     env.push(("DISABLE_AUTOUPDATER".into(), "1".into()));
+    // Force every command the model runs to complete in the foreground, within
+    // the turn. Disables the `run_in_background` parameter on the Bash/subagent
+    // tools, auto-backgrounding of long-running tasks, and the Ctrl+B shortcut.
+    // Without it, a backgrounded shell (e.g. a watch build) would be killed ~5s
+    // after the turn returns anyway, but disabling the capability outright keeps
+    // a turn fully synchronous — no detached shells outliving it.
+    env.push(("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS".into(), "1".into()));
     if cfg.use_panda_cloud {
         // Route through Panda's hosted proxy (BE contract): the issued `ccr-…`
         // key is a bearer token, not an Anthropic API key, so it goes in
@@ -1977,7 +1984,7 @@ mod tests {
     }
 
     #[test]
-    fn build_env_default_disables_autoupdater_only() {
+    fn build_env_default_disables_autoupdater_and_background_tasks() {
         let cfg = ClaudeRunConfig {
             prompt: "hi".into(),
             workspace: PathBuf::from("/tmp/proj"),
@@ -1990,13 +1997,18 @@ mod tests {
         };
         let map: HashMap<String, String> = build_env(&cfg).into_iter().collect();
         // Default (non-cloud) env disables the self-updater so claude can't
-        // rewrite its own binary mid-turn (→ 0xC0000142 on Windows), and adds
-        // nothing else — host auth is inherited.
+        // rewrite its own binary mid-turn (→ 0xC0000142 on Windows) and disables
+        // background tasks so every command runs in the foreground; it adds no
+        // auth — host auth is inherited.
         assert_eq!(map.get("DISABLE_AUTOUPDATER").map(String::as_str), Some("1"));
+        assert_eq!(
+            map.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS").map(String::as_str),
+            Some("1")
+        );
         assert!(!map.contains_key("ANTHROPIC_BASE_URL"));
         assert!(!map.contains_key("ANTHROPIC_AUTH_TOKEN"));
         assert!(!map.contains_key("ANTHROPIC_API_KEY"));
-        assert_eq!(map.len(), 1);
+        assert_eq!(map.len(), 2);
     }
 
     #[test]

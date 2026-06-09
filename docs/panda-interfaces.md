@@ -601,6 +601,10 @@ interface UpdateInfo {
 function update_check(): Promise<UpdateInfo | null>;  // null = up to date
 function update_install(): Promise<void>;              // emits downloading… → ready
 function update_relaunch(): Promise<void>;             // never returns (restarts)
+// Published version from the updater's latest.json feed, for the in-window
+// About box. Persisted on disk so it survives an offline launch; falls back to
+// the installed bundle version when the feed is unreachable and nothing cached.
+function update_latest_version(): Promise<string>;
 ```
 
 ### Events (Tauri `emit`)

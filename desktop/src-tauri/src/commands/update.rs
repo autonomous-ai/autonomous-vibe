@@ -138,6 +138,85 @@ pub async fn update_relaunch(app: AppHandle) -> IpcResult<()> {
     app.restart();
 }
 
+/// Updater feed consulted for the published version shown in the in-window
+/// "About" box. Mirrors `tauri.conf.json` → `plugins.updater.endpoints[0]`; the
+/// raw build version baked into the binary (`CARGO_PKG_VERSION`) is unreliable
+/// on Windows (the CI version-stamp regex misses CRLF-checked-out Cargo.toml),
+/// so the About box reports the authoritative version from this feed instead.
+const LATEST_JSON_URL: &str =
+    "https://github.com/autonomous-ai/panda/releases/latest/download/latest.json";
+
+/// On-disk cache of the last successfully fetched `latest.json` version, so the
+/// About box still shows a real version when the feed is unreachable (offline).
+fn cached_version_path() -> std::path::PathBuf {
+    crate::paths::app_data_dir().join("latest-version.json")
+}
+
+/// Latest published version, for the in-window About box.
+///
+/// Fetches `latest.json` from the updater feed and returns its `version`,
+/// persisting it for offline use. When the feed is unreachable, falls back to
+/// the last persisted value, and finally to the installed bundle version
+/// (`package_info`, the same authoritative source the native macOS About uses)
+/// so the box is never blank.
+#[tauri::command]
+pub async fn update_latest_version(app: AppHandle) -> IpcResult<String> {
+    match fetch_latest_version().await {
+        Ok(version) => {
+            persist_cached_version(&version).await; // best-effort
+            Ok(version)
+        }
+        Err(_) => Ok(read_cached_version()
+            .await
+            .unwrap_or_else(|| app.package_info().version.to_string())),
+    }
+}
+
+/// GET `latest.json` and pull out its top-level `version` string.
+async fn fetch_latest_version() -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        // GitHub's `releases/latest/download/<asset>` 302-redirects to the
+        // resolved release asset; follow a few hops.
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .get(LATEST_JSON_URL)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("latest.json HTTP {}", resp.status()));
+    }
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    json.get("version")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "latest.json missing 'version'".to_string())
+}
+
+/// Persist the fetched version (best-effort; cache failures are non-fatal).
+async fn persist_cached_version(version: &str) {
+    let path = cached_version_path();
+    if let Some(parent) = path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    let body = serde_json::json!({ "version": version }).to_string();
+    let _ = tokio::fs::write(path, body).await;
+}
+
+/// Read the last persisted version, if any.
+async fn read_cached_version() -> Option<String> {
+    let bytes = tokio::fs::read(cached_version_path()).await.ok()?;
+    let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    json.get("version")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
 fn describe(update: &tauri_plugin_updater::Update) -> UpdateInfo {
     UpdateInfo {
         version: update.version.clone(),

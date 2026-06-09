@@ -211,6 +211,7 @@ pub fn run() {
             update::update_check,
             update::update_install,
             update::update_relaunch,
+            update::update_latest_version,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Panda Tauri application");

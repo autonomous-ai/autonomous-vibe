@@ -78,13 +78,18 @@ export default function WindowMenuBar() {
 
   useEffect(() => {
     let cancelled = false;
+    // Source the About version from the updater's latest.json feed (Rust
+    // persists it for an offline fallback). The binary's compiled
+    // CARGO_PKG_VERSION (via app_info) is unreliable on Windows — the CI
+    // version-stamp misses CRLF-checked-out Cargo.toml — so it can read 0.1.0
+    // on a real release; latest.json is authoritative.
     transport
-      .app_info()
-      .then((info) => {
-        if (!cancelled) setVersion(String(info?.appVersion || ""));
+      .update_latest_version()
+      .then((latest) => {
+        if (!cancelled) setVersion(String(latest || ""));
       })
       .catch(() => {
-        /* browser/dev stub: leave version blank */
+        /* browser/dev stub or feed unavailable: leave version blank */
       });
     return () => {
       cancelled = true;

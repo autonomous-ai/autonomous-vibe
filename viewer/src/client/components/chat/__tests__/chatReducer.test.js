@@ -301,10 +301,13 @@ test("cancel/error sweeps running tools to 'cancelled' but keeps real tool error
     // A tool still running when the turn is cancelled.
     { kind: "tool_use_start", turnId: "t-7", tool: "Edit", toolUseId: "tu_b", input: {} },
     { kind: "error", turnId: "t-7", message: "cancelled" },
+    { kind: "turn_end", turnId: "t-7" },
   ];
   const state = applyEvents(INITIAL_CHAT_STATE, events);
   const turn = state.history[0];
-  assert.equal(turn.status, "error");
+  assert.equal(turn.status, "cancelled");
+  assert.equal(state.lastError, "");
+  assert.ok(!turn.blocks.some((b) => b.kind === "error"));
   const tools = turn.blocks.filter((b) => b.kind === "tool_use");
   assert.equal(tools.find((b) => b.toolUseId === "tu_a").status, "error");
   assert.equal(tools.find((b) => b.toolUseId === "tu_b").status, "cancelled");

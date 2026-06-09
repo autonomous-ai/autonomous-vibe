@@ -558,6 +558,27 @@ export function isTauriRuntime(): boolean {
 }
 
 /**
+ * True only when running on Windows. Used to gate the in-window menu bar
+ * (`WindowMenuBar`): macOS has the native global menu (see `menu.rs`) and Linux
+ * relies on its own WM chrome, so the in-window row is Windows-only. Detection
+ * is webview-UA based — `navigator.userAgentData.platform` when present (modern
+ * Chromium/WebView2), else a `userAgent` substring match. No `@tauri-apps` OS
+ * plugin is wired, and the WebView2 UA reliably reports Windows.
+ */
+export function isWindowsPlatform(): boolean {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+  const uaPlatform = (
+    navigator as unknown as { userAgentData?: { platform?: string } }
+  ).userAgentData?.platform;
+  if (uaPlatform) {
+    return uaPlatform.toLowerCase().includes("win");
+  }
+  return /windows|win32|win64/i.test(navigator.userAgent || "");
+}
+
+/**
  * Reset the cached bridge — primarily for tests that swap the
  * bridge mid-suite. Production code should call `setTauriBridge` once
  * at startup from the Tauri entry point.

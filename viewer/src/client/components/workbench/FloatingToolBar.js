@@ -143,8 +143,9 @@ function DesktopFloatingToolBar({
           ) : null}
 
           {/* Dedicated STL hand-off: always enabled (it needs no paired printer
-              or slice — just opens the model in the locally installed Bambu
-              Studio), disabled only while the open is in flight. */}
+              or slice — just opens the model in the locally installed slicer,
+              Bambu Studio or OrcaSlicer), disabled only while the open is in
+              flight. The label names whichever app will actually open. */}
           {canOpenInStudio ? (
             <ToolbarButton
               label={openInStudioLabel}

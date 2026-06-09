@@ -245,6 +245,13 @@ export interface OpenInStudioRequest {
   file: string;
 }
 
+/**
+ * Which slicer app the open-in handoff would launch: Bambu Studio when
+ * installed, else OrcaSlicer (standalone install or Panda's bundled sidecar),
+ * else none. Drives the open-button label so it names the app that opens.
+ */
+export type OpenTargetApp = "bambustudio" | "orcaslicer" | "none";
+
 // Bambu cloud account --------------------------------------------------------
 
 export type CloudRegion = "global" | "china";
@@ -816,6 +823,8 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
     case "printer_start_print":
     case "printer_open_in_studio":
       return undefined as unknown as T;
+    case "printer_open_in_studio_target":
+      return "bambustudio" as unknown as T;
     case "printer_discover_cloud":
       return [] as unknown as T;
     case "cloud_login_request_code":
@@ -950,9 +959,13 @@ const transportBase = {
     invoke<void>("printer_upload_gcode", { req }),
   printer_start_print: (req: StartPrintRequest) =>
     invoke<void>("printer_start_print", { req }),
-  // Open a model / gcode file in the locally installed Bambu Studio app.
+  // Open a model / gcode file in a locally installed slicer app (Bambu Studio,
+  // else OrcaSlicer).
   printer_open_in_studio: (req: OpenInStudioRequest) =>
     invoke<void>("printer_open_in_studio", { req }),
+  // Report which slicer app the open-in handoff would launch right now.
+  printer_open_in_studio_target: () =>
+    invoke<OpenTargetApp>("printer_open_in_studio_target"),
 
   // cloud (Bambu account + cloud-transport printing)
   cloud_login_request_code: (req: CloudLoginRequest) =>

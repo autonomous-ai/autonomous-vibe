@@ -425,10 +425,18 @@ function printer_start_print(req: StartPrintRequest): Promise<void>;
 interface OpenInStudioRequest {
   file: string;                 // workspace-relative (catalog key) or absolute
 }
-// Hand a model/gcode file off to the locally installed Bambu Studio app. This
-// is the action behind the "bambustudio" transport — no upload/start. Errors
-// BAMBU_STUDIO_NOT_FOUND when the app is not installed in a standard location.
+// Hand a model/gcode file off to a locally installed slicer app. This is the
+// action behind the "bambustudio" transport — no upload/start. Prefers Bambu
+// Studio; when it isn't installed, falls back to OrcaSlicer (a standalone
+// install or Panda's bundled sidecar). Errors SLICER_APP_NOT_FOUND only when
+// neither is available in a standard location (SLICER_APP_OPEN_FAILED if the
+// OS "open with" handoff fails).
 function printer_open_in_studio(req: OpenInStudioRequest): Promise<void>;
+
+// Which slicer app the open-in handoff would launch right now — drives the
+// open-button label so it names the app that will actually open. Read-only.
+type OpenTargetApp = "bambustudio" | "orcaslicer" | "none";
+function printer_open_in_studio_target(): Promise<OpenTargetApp>;
 ```
 
 `printer_status` / `printer_upload_gcode` / `printer_start_print` dispatch on

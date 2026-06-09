@@ -943,7 +943,7 @@ async fn store_oauth_token(token: &str) -> IpcResult<()> {
 /// browser opens; API exchanges the one-time code for the proxy key; PROXY is
 /// the `ANTHROPIC_BASE_URL` the issued key authenticates against (the exchange
 /// also returns it as `baseUrl`, which we prefer and persist).
-const PANDA_WEB_URL: &str = "https://panda-dashboard.autonomous.ai";
+const PANDA_WEB_URL: &str = "https://panda.autonomous.ai";
 const PANDA_API_URL: &str = "https://panda-dashboard-api.autonomous.ai";
 pub const PANDA_PROXY_URL: &str = "https://api-panda.autonomous.ai";
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeftRight, ArrowRight, Circle, Eraser, Minus, PaintBucket, PenTool, Square } from "lucide-react";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import CadRenderPane from "./workbench/CadRenderPane";
@@ -173,6 +173,7 @@ import {
   fileKey,
   firstSelectableEntryKey,
   gcodeSourceStl,
+  nearestLevelEntryKey,
   soleCatalogStl,
   missingFileRefForCatalog,
   readCadParam,
@@ -354,10 +355,13 @@ function describePrintError(err) {
       return "This Bambu cloud session can't send print commands (no MQTT identity). Sign out and sign in again.";
     case "NO_ACTIVE_PROJECT":
       return "Open a project before printing.";
+    case "SLICER_APP_NOT_FOUND":
+      return "No slicer found. Install Bambu Studio (bambulab.com) or OrcaSlicer, then try again.";
     case "BAMBU_STUDIO_NOT_FOUND":
       return "Bambu Studio isn't installed. Install it from bambulab.com, then try again.";
+    case "SLICER_APP_OPEN_FAILED":
     case "BAMBU_STUDIO_OPEN_FAILED":
-      return `Couldn't open Bambu Studio: ${raw || "unknown error"}`;
+      return `Couldn't open the slicer: ${raw || "unknown error"}`;
     default:
       return raw || "Print failed";
   }
@@ -400,13 +404,23 @@ function sliceProgressLabel(progress) {
   return SLICE_STAGE_LABELS[progress?.stage] || "Slicing…";
 }
 
+// Display name of the slicer app the open-in handoff will launch. Panda prefers
+// Bambu Studio and falls back to OrcaSlicer when it isn't installed, so the
+// button and status copy name whichever will actually open. "none" keeps the
+// Bambu Studio wording (the default) — that case only arises with no slicer
+// installed at all, where the action errors with its own message anyway.
+function openTargetAppLabel(openTarget) {
+  return openTarget === "orcaslicer" ? "OrcaSlicer" : "Bambu Studio";
+}
+
 // Toolbar Print button label. `printing` is the brief upload+start window;
 // `printJob` is the live status polled from `printer_status` afterwards. When
-// the Bambu Studio handoff is set up there is no network print job — the button
-// just opens the model in Bambu Studio, so it reads accordingly.
-function printButtonLabel(printing, printJob, studio = false) {
+// the slicer handoff is set up there is no network print job — the button just
+// opens the model in a slicer, so it reads accordingly (naming the app the
+// handoff will actually launch via `appLabel`).
+function printButtonLabel(printing, printJob, studio = false, appLabel = "Bambu Studio") {
   if (studio) {
-    return printing ? "Opening…" : "Open in Bambu Studio";
+    return printing ? "Opening…" : `Open in ${appLabel}`;
   }
   if (printJob) {
     const pct = Math.round((Number(printJob.progress) || 0) * 100);
@@ -680,6 +694,11 @@ export default function CadWorkspace({
   // `bambuStudioConfigured`, which is true whenever a handoff exists at all even
   // if a direct printer is the chosen default.
   const [bambuStudioSelected, setBambuStudioSelected] = useState(false);
+  // Which slicer app the open-in handoff would actually launch ("bambustudio" |
+  // "orcaslicer" | "none"). Panda prefers Bambu Studio and falls back to
+  // OrcaSlicer when it isn't installed, so the button must name the app that
+  // really opens. Defaults to "bambustudio" until the backend probe resolves.
+  const [openTarget, setOpenTarget] = useState("bambustudio");
   // Gcode path to auto-select once it lands in the refreshed catalog after a
   // slice — drives the "view slice on viewer" step.
   const [autoSelectGcodePath, setAutoSelectGcodePath] = useState("");
@@ -5644,23 +5663,64 @@ export default function CadWorkspace({
       });
   }, [currentProjectId, handleSelectEntry, openProject]);
 
-  // Activate a project from its sidebar header (no specific file). This is the
-  // only way to reopen a project with no files yet — e.g. a freshly created one
-  // you started chatting in, then navigated away from. Switches the chat
-  // session + workspace to it; the catalog/3D view follow.
+  // Activate a project from its sidebar header (no specific file). Switches the
+  // chat session + workspace to it; the catalog/3D view follow. With no file
+  // targeted, the previous project's `?file=` param lingers in the URL — if the
+  // new project's catalog can't resolve it (common for deeper, multi-level
+  // projects), the viewer renders a spurious "File does not exist". Defer a
+  // default selection so once the new catalog settles we land on its nearest-
+  // to-root model. `key: null` marks the request as "pick the default"; a
+  // project with no models yet resolves to nothing and keeps the empty state —
+  // which is still the only way to reopen such a project. `observedRefresh`
+  // gates the pick on the new project's catalog actually loading (see resolver),
+  // not the previous project's entries that stay hydrated through the switch.
   const handleSelectProject = useCallback((projectId) => {
     if (!projectId || projectId === currentProjectId) return;
-    pendingCrossProjectSelectionRef.current = null;
+    pendingCrossProjectSelectionRef.current = { projectId, key: null, observedRefresh: false };
     openProject(projectId)
       .then(() => setChatProject(projectId))
       .catch((err) => {
         console.warn("Failed to open project from sidebar", err);
+        pendingCrossProjectSelectionRef.current = null;
       });
   }, [currentProjectId, openProject]);
 
-  useEffect(() => {
+  // Runs as a layout effect so the selection commits before paint: the render
+  // where the new catalog settles still has the previous project's stale
+  // `?file=` in the URL, which would otherwise flash "File does not exist" for a
+  // frame before this resolves it.
+  useLayoutEffect(() => {
     const pending = pendingCrossProjectSelectionRef.current;
     if (!pending || pending.projectId !== currentProjectId) {
+      return;
+    }
+    // Header activation (no specific file): wait for *this* project's catalog to
+    // load, then select its nearest-to-root model. The previous project's
+    // entries stay hydrated through the switch, so we can't pick on the first
+    // settled catalog — instead we watch the refresh lifecycle. `main.jsx`
+    // re-reads the catalog with `markRefreshing: true` on every project change,
+    // so the catalog is guaranteed to go refreshing → settled for the new
+    // project; only once we've seen `catalogRefreshing` flip true (this
+    // project's load began) and back to false do we pick. A settled-but-empty
+    // catalog clears the request and leaves the empty state.
+    if (pending.key === null) {
+      if (catalogRefreshing) {
+        pending.observedRefresh = true;
+        return;
+      }
+      if (!pending.observedRefresh || !catalogHydrated) {
+        return;
+      }
+      pendingCrossProjectSelectionRef.current = null;
+      const defaultKey = nearestLevelEntryKey(catalogEntries);
+      if (!defaultKey) {
+        return;
+      }
+      const defaultEntry = entryMap.get(defaultKey);
+      if (defaultEntry) {
+        expandFileViewerTreeToEntry(defaultEntry);
+      }
+      handleSelectEntry(defaultKey);
       return;
     }
     const entry = entryMap.get(pending.key);
@@ -5674,7 +5734,15 @@ export default function CadWorkspace({
     // the clicked file renders collapsed after the project switch.
     expandFileViewerTreeToEntry(entry);
     handleSelectEntry(pending.key);
-  }, [currentProjectId, entryMap, handleSelectEntry, expandFileViewerTreeToEntry]);
+  }, [
+    currentProjectId,
+    entryMap,
+    catalogEntries,
+    catalogHydrated,
+    catalogRefreshing,
+    handleSelectEntry,
+    expandFileViewerTreeToEntry
+  ]);
 
   // Per-project delete from the sidebar. Opens a confirm dialog; on confirm,
   // deletes the project. When the deleted project was active, fall back to the
@@ -6253,6 +6321,16 @@ export default function CadWorkspace({
       }
       const target = pickPrinterForSlice(list, defaultPrinterId);
       setBambuStudioSelected(target?.transport === "bambustudio");
+      // Probe which slicer the open-in handoff would launch so the button names
+      // it correctly. Best-effort: a probe failure leaves the default label.
+      try {
+        const openApp = await transport.printer_open_in_studio_target();
+        if (openApp) {
+          setOpenTarget(openApp);
+        }
+      } catch {
+        // Non-fatal: keep the current open-target label.
+      }
     } catch {
       // Non-fatal: leave the flags as-is (Print still works for gcode views).
     }
@@ -6326,22 +6404,24 @@ export default function CadWorkspace({
         printerId: targetPrinter.id,
         transport: targetPrinter.transport
       });
-      // Bambu Studio handoff: open the MODEL (the user slices & prints there).
-      // Prefer the STL being viewed; else the project's latest model STL.
+      // Slicer handoff: open the MODEL (the user slices & prints there). Prefer
+      // the STL being viewed; else the project's latest model STL. Names the app
+      // the handoff actually launches (Bambu Studio, else OrcaSlicer).
       if (targetPrinter.transport === "bambustudio") {
+        const appLabel = openTargetAppLabel(openTarget);
         const stlFile = resolveStudioStlFile(selectedEntry, resolvableEntries);
         if (!stlFile) {
-          console.warn("[print] bambu studio handoff: no model STL to open");
-          setPrintStatus("No model to open in Bambu Studio");
+          console.warn("[print] slicer handoff: no model STL to open");
+          setPrintStatus(`No model to open in ${appLabel}`);
           setPrintStatusError(true);
           return;
         }
-        console.info("[print] opening in Bambu Studio", { stlFile });
-        setPrintStatus("Opening in Bambu Studio…");
+        console.info("[print] opening in slicer", { stlFile, appLabel });
+        setPrintStatus(`Opening in ${appLabel}…`);
         setPrintStatusError(false);
         await transport.printer_open_in_studio({ file: stlFile });
-        console.info("[print] opened in Bambu Studio", { stlFile });
-        setPrintStatus("Opened in Bambu Studio");
+        console.info("[print] opened in slicer", { stlFile, appLabel });
+        setPrintStatus(`Opened in ${appLabel}`);
         setPrintStatusError(false);
         return;
       }
@@ -6393,29 +6473,31 @@ export default function CadWorkspace({
     } finally {
       setPrinting(false);
     }
-  }, [selectedEntry, bambuStudioConfigured, resolvableEntries]);
+  }, [selectedEntry, bambuStudioConfigured, resolvableEntries, openTarget]);
 
-  // Dedicated "Open in Bambu Studio" hand-off for the model (STL) view. Unlike
+  // Dedicated "Open in <slicer>" hand-off for the model (STL) view. Unlike
   // Print, this needs no paired/handoff printer and no slice: it resolves the
   // STL being viewed (else the project's latest model STL) and hands it straight
-  // to the locally installed Bambu Studio via `printer_open_in_studio`. Always
-  // available on an STL view so the user can jump to Studio in one click.
+  // to the slicer via `printer_open_in_studio` (Bambu Studio, else OrcaSlicer).
+  // Always available on an STL view so the user can jump to the slicer in one
+  // click. Status copy names whichever app the handoff will actually launch.
   const handleOpenInStudio = useCallback(async () => {
+    const appLabel = openTargetAppLabel(openTarget);
     const stlFile = resolveStudioStlFile(selectedEntry, resolvableEntries);
     if (!stlFile) {
       console.warn("[studio] no model STL to open");
-      setPrintStatus("No model to open in Bambu Studio");
+      setPrintStatus(`No model to open in ${appLabel}`);
       setPrintStatusError(true);
       return;
     }
-    console.info("[studio] opening in Bambu Studio", { stlFile });
-    setPrintStatus("Opening in Bambu Studio…");
+    console.info("[studio] opening in slicer", { stlFile, appLabel });
+    setPrintStatus(`Opening in ${appLabel}…`);
     setPrintStatusError(false);
     setOpeningInStudio(true);
     try {
       await getTransport().printer_open_in_studio({ file: stlFile });
-      console.info("[studio] opened in Bambu Studio", { stlFile });
-      setPrintStatus("Opened in Bambu Studio");
+      console.info("[studio] opened in slicer", { stlFile, appLabel });
+      setPrintStatus(`Opened in ${appLabel}`);
       setPrintStatusError(false);
     } catch (error) {
       console.error("[studio] open failed", error);
@@ -6424,7 +6506,7 @@ export default function CadWorkspace({
     } finally {
       setOpeningInStudio(false);
     }
-  }, [selectedEntry, resolvableEntries]);
+  }, [selectedEntry, resolvableEntries, openTarget]);
 
   // Live print progress: the backend's print monitor (spawned by
   // `printer_start_print`) emits `print_progress` events; we subscribe and drive
@@ -6656,7 +6738,11 @@ export default function CadWorkspace({
       onMobileOpenChange={handleSidebarOpenChange}
       data-glass-tone={cadWorkspaceGlassTone}
       style={{ "--sidebar-width": `${sidebarShellWidth}px` }}
-      className="relative h-svh overflow-hidden bg-transparent"
+      // Fill the parent (the row beneath the in-window menu bar) rather than the
+      // full viewport. `!min-h-0` overrides the SidebarProvider wrapper's own
+      // `min-h-svh`, which would otherwise force full-viewport height and push
+      // the bottom under the menu row's reserved strip. See main.jsx layout.
+      className="relative h-full !min-h-0 overflow-hidden bg-transparent"
     >
       <div className="absolute inset-0 z-0">
         <CadRenderPane
@@ -6728,7 +6814,7 @@ export default function CadWorkspace({
         />
       </div>
 
-      <SidebarInset className="pointer-events-none relative z-10 h-svh min-w-0 overflow-hidden bg-transparent">
+      <SidebarInset className="pointer-events-none relative z-10 h-full min-w-0 overflow-hidden bg-transparent">
         <CadWorkspaceTopBar
           previewMode={previewMode}
           projectMenu={projectMenu}
@@ -6848,11 +6934,11 @@ export default function CadWorkspace({
                 handleSlicePlate={handleSlicePlate}
                 canPrint={selectedEntrySourceFormat === RENDER_FORMAT.GCODE}
                 printing={printing || Boolean(monitoredPrinterId)}
-                printLabel={printButtonLabel(printing, printJob, bambuStudioSelected)}
+                printLabel={printButtonLabel(printing, printJob, bambuStudioSelected, openTargetAppLabel(openTarget))}
                 handlePrint={handlePrint}
                 canOpenInStudio={selectedEntrySourceFormat === RENDER_FORMAT.STL}
                 openingInStudio={openingInStudio}
-                openInStudioLabel={openingInStudio ? "Opening…" : "Open in Bambu Studio"}
+                openInStudioLabel={openingInStudio ? "Opening…" : `Open in ${openTargetAppLabel(openTarget)}`}
                 handleOpenInStudio={handleOpenInStudio}
               />
 

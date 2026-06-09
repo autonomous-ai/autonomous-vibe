@@ -407,6 +407,29 @@ function compareSidebarEntries(a, b) {
   });
 }
 
+// The project's "nearest to root" model: the catalog entry at the shallowest
+// directory depth, tie-broken by the sidebar's own display order so it matches
+// the topmost file the tree shows. Used when a project is activated from its
+// sidebar header (no specific file targeted) — selecting this entry lands the
+// viewer on a real model instead of resolving the previous project's lingering
+// `?file=` path against a catalog that lacks it, which renders a spurious "File
+// does not exist" for deeper, multi-level projects. Returns "" for an empty
+// catalog (e.g. a freshly created project with no models yet).
+export function nearestLevelEntryKey(entries) {
+  const list = Array.isArray(entries) ? entries : [];
+  let best = null;
+  let bestDepth = Infinity;
+  for (const entry of list) {
+    const directoryId = sidebarDirectoryIdForEntry(entry);
+    const depth = directoryId ? directoryId.split("/").length : 0;
+    if (depth < bestDepth || (depth === bestDepth && best && compareSidebarEntries(entry, best) < 0)) {
+      best = entry;
+      bestDepth = depth;
+    }
+  }
+  return best ? fileKey(best) : "";
+}
+
 function createSidebarDirectoryNode(id, name) {
   return {
     id,

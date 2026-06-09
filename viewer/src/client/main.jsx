@@ -5,12 +5,13 @@ import ChatSidebar, { readStoredChatSidebarWidth, persistChatSidebarWidth } from
 import { CHAT_MIN_WIDTH, maxChatWidth } from "./workbench/chatLayout.js";
 import { bindCadRefSelectionToChatInput } from "./components/chat/cadRefEvents";
 import ProjectMenu from "./components/project/ProjectMenu.jsx";
+import WindowMenuBar from "./components/WindowMenuBar.jsx";
 import WelcomeScreen from "./components/onboarding/WelcomeScreen.jsx";
 import UpdateNotifier from "./components/update/UpdateNotifier.jsx";
 import faviconUrl from "./assets/favicon.ico";
 import "./styles/globals.css";
 import { getCadManifestSnapshot, refreshCadCatalog, setCadCatalogBackend, subscribeCadManifest } from "cadjs/lib/cadManifestStore";
-import { isTauriRuntime, transport } from "./lib/transport.ts";
+import { isTauriRuntime, isWindowsPlatform, transport } from "./lib/transport.ts";
 import { tauriCadCatalogBackend } from "./lib/cadCatalogBackendTauri.js";
 import { setProject as setChatProject } from "./store/chat.js";
 import { useProjectsStore } from "./store/projects.ts";
@@ -277,32 +278,46 @@ function AppRoot() {
     return <WelcomeScreen onComplete={completeOnboarding} />;
   }
 
+  // The in-window menu bar duplicates the native macOS menu (see menu.rs) and
+  // only earns its place on Windows, which has no native global menu bar; macOS
+  // and Linux hide it. When hidden, the workspace + chat reclaim the full height
+  // (ChatSidebar's offset is gated on the same flag).
+  const showWindowMenuBar = isWindowsPlatform();
+
   return (
-    <div className="flex h-screen w-screen overflow-hidden">
-      <div
-        className="flex-1 overflow-hidden"
-        style={{ paddingRight: chatSidebarWidth }}
-      >
-        <CadWorkspace
-          manifestRevision={revision}
-          manifestEntries={modelEntries}
-          selectableEntries={selectableEntries}
-          generationStatus={generationStatus}
-          catalogHydrated={catalogHydrated}
-          catalogRefreshing={catalogRefreshing}
-          catalogError={catalogError}
-          projectMenu={<ProjectMenu />}
-          onModelsSidebarChange={handleModelsSidebarChange}
-          onToolsSheetChange={handleToolsSheetChange}
-          closeLeftSidebarSignal={closeLeftSidebarSignal}
+    // Column: when shown, the in-window menu bar (h-7) sits above everything and
+    // the row below fills the remaining height; the workspace and chat sidebar
+    // anchor to that remaining space (see their top-7 offsets) so the menu row
+    // isn't overlapped. When hidden, the row fills the whole viewport.
+    <div className="flex h-screen w-screen flex-col overflow-hidden">
+      {showWindowMenuBar && <WindowMenuBar />}
+      <div className="relative flex min-h-0 w-full flex-1 overflow-hidden">
+        <div
+          className="flex-1 overflow-hidden"
+          style={{ paddingRight: chatSidebarWidth }}
+        >
+          <CadWorkspace
+            manifestRevision={revision}
+            manifestEntries={modelEntries}
+            selectableEntries={selectableEntries}
+            generationStatus={generationStatus}
+            catalogHydrated={catalogHydrated}
+            catalogRefreshing={catalogRefreshing}
+            catalogError={catalogError}
+            projectMenu={<ProjectMenu />}
+            onModelsSidebarChange={handleModelsSidebarChange}
+            onToolsSheetChange={handleToolsSheetChange}
+            closeLeftSidebarSignal={closeLeftSidebarSignal}
+          />
+        </div>
+        <ChatSidebar
+          width={chatSidebarWidth}
+          onWidthChange={setChatSidebarWidth}
+          layout={chatLayout}
+          onRequestCloseLeftSidebar={requestCloseLeftSidebar}
+          menuBarVisible={showWindowMenuBar}
         />
       </div>
-      <ChatSidebar
-        width={chatSidebarWidth}
-        onWidthChange={setChatSidebarWidth}
-        layout={chatLayout}
-        onRequestCloseLeftSidebar={requestCloseLeftSidebar}
-      />
       <UpdateNotifier />
     </div>
   );

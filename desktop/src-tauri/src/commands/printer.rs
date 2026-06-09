@@ -20,9 +20,9 @@
 //! responses). The path comes from `paths::printers_path()`.
 
 use crate::ipc::types::{
-    AddCloudPrinterRequest, AddPrinterRequest, OpenInStudioRequest, PrintProgressEvent,
-    PrinterCard, PrinterJob, PrinterState, PrinterStatus, PrinterTransport, StartPrintRequest,
-    UploadGcodeRequest,
+    AddCloudPrinterRequest, AddPrinterRequest, OpenInStudioRequest, OpenTargetApp,
+    PrintProgressEvent, PrinterCard, PrinterJob, PrinterState, PrinterStatus, PrinterTransport,
+    StartPrintRequest, UploadGcodeRequest,
 };
 use crate::ipc::{IpcError, IpcResult};
 use crate::paths;
@@ -435,11 +435,12 @@ async fn run_start_print(req: &StartPrintRequest) -> IpcResult<PrinterRecord> {
 // Bambu Studio handoff
 // ---------------------------------------------------------------------------
 
-/// Open a model (or G-code) file in the locally installed Bambu Studio app.
-/// This is the action behind the `BambuStudio` transport: instead of uploading
-/// to a printer, Panda hands the file to Bambu Studio so the user slices and
-/// prints from there. Errors `BAMBU_STUDIO_NOT_FOUND` when the app is not
-/// installed in a standard location.
+/// Open a model (or G-code) file in a locally installed slicer app. This is the
+/// action behind the `BambuStudio` transport: instead of uploading to a printer,
+/// Panda hands the file off so the user slices and prints from there. Prefers
+/// Bambu Studio; when it isn't installed, falls back to OrcaSlicer (a standalone
+/// install or Panda's bundled sidecar). Errors `SLICER_APP_NOT_FOUND` only when
+/// neither is available in a standard location.
 #[tauri::command]
 pub async fn printer_open_in_studio(
     req: OpenInStudioRequest,
@@ -448,7 +449,16 @@ pub async fn printer_open_in_studio(
     printer_open_in_studio_inner(state.active_project().as_deref(), &req).await
 }
 
-/// Validate the request, resolve the file, locate Bambu Studio, and open it.
+/// Report which slicer app the open-in handoff would launch right now — Bambu
+/// Studio when installed, else OrcaSlicer (standalone or bundled), else none.
+/// Read-only; drives the open-button label so it names the app that will
+/// actually open. Mirrors the resolution `printer_open_in_studio` uses.
+#[tauri::command]
+pub async fn printer_open_in_studio_target() -> IpcResult<OpenTargetApp> {
+    Ok(resolve_open_target())
+}
+
+/// Validate the request, resolve the file, pick the slicer app, and open it.
 /// Split from the command so the validation/resolution path is testable without
 /// a Tauri `State` (the `open` step is a no-op when the file is missing/invalid).
 async fn printer_open_in_studio_inner(
@@ -465,13 +475,35 @@ async fn printer_open_in_studio_inner(
             local_path.display()
         )));
     }
-    let app = locate_bambu_studio().ok_or_else(|| {
-        IpcError::new(
-            "BAMBU_STUDIO_NOT_FOUND",
-            "Bambu Studio is not installed in a standard location",
-        )
-    })?;
-    open_file_with_app(&local_path, &app)
+    // Prefer Bambu Studio (the original handoff target); fall back to an
+    // OrcaSlicer install — or Panda's bundled sidecar — so the model still opens
+    // in a slicer when Bambu Studio isn't installed.
+    let (app, target) = match locate_bambu_studio() {
+        Some(app) => (app, OpenTargetApp::BambuStudio),
+        None => match locate_orca_slicer() {
+            Some(app) => (app, OpenTargetApp::OrcaSlicer),
+            None => {
+                return Err(IpcError::new(
+                    "SLICER_APP_NOT_FOUND",
+                    "Neither Bambu Studio nor OrcaSlicer is installed in a standard location",
+                ))
+            }
+        },
+    };
+    open_file_with_app(&local_path, &app, target)
+}
+
+/// Resolve which app the open-in handoff would launch, in preference order:
+/// installed Bambu Studio → OrcaSlicer (install or bundled sidecar) → none.
+/// Pure existence probes; never spawns anything.
+fn resolve_open_target() -> OpenTargetApp {
+    if locate_bambu_studio().is_some() {
+        OpenTargetApp::BambuStudio
+    } else if locate_orca_slicer().is_some() {
+        OpenTargetApp::OrcaSlicer
+    } else {
+        OpenTargetApp::None
+    }
 }
 
 fn studio_idle_status() -> PrinterStatus {
@@ -540,13 +572,41 @@ fn bambu_studio_app_candidates() -> Vec<PathBuf> {
     out
 }
 
+/// Locate an OrcaSlicer to hand files to, as a path the OS "open with" facility
+/// can launch. Reuses the slice path's resolver (bundled sidecar → well-known
+/// install → PATH) so this never disagrees with where Panda actually finds
+/// OrcaSlicer, then maps the binary to its launchable form (the enclosing `.app`
+/// bundle on macOS). `None` when no OrcaSlicer is resolvable at all.
+fn locate_orca_slicer() -> Option<PathBuf> {
+    let bin = crate::commands::slicer::resolve_slicer_binary("").ok()?;
+    Some(openable_app_path(&bin))
+}
+
+/// Map a slicer *binary* path to one the OS "open with" facility can launch. On
+/// macOS `open -a` wants the enclosing `.app` bundle, not the inner Mach-O at
+/// `<App>.app/Contents/MacOS/<bin>`, so climb to the nearest `.app` ancestor; on
+/// other platforms the executable is launchable as-is.
+fn openable_app_path(bin: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(app) = bin
+            .ancestors()
+            .find(|p| p.extension().and_then(|e| e.to_str()) == Some("app"))
+        {
+            return app.to_path_buf();
+        }
+    }
+    bin.to_path_buf()
+}
+
 /// Hand a file to an installed app via the OS "open with" facility, detached so
-/// Bambu Studio keeps running after this call returns.
-fn open_file_with_app(file: &Path, app: &Path) -> IpcResult<()> {
+/// the slicer keeps running after this call returns. `target` only shapes the
+/// error message so it names the app the user actually has.
+fn open_file_with_app(file: &Path, app: &Path, target: OpenTargetApp) -> IpcResult<()> {
     open::with_detached(file, app.to_string_lossy().to_string()).map_err(|e| {
         IpcError::new(
-            "BAMBU_STUDIO_OPEN_FAILED",
-            format!("could not open {} in Bambu Studio: {e}", file.display()),
+            "SLICER_APP_OPEN_FAILED",
+            format!("could not open {} in {}: {e}", file.display(), target.label()),
         )
     })
 }
@@ -1871,5 +1931,26 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, "INVALID_ARGUMENT");
+    }
+
+    #[test]
+    fn open_target_app_labels_name_the_real_app() {
+        assert_eq!(OpenTargetApp::BambuStudio.label(), "Bambu Studio");
+        assert_eq!(OpenTargetApp::OrcaSlicer.label(), "OrcaSlicer");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn openable_app_path_climbs_to_the_app_bundle() {
+        // The slice resolver hands back the inner Mach-O; `open -a` needs the
+        // enclosing `.app`, so we climb to it.
+        let bin = PathBuf::from("/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer");
+        assert_eq!(
+            openable_app_path(&bin),
+            PathBuf::from("/Applications/OrcaSlicer.app")
+        );
+        // A bare binary with no `.app` ancestor is returned unchanged.
+        let bare = PathBuf::from("/usr/local/bin/orca-slicer");
+        assert_eq!(openable_app_path(&bare), bare);
     }
 }

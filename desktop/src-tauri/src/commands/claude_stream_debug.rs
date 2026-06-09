@@ -14,8 +14,14 @@ use serde_json::Value;
 /// Whether to mirror the spawned `claude` CLI's stdout/stderr to this process's
 /// stderr at all. Opt in with `PANDA_DEBUG_CLAUDE` truthy (same env convention
 /// as `PANDA_DEVTOOLS`).
+///
+/// Debug-only: this is a developer console aid, so the master switch is hard-off
+/// in release (production) builds — the `PANDA_DEBUG_CLAUDE` env var is ignored
+/// there. `cfg!(debug_assertions)` short-circuits before the env read, so every
+/// downstream `if debug_stream { … }` path compiles out to a no-op in prod.
 pub(crate) fn enabled() -> bool {
-    std::env::var("PANDA_DEBUG_CLAUDE").is_ok_and(|v| v != "0" && !v.is_empty())
+    cfg!(debug_assertions)
+        && std::env::var("PANDA_DEBUG_CLAUDE").is_ok_and(|v| v != "0" && !v.is_empty())
 }
 
 /// `PANDA_DEBUG_CLAUDE=raw` dumps the full stream-json lines verbatim; any other

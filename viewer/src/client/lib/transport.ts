@@ -137,7 +137,10 @@ export type ChatEvent =
   | { kind: "tool_use_end"; turnId: string; tool: string; ok: boolean }
   | { kind: "artifact_changed"; turnId: string; file: string; reason: "new" | "modified" }
   | { kind: "turn_end"; turnId: string }
-  | { kind: "error"; turnId: string; message: string };
+  | { kind: "error"; turnId: string; message: string }
+  // Panda proxy auth was rejected (revoked/expired key → BE 401). The chat UI
+  // surfaces a "Sign in again" action. Ends the turn like `error`.
+  | { kind: "auth_expired"; turnId: string };
 
 // Slicer ---------------------------------------------------------------------
 

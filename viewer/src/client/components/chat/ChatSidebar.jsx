@@ -7,6 +7,7 @@ import ChatHistory from "./ChatHistory";
 import ChatInput from "./ChatInput";
 // import ActionButtons from "./ActionButtons";
 import AuthModeControl from "./AuthModeControl";
+import PandaReauthBanner from "./PandaReauthBanner";
 import { MessageSquare } from "lucide-react";
 
 const SIDEBAR_WIDTH = 440;
@@ -67,6 +68,7 @@ export default function ChatSidebar({
   className,
 }) {
   const lastError = useChatStore((state) => state.lastError);
+  const needsPandaReauth = useChatStore((state) => state.needsPandaReauth);
   const history = useChatStore((state) => state.history);
   const projectId = useChatStore((state) => state.currentProjectId);
   const currentProjectName = useProjectsStore((state) => {
@@ -226,7 +228,9 @@ export default function ChatSidebar({
         )}
       </div>
 
-      {lastError ? (
+      <PandaReauthBanner />
+
+      {lastError && !needsPandaReauth ? (
         <div
           data-slot="chat-error-banner"
           className="border-t border-destructive/40 bg-destructive/10 px-3 py-1 text-xs text-destructive"

@@ -77,6 +77,11 @@ export const INITIAL_CHAT_STATE = Object.freeze({
   // transport) plus a local objectUrl (for an instant composer thumbnail).
   pendingAttachments: [],
   lastError: "",
+  // Set when a turn fails because the Panda proxy rejected auth (revoked/expired
+  // key → BE 401, surfaced as an `auth_expired` chat event). Drives the
+  // "Sign in again" banner; cleared on a successful re-login or the next
+  // turn_start. App-wide (not per-session) since the proxy key is global.
+  needsPandaReauth: false,
   // Project-relative path of the part the user currently has selected in the
   // workspace (the breadcrumb / Models rail). Drives the Slice button target
   // so "slice" acts on the viewed part, not just the most recent artifact.
@@ -110,6 +115,11 @@ export const INITIAL_CHAT_STATE = Object.freeze({
   // new chat turn may supersede it with a freshly generated/sliced model).
   lastSlice: { gcodeFile: "", gcode3mfFile: "" },
 });
+
+// User-facing copy when the Panda proxy key is revoked/expired (the BE 401 →
+// `auth_expired` event). Shown in the chat error block and the re-auth banner.
+export const PANDA_REAUTH_MESSAGE =
+  "Your Panda sign-in expired or was revoked. Sign in again to keep chatting.";
 
 // ---------------------------------------------------------------------------
 // Reducer — pure; the only place state evolves
@@ -341,6 +351,20 @@ function applyChatEventToSession(session, event, now) {
           (turn) => ({ ...appendError(turn, event.message), endedAt: now }),
         ),
       };
+    case "auth_expired":
+      // Same turn lifecycle as `error`, with fixed copy. The top-level
+      // `needsPandaReauth` flag (set in chatReducer) drives the action banner.
+      return {
+        ...session,
+        currentTurnId: session.currentTurnId === turnId ? "" : session.currentTurnId,
+        turnInProgress: false,
+        lastError: PANDA_REAUTH_MESSAGE,
+        history: updateAssistantTurn(
+          ensureAssistantTurn(session.history, turnId, now),
+          turnId,
+          (turn) => ({ ...appendError(turn, PANDA_REAUTH_MESSAGE), endedAt: now }),
+        ),
+      };
     default:
       return session;
   }
@@ -453,10 +477,24 @@ export function chatReducer(state, action, now = Date.now()) {
       let turnOwners = state.turnOwners;
       if (event.kind === "turn_start" && !knownOwner && ownerProject) {
         turnOwners = { ...turnOwners, [turnId]: ownerProject };
-      } else if (event.kind === "turn_end" || event.kind === "error") {
+      } else if (
+        event.kind === "turn_end" ||
+        event.kind === "error" ||
+        event.kind === "auth_expired"
+      ) {
         const { [turnId]: _drop, ...rest } = turnOwners;
         turnOwners = rest;
       }
+
+      // The proxy key is app-wide, so a Panda auth rejection raises the re-auth
+      // flag regardless of which project's turn hit it; a fresh turn_start
+      // clears it (the user re-signed-in or is retrying).
+      const reauthPatch =
+        event.kind === "auth_expired"
+          ? { needsPandaReauth: true }
+          : event.kind === "turn_start"
+            ? { needsPandaReauth: false }
+            : {};
 
       // Owned by (or just started in) the project on screen → advance the
       // visible session. A new turn supersedes a stale toolbar slice — clear
@@ -466,6 +504,7 @@ export function chatReducer(state, action, now = Date.now()) {
           ...state,
           ...applyChatEventToSession(sessionSlice(state), event, now),
           turnOwners,
+          ...reauthPatch,
           ...(event.kind === "turn_start"
             ? { lastSlice: INITIAL_CHAT_STATE.lastSlice }
             : {}),
@@ -478,11 +517,12 @@ export function chatReducer(state, action, now = Date.now()) {
       // event — its result is persisted and reloaded on return.
       const stash = state.sessions[ownerProject];
       if (!stash) {
-        return { ...state, turnOwners };
+        return { ...state, turnOwners, ...reauthPatch };
       }
       return {
         ...state,
         turnOwners,
+        ...reauthPatch,
         sessions: {
           ...state.sessions,
           [ownerProject]: applyChatEventToSession(stash, event, now),
@@ -531,6 +571,9 @@ export function chatReducer(state, action, now = Date.now()) {
     }
     case "set_error":
       return { ...state, lastError: action.message };
+    case "clear_panda_reauth":
+      if (!state.needsPandaReauth) return state;
+      return { ...state, needsPandaReauth: false };
     case "reset":
       return INITIAL_CHAT_STATE;
     default:
@@ -872,6 +915,11 @@ export function removePendingAttachment(id) {
 
 export function consumePendingAttachments() {
   dispatch({ type: "consume_pending_attachments" });
+}
+
+/** Clear the "Sign in again" banner after a successful Panda re-login. */
+export function clearPandaReauth() {
+  dispatch({ type: "clear_panda_reauth" });
 }
 
 export function resetChatStore() {

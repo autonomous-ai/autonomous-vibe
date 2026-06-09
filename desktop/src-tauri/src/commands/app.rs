@@ -988,35 +988,60 @@ struct PandaExchangeResponse {
 /// POST the one-time `code` + PKCE `verifier` to the Panda exchange endpoint and
 /// return `(key, base_url)`. Maps the documented 400 error codes to friendly
 /// copy.
+///
+/// Retries only on **transient** failures — a transport error (no response) or
+/// an HTTP 5xx/429 — with a short exponential backoff. Terminal responses (the
+/// documented 4xx codes like `code_expired` / `invalid_or_used_code`) are NOT
+/// retried: the `code` is single-use, so re-sending it after the server has
+/// already judged it is pointless and could only ever fail the same way. The
+/// same code is reused across transient retries because a 5xx/transport error
+/// means the server never consumed it.
 async fn exchange_code_for_key(code: &str, verifier: &str) -> IpcResult<(String, String)> {
+    const MAX_ATTEMPTS: u32 = 3;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(3))
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| IpcError::new("PANDA_EXCHANGE_FAILED", e.to_string()))?;
-    let resp = client
-        .post(format!("{PANDA_API_URL}/api/auth/exchange"))
-        .json(&serde_json::json!({ "code": code, "code_verifier": verifier }))
-        .send()
-        .await
-        .map_err(|e| {
-            IpcError::new(
-                "PANDA_EXCHANGE_FAILED",
-                format!("could not reach Panda sign-in: {e}"),
-            )
-        })?;
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(IpcError::new("PANDA_EXCHANGE_FAILED", map_exchange_error(&body)));
+    let body = serde_json::json!({ "code": code, "code_verifier": verifier });
+    let url = format!("{PANDA_API_URL}/api/auth/exchange");
+
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let transient_err: String = match client.post(&url).json(&body).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                if status.is_success() {
+                    let parsed: PandaExchangeResponse =
+                        serde_json::from_str(&text).map_err(|e| {
+                            IpcError::new(
+                                "PANDA_EXCHANGE_FAILED",
+                                format!("unexpected sign-in response: {e}"),
+                            )
+                        })?;
+                    return Ok((parsed.key, parsed.base_url));
+                }
+                // 5xx / 429 → transient; any other non-2xx (e.g. the 400 codes)
+                // is terminal and surfaced immediately.
+                let transient = status.is_server_error()
+                    || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+                if !transient {
+                    return Err(IpcError::new("PANDA_EXCHANGE_FAILED", map_exchange_error(&text)));
+                }
+                format!("Panda sign-in service returned HTTP {status}")
+            }
+            Err(e) => format!("could not reach Panda sign-in: {e}"),
+        };
+
+        if attempt >= MAX_ATTEMPTS {
+            return Err(IpcError::new("PANDA_EXCHANGE_FAILED", transient_err));
+        }
+        // Exponential backoff: 300ms, then 600ms.
+        let delay = std::time::Duration::from_millis(300 * 2u64.pow(attempt - 1));
+        tokio::time::sleep(delay).await;
     }
-    let parsed: PandaExchangeResponse = serde_json::from_str(&body).map_err(|e| {
-        IpcError::new(
-            "PANDA_EXCHANGE_FAILED",
-            format!("unexpected sign-in response: {e}"),
-        )
-    })?;
-    Ok((parsed.key, parsed.base_url))
 }
 
 /// Friendly copy for the documented exchange error codes. The body looks like

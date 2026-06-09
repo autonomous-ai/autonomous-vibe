@@ -1099,9 +1099,10 @@ pub async fn app_set_auth_mode(use_panda_cloud: bool) -> IpcResult<AppSettings> 
 
 /// Drive the Panda proxy sign-in (PKCE + deep-link OAuth). Opens the browser,
 /// waits for the `myide://auth/callback` deep link, exchanges the code,
-/// and persists the session. Progress streams via `panda_login_progress`. With
-/// `PANDA_DEV_TOKEN` set it skips the browser round-trip and completes against
-/// that token (for local testing before the BE is reachable).
+/// and persists the session. Progress streams via `panda_login_progress`. In
+/// debug builds only, setting `PANDA_DEV_TOKEN` skips the browser round-trip and
+/// completes against that token (for local testing before the BE is reachable);
+/// the bypass is compiled out of release builds.
 #[tauri::command]
 pub async fn app_panda_login(
     app: tauri::AppHandle,
@@ -1118,13 +1119,18 @@ pub async fn app_panda_login(
     emit(PandaLoginProgress::Starting);
 
     // Dev escape hatch: bypass the browser round-trip with a fixed token.
-    if let Ok(token) = std::env::var("PANDA_DEV_TOKEN") {
-        let token = token.trim();
-        if !token.is_empty() {
-            emit(PandaLoginProgress::Verifying);
-            store_panda_session(token, PANDA_PROXY_URL).await?;
-            emit(PandaLoginProgress::Done);
-            return Ok(PandaLoginResult { ok: true });
+    // Debug-only — `cfg!(debug_assertions)` short-circuits before the env read so
+    // this auth bypass cannot be reached in release (production) builds, matching
+    // the gating convention used for devtools and `PANDA_DEBUG_CLAUDE`.
+    if cfg!(debug_assertions) {
+        if let Ok(token) = std::env::var("PANDA_DEV_TOKEN") {
+            let token = token.trim();
+            if !token.is_empty() {
+                emit(PandaLoginProgress::Verifying);
+                store_panda_session(token, PANDA_PROXY_URL).await?;
+                emit(PandaLoginProgress::Done);
+                return Ok(PandaLoginResult { ok: true });
+            }
         }
     }
 

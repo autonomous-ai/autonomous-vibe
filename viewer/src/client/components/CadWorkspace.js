@@ -255,7 +255,7 @@ import {
   parseStepModuleParamsPasteText
 } from "@/workbench/stepModuleParameterControls";
 import { emitCadRefSelection } from "@/components/chat/cadRefEvents";
-import { basename, pickPrinterForSlice } from "@/components/chat/actionButtonsHelpers";
+import { basename, pickPrinterForSlice, PRINT_CONFIG_CHANGED_EVENT } from "@/components/chat/actionButtonsHelpers";
 import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
 import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, selectSliceTargetStl, getChatState, useChatStore } from "@/store/chat";
 import { useProjectsStore } from "@/store/projects.ts";
@@ -648,6 +648,12 @@ export default function CadWorkspace({
   // available on the model (STL) view too — not just a sliced gcode — since the
   // handoff opens the model in Bambu Studio to slice & print from there.
   const [bambuStudioConfigured, setBambuStudioConfigured] = useState(false);
+  // True when the *selected* print target — the one Print would actually use,
+  // honoring the user's default device — is the Bambu Studio handoff. Drives the
+  // Print button label ("Open in Bambu Studio" vs "Print"); distinct from
+  // `bambuStudioConfigured`, which is true whenever a handoff exists at all even
+  // if a direct printer is the chosen default.
+  const [bambuStudioSelected, setBambuStudioSelected] = useState(false);
   // Gcode path to auto-select once it lands in the refreshed catalog after a
   // slice — drives the "view slice on viewer" step.
   const [autoSelectGcodePath, setAutoSelectGcodePath] = useState("");
@@ -3213,6 +3219,15 @@ export default function CadWorkspace({
 
   useEffect(() => {
     setViewerRuntimeAlert(null);
+  }, [selectedKey]);
+
+  // Reset the Print / "Open in Bambu Studio" hand-off feedback when the viewed
+  // object changes — otherwise a stale "Opened in Bambu Studio" status (or the
+  // in-flight studio flag) carries over onto the next file's toolbar button.
+  useEffect(() => {
+    setPrintStatus("");
+    setPrintStatusError(false);
+    setOpeningInStudio(false);
   }, [selectedKey]);
 
   const resolvedDesktopPanelWidths = useMemo(() => resolveDesktopPanelWidths({
@@ -6133,23 +6148,56 @@ export default function CadWorkspace({
     }
   }, [selectedEntry]);
 
-  // Track whether the "Open with Bambu Studio" handoff is set up. Printers are
-  // global (not per-project), so this is loaded once on mount and refreshed when
-  // the Add-printer dialog closes (a fresh handoff must light up the button).
-  const refreshBambuStudioConfigured = useCallback(async () => {
+  // Track the print target so the toolbar reflects it. `bambuStudioConfigured`
+  // is true when a "Open with Bambu Studio" handoff exists at all; the *selected*
+  // target — the printer Print would actually use (same default-device +
+  // auto-pick resolution as `handlePrint`) — decides whether the button reads
+  // "Open in Bambu Studio" or "Print". Printers are global (not per-project), so
+  // this loads once on mount and refreshes when the Add-printer dialog closes (a
+  // fresh handoff or a new default must light up the button without a reload).
+  const refreshPrintTargets = useCallback(async () => {
     try {
-      const printers = await getTransport().printer_list();
-      const has = Array.isArray(printers)
-        && printers.some((p) => p && p.transport === "bambustudio");
-      setBambuStudioConfigured(has);
+      const transport = getTransport();
+      const printers = await transport.printer_list();
+      const list = Array.isArray(printers) ? printers : [];
+      setBambuStudioConfigured(list.some((p) => p && p.transport === "bambustudio"));
+      // Resolve the chosen target the same way Print does, so the label matches
+      // the action. A settings read failure just falls back to the auto-pick.
+      let defaultPrinterId = "";
+      try {
+        const settings = await transport.app_settings_read();
+        defaultPrinterId = String(settings?.defaultPrinterId || "");
+      } catch {
+        // Non-fatal: resolve with no explicit default.
+      }
+      const target = pickPrinterForSlice(list, defaultPrinterId);
+      setBambuStudioSelected(target?.transport === "bambustudio");
     } catch {
-      // Non-fatal: leave the flag as-is (Print still works for gcode views).
+      // Non-fatal: leave the flags as-is (Print still works for gcode views).
     }
   }, []);
 
+  // The Print button label tracks the selected print device, but there is no
+  // "settings changed" backend event and the default device can change while the
+  // app is open (the native Printer menu opens an Add-printer flow this component
+  // does not own). So re-read the config whenever the label is (re)shown — on
+  // mount, when a new object is selected, when the window regains focus, and when
+  // a printer dialog signals a change — instead of caching it once at mount.
   useEffect(() => {
-    void refreshBambuStudioConfigured();
-  }, [refreshBambuStudioConfigured]);
+    void refreshPrintTargets();
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+    const onConfigMaybeChanged = () => {
+      void refreshPrintTargets();
+    };
+    window.addEventListener("focus", onConfigMaybeChanged);
+    window.addEventListener(PRINT_CONFIG_CHANGED_EVENT, onConfigMaybeChanged);
+    return () => {
+      window.removeEventListener("focus", onConfigMaybeChanged);
+      window.removeEventListener(PRINT_CONFIG_CHANGED_EVENT, onConfigMaybeChanged);
+    };
+  }, [refreshPrintTargets, selectedKey]);
 
   // Print the file the user is currently viewing. One-click: pick the target
   // printer (dropping into pairing when there is none), then either upload +
@@ -6726,7 +6774,7 @@ export default function CadWorkspace({
                 handleSlicePlate={handleSlicePlate}
                 canPrint={selectedEntrySourceFormat === RENDER_FORMAT.GCODE}
                 printing={printing || Boolean(monitoredPrinterId)}
-                printLabel={printButtonLabel(printing, printJob, bambuStudioConfigured)}
+                printLabel={printButtonLabel(printing, printJob, bambuStudioSelected)}
                 handlePrint={handlePrint}
                 canOpenInStudio={selectedEntrySourceFormat === RENDER_FORMAT.STL}
                 openingInStudio={openingInStudio}
@@ -7015,7 +7063,7 @@ export default function CadWorkspace({
             if (!next) {
               // A handoff may have just been set up — re-read so the Print button
               // updates (label + STL-view availability) without an app reload.
-              void refreshBambuStudioConfigured();
+              void refreshPrintTargets();
             }
             // Resume the print once the dialog closes, but only if a printer was
             // actually added (`onAdded` arms it — cancelling leaves it false → no

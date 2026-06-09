@@ -1,5 +1,6 @@
 import { buildCadRefToken, parseCadRefToken } from "cadjs/lib/cadRefs.js";
 import { normalizeViewerDefaultFile } from "cadjs/lib/viewerConfig.mjs";
+import { entrySourceFormat, RENDER_FORMAT } from "cadjs/lib/fileFormats.js";
 
 const CAD_QUERY_PARAM = "file";
 const CAD_REF_QUERY_PARAM = "refs";
@@ -11,6 +12,68 @@ export function fileKey(entry) {
 export function cadPathForEntry(entry) {
   const file = fileKey(entry);
   return file.replace(/\.(step|stp|stl|3mf|glb|gcode|dxf|urdf|srdf|sdf)$/i, "");
+}
+
+// The workspace-relative `.stl` for a catalog entry, or "" when the entry has no
+// sliceable mesh on disk. An STL entry (standalone model or an assembly part) is
+// its own file; a STEP entry renders its archival B-rep but slices/prints from
+// the sibling preview `.stl` — the catalog attaches that as `artifact.stlUrl`
+// only when the file exists, so deriving `<stem>.stl` is safe. Other kinds (DXF,
+// gcode, URDF, …) have no STL. Lets a model opened from the library (no chat
+// artifacts this session) still resolve a file to hand to Bambu Studio.
+export function entryStlFile(entry) {
+  if (!entry) {
+    return "";
+  }
+  const format = entrySourceFormat(entry);
+  if (format === RENDER_FORMAT.STL) {
+    return fileKey(entry);
+  }
+  if (format === RENDER_FORMAT.STEP && entry.artifact?.stlUrl) {
+    return `${cadPathForEntry(entry)}.stl`;
+  }
+  return "";
+}
+
+// Map a `.gcode` entry back to the workspace-relative `.stl` it was sliced from,
+// or "" when no matching model is in the catalog. The slicer names a toolpath
+// `<dir>/<stem>.gcode` after its source mesh (`commands/slicer.rs`), so the model
+// shares the gcode's stem and directory. We confirm the STL exists by matching it
+// against `entries` (an `.stl` entry, or a `.step` entry whose sibling preview
+// STL resolves there) rather than trusting the derived name blindly — so viewing
+// a sliced gcode from the library can still open its model in Bambu Studio.
+export function gcodeSourceStl(gcodeEntry, entries) {
+  if (entrySourceFormat(gcodeEntry) !== RENDER_FORMAT.GCODE) {
+    return "";
+  }
+  const stem = cadPathForEntry(gcodeEntry);
+  if (!stem) {
+    return "";
+  }
+  const target = `${stem}.stl`;
+  const list = Array.isArray(entries) ? entries : [];
+  return list.some((entry) => entryStlFile(entry) === target) ? target : "";
+}
+
+// The project's single printable STL, or "" when it has zero or more than one.
+// A last-resort fallback for the Bambu Studio handoff: when the precise resolvers
+// (selected entry / gcode→source) and the chat history all come up empty — e.g. a
+// one-model project opened from the library, viewed via its gcode — an
+// unambiguous lone model is still the obvious thing to open. Stays silent when
+// the choice is ambiguous (multiple models) so we never open the wrong one.
+export function soleCatalogStl(entries) {
+  const list = Array.isArray(entries) ? entries : [];
+  const seen = [];
+  for (const entry of list) {
+    const stl = entryStlFile(entry);
+    if (stl && !seen.includes(stl)) {
+      seen.push(stl);
+      if (seen.length > 1) {
+        return "";
+      }
+    }
+  }
+  return seen.length === 1 ? seen[0] : "";
 }
 
 function replaceUrl(url) {

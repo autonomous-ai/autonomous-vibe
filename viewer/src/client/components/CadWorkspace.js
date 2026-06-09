@@ -168,8 +168,11 @@ import {
   cadPathForEntry,
   collectAncestorDirectoryIds,
   collectSidebarDirectoryIds,
+  entryStlFile,
   findEntryByUrlPath,
   fileKey,
+  gcodeSourceStl,
+  soleCatalogStl,
   missingFileRefForCatalog,
   readCadParam,
   readCadRefQueryParams,
@@ -357,6 +360,24 @@ function describePrintError(err) {
     default:
       return raw || "Print failed";
   }
+}
+
+// Resolve the workspace-relative `.stl` to hand to Bambu Studio for the model
+// currently being viewed. Prefers the selected catalog entry so a project opened
+// from the library — no chat artifacts produced this session — still resolves:
+//   - `entryStlFile`: an STL entry, or a STEP entry's sibling preview STL;
+//   - `gcodeSourceStl`: a sliced `.gcode` view maps back to its source STL.
+// Then the latest chat-produced STL (a model freshly generated this turn but not
+// selected), and finally the project's lone model (`soleCatalogStl`) so a
+// single-model project opened from the library — which has no chat history —
+// still resolves.
+function resolveStudioStlFile(selectedEntry, entries) {
+  return (
+    entryStlFile(selectedEntry) ||
+    gcodeSourceStl(selectedEntry, entries) ||
+    selectSliceTargetStl(getChatState()) ||
+    soleCatalogStl(entries)
+  );
 }
 
 // Friendly button label for an in-flight slice. The backend emits coarse stage
@@ -761,6 +782,11 @@ export default function CadWorkspace({
     }
     return map;
   }, [lookupEntries]);
+  // Flat list of every resolvable entry *including* per-part STLs (which are kept
+  // out of `lookupEntries`/the rail). The Bambu Studio handoff resolves against
+  // this so a part's `.gcode` view maps to its own part `.stl`, not the
+  // integrated model's — see `resolveStudioStlFile`.
+  const resolvableEntries = useMemo(() => Array.from(entryMap.values()), [entryMap]);
   const fileSessionNamespace = useMemo(
     () => normalizeFileSessionNamespace(catalogRootDir),
     [catalogRootDir]
@@ -6248,10 +6274,7 @@ export default function CadWorkspace({
       // Bambu Studio handoff: open the MODEL (the user slices & prints there).
       // Prefer the STL being viewed; else the project's latest model STL.
       if (targetPrinter.transport === "bambustudio") {
-        const stlFile =
-          selectedFmt === RENDER_FORMAT.STL
-            ? fileKey(selectedEntry)
-            : selectSliceTargetStl(getChatState());
+        const stlFile = resolveStudioStlFile(selectedEntry, resolvableEntries);
         if (!stlFile) {
           console.warn("[print] bambu studio handoff: no model STL to open");
           setPrintStatus("No model to open in Bambu Studio");
@@ -6315,7 +6338,7 @@ export default function CadWorkspace({
     } finally {
       setPrinting(false);
     }
-  }, [selectedEntry, bambuStudioConfigured]);
+  }, [selectedEntry, bambuStudioConfigured, resolvableEntries]);
 
   // Dedicated "Open in Bambu Studio" hand-off for the model (STL) view. Unlike
   // Print, this needs no paired/handoff printer and no slice: it resolves the
@@ -6323,11 +6346,7 @@ export default function CadWorkspace({
   // to the locally installed Bambu Studio via `printer_open_in_studio`. Always
   // available on an STL view so the user can jump to Studio in one click.
   const handleOpenInStudio = useCallback(async () => {
-    const selectedFmt = selectedEntry ? entrySourceFormat(selectedEntry) : null;
-    const stlFile =
-      selectedFmt === RENDER_FORMAT.STL
-        ? fileKey(selectedEntry)
-        : selectSliceTargetStl(getChatState());
+    const stlFile = resolveStudioStlFile(selectedEntry, resolvableEntries);
     if (!stlFile) {
       console.warn("[studio] no model STL to open");
       setPrintStatus("No model to open in Bambu Studio");
@@ -6350,7 +6369,7 @@ export default function CadWorkspace({
     } finally {
       setOpeningInStudio(false);
     }
-  }, [selectedEntry]);
+  }, [selectedEntry, resolvableEntries]);
 
   // Live print progress: the backend's print monitor (spawned by
   // `printer_start_print`) emits `print_progress` events; we subscribe and drive

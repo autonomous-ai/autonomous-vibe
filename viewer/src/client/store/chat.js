@@ -23,8 +23,9 @@ import { __setTransportForTesting, getTransport } from "../lib/transport.ts";
  * @typedef {Object} ChatToolUseBlock
  * @property {"tool_use"} kind
  * @property {string} tool
+ * @property {string=} toolUseId
  * @property {unknown=} input
- * @property {"running"|"ok"|"error"} status
+ * @property {"running"|"ok"|"error"|"cancelled"} status
  *
  * @typedef {Object} ChatArtifactBlock
  * @property {"artifact"} kind
@@ -186,27 +187,51 @@ function appendThinkingDelta(turn, text) {
   return { ...turn, blocks };
 }
 
-function appendToolUseStart(turn, tool, input) {
+function appendToolUseStart(turn, tool, input, toolUseId) {
   return {
     ...turn,
     blocks: [
       ...turn.blocks,
-      { kind: "tool_use", tool, input, status: "running" },
+      { kind: "tool_use", tool, toolUseId, input, status: "running" },
     ],
   };
 }
 
-function markToolUseEnd(turn, tool, ok) {
+// Resolve a running tool block to ok/error. Pair by `toolUseId` when present
+// (names collide when several tools of the same kind run in one turn — matching
+// by name would flip the wrong block and strand the real one on "Running");
+// fall back to name only for legacy/id-less events. An end with no matching
+// start is still recorded, for observability.
+function markToolUseEnd(turn, toolUseId, tool, ok) {
   const blocks = [...turn.blocks];
   for (let i = blocks.length - 1; i >= 0; i -= 1) {
     const block = blocks[i];
-    if (block.kind === "tool_use" && block.tool === tool && block.status === "running") {
+    if (block.kind !== "tool_use" || block.status !== "running") continue;
+    const matches = toolUseId ? block.toolUseId === toolUseId : block.tool === tool;
+    if (matches) {
       blocks[i] = { ...block, status: ok ? "ok" : "error" };
       return { ...turn, blocks };
     }
   }
-  blocks.push({ kind: "tool_use", tool, status: ok ? "ok" : "error" });
+  blocks.push({ kind: "tool_use", tool, toolUseId, status: ok ? "ok" : "error" });
   return { ...turn, blocks };
+}
+
+// When a turn ends, any tool still "running" never received a tool_result (a
+// dropped/desynced event, or the child was killed early on plan/cancel) — sweep
+// it to "cancelled" so the UI can't show a permanent spinner after the turn is
+// done. Real tool failures arrive as tool_use_end{ok:false} → "error" and are
+// left untouched: "cancelled" means "no result ever came back", not "it failed".
+function finalizeRunningTools(turn) {
+  let changed = false;
+  const blocks = turn.blocks.map((block) => {
+    if (block.kind === "tool_use" && block.status === "running") {
+      changed = true;
+      return { ...block, status: "cancelled" };
+    }
+    return block;
+  });
+  return changed ? { ...turn, blocks } : turn;
 }
 
 function appendArtifact(turn, file, reason) {
@@ -307,7 +332,7 @@ function applyChatEventToSession(session, event, now) {
         history: updateAssistantTurn(
           ensureAssistantTurn(session.history, turnId, now),
           turnId,
-          (turn) => appendToolUseStart(turn, event.tool, event.input),
+          (turn) => appendToolUseStart(turn, event.tool, event.input, event.toolUseId),
         ),
       };
     case "tool_use_end":
@@ -316,7 +341,7 @@ function applyChatEventToSession(session, event, now) {
         history: updateAssistantTurn(
           ensureAssistantTurn(session.history, turnId, now),
           turnId,
-          (turn) => markToolUseEnd(turn, event.tool, event.ok),
+          (turn) => markToolUseEnd(turn, event.toolUseId, event.tool, event.ok),
         ),
       };
     case "artifact_changed":
@@ -334,7 +359,7 @@ function applyChatEventToSession(session, event, now) {
         currentTurnId: session.currentTurnId === turnId ? "" : session.currentTurnId,
         turnInProgress: false,
         history: updateAssistantTurn(session.history, turnId, (turn) => ({
-          ...turn,
+          ...finalizeRunningTools(turn),
           status: turn.status === "error" ? "error" : "complete",
           endedAt: now,
         })),
@@ -348,7 +373,7 @@ function applyChatEventToSession(session, event, now) {
         history: updateAssistantTurn(
           ensureAssistantTurn(session.history, turnId, now),
           turnId,
-          (turn) => ({ ...appendError(turn, event.message), endedAt: now }),
+          (turn) => ({ ...appendError(finalizeRunningTools(turn), event.message), endedAt: now }),
         ),
       };
     case "auth_expired":

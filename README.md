@@ -19,8 +19,6 @@ v1 in active development.
 - `skills/` — Claude Code skills bundled with the app
   - `cadcode` — CadQuery-based parametric CAD generation
   - `cad-viewer` — preview/inspection handoff into the in-app viewer
-  - `gcode` — slice meshes via OrcaSlicer CLI
-  - `bambu-labs` — upload + start prints on a local Bambu printer
   - `step-parts` — search and download off-the-shelf STEP catalog parts
 - `scripts/` — Panda dev/build helpers
 - `docs/` — interface contracts and architecture notes
@@ -41,6 +39,6 @@ optional Panda Cloud proxy for users who want a subscription instead.
 
 Licensed under the [MIT License](LICENSE), Copyright (c) 2026 dee.
 
-Some bundled skills (`bambu-labs`, `cad-viewer`, `gcode`, `step-parts`) are
+Some bundled skills (`cad-viewer`, `step-parts`) are
 third-party components, each MIT-licensed and Copyright (c) 2026 earthtojake.
 See [`NOTICE`](NOTICE) and the per-skill `LICENSE` files for attribution.

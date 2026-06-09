@@ -13,7 +13,7 @@ import {
 import { useProjectsStore } from "@/store/projects.ts";
 import { setProject as setChatProject } from "@/store/chat.js";
 import { sortProjects } from "@/components/library/projectListHelpers.js";
-import { PLACEHOLDER_PROJECT_NAME } from "@/components/chat/chatInputHelpers";
+import { FOCUS_CHAT_INPUT_EVENT, PLACEHOLDER_PROJECT_NAME } from "@/components/chat/chatInputHelpers";
 import DeleteConfirmDialog from "@/components/library/DeleteConfirmDialog.jsx";
 import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
 import { PRINT_CONFIG_CHANGED_EVENT } from "@/components/chat/actionButtonsHelpers";
@@ -65,6 +65,11 @@ export default function ProjectMenu() {
       const summary = await create(PLACEHOLDER_PROJECT_NAME);
       if (summary?.id) {
         setChatProject(summary.id);
+        // Focus the chat composer so the user can type right away. The sidebar
+        // owns the textarea ref, so signal it via a window event.
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new Event(FOCUS_CHAT_INPUT_EVENT));
+        }
       }
     } catch (err) {
       console.warn("Failed to create project", err);

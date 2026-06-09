@@ -5,6 +5,7 @@ import { useProjectsStore } from "@/store/projects.ts";
 import { CHAT_MIN_WIDTH, clampChatWidth } from "@/workbench/chatLayout";
 import ChatHistory from "./ChatHistory";
 import ChatInput from "./ChatInput";
+import { FOCUS_CHAT_INPUT_EVENT } from "./chatInputHelpers";
 // import ActionButtons from "./ActionButtons";
 import AuthModeControl from "./AuthModeControl";
 import PandaReauthBanner from "./PandaReauthBanner";
@@ -172,6 +173,15 @@ export default function ChatSidebar({
       chatInputRef.current?.focus({ preventScroll: true });
     });
   }, []);
+
+  // The top-bar "New project" action focuses the composer through this event:
+  // the menu lives in another component, and the textarea's mount-time
+  // autoFocus doesn't re-fire when the active project switches in place.
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    window.addEventListener(FOCUS_CHAT_INPUT_EVENT, handleRequestInputFocus);
+    return () => window.removeEventListener(FOCUS_CHAT_INPUT_EVENT, handleRequestInputFocus);
+  }, [handleRequestInputFocus]);
 
   return (
     <aside

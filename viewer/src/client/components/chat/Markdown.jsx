@@ -26,6 +26,39 @@ const COMPONENTS = {
       {children}
     </a>
   ),
+  table: ({ children }) => (
+    <div
+      data-slot="chat-markdown-table"
+      className="scrollbar-thin my-2 overflow-x-auto rounded-md border border-border/50"
+    >
+      <table className="w-full min-w-max border-collapse text-left text-[13px]">{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => <thead className="border-b border-border/60 bg-muted/40">{children}</thead>,
+  tbody: ({ children }) => <tbody className="divide-y divide-border/40">{children}</tbody>,
+  tr: ({ children }) => <tr>{children}</tr>,
+  th: ({ children, align }) => (
+    <th
+      className={cn(
+        "px-2.5 py-1.5 font-semibold text-foreground",
+        align === "center" && "text-center",
+        align === "right" && "text-right",
+      )}
+    >
+      {children}
+    </th>
+  ),
+  td: ({ children, align }) => (
+    <td
+      className={cn(
+        "px-2.5 py-1.5 align-top",
+        align === "center" && "text-center",
+        align === "right" && "text-right",
+      )}
+    >
+      {children}
+    </td>
+  ),
   pre: ({ children }) => <>{children}</>,
   code: ({ className, children }) => {
     const lang = /language-([\w-]+)/.exec(className || "")?.[1];

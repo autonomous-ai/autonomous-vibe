@@ -343,7 +343,7 @@ interface SliceStats {
                                 // (floating regions / unsupported overhangs — "re-orient or
                                 // enable supports"); empty/absent when the slicer reported none
 }
-// Ported from the `gcode` skill's `validate`. Advisory/non-fatal: a slice
+// Static G-code analysis. Advisory/non-fatal: a slice
 // succeeds even when `ok` is false. `ok` reflects structural integrity only
 // (non-empty + has movement + has extrusion); bed-bounds, missing-temperature,
 // and unrecognized-command findings ride in `warnings` (Bambu firmware
@@ -356,8 +356,8 @@ interface SliceValidation {
   extrusionMoves: number;
   temperatureCommands: number;
 }
-// slice_run pre-screens the mesh (ported from the `gcode` skill's `inspect`)
-// before invoking OrcaSlicer, rejecting unsliceable inputs with a clear code:
+// slice_run pre-screens the mesh before invoking OrcaSlicer, rejecting
+// unsliceable inputs with a clear code:
 //   MESH_UNSUPPORTED — non-mesh (.step/.dxf/…), or a mesh format this flow
 //                      doesn't convert (.ply/.glb/.gltf)
 //   ALREADY_SLICED   — a .3mf that is already a sliced plate (carries

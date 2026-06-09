@@ -369,9 +369,9 @@ pub struct SliceStats {
     /// when the slicer did not produce one.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub gcode_3mf_file: Option<String>,
-    /// Static analysis of the produced G-code (ported from the `gcode` skill's
-    /// `validate`). Best-effort and non-fatal: a slice still succeeds even when
-    /// `validation.ok` is false. `None` when the G-code could not be read back.
+    /// Static analysis of the produced G-code. Best-effort and non-fatal: a
+    /// slice still succeeds even when `validation.ok` is false. `None` when the
+    /// G-code could not be read back.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub validation: Option<SliceValidation>,
     /// Actionable slicing warnings OrcaSlicer itself reported on stdout during a

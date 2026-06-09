@@ -4,7 +4,6 @@ import CadWorkspace from "./components/CadWorkspace";
 import ChatSidebar, { readStoredChatSidebarWidth, persistChatSidebarWidth } from "./components/chat/ChatSidebar";
 import { CHAT_MIN_WIDTH, maxChatWidth } from "./workbench/chatLayout.js";
 import { bindCadRefSelectionToChatInput } from "./components/chat/cadRefEvents";
-import ProjectMenu from "./components/project/ProjectMenu.jsx";
 import WindowMenuBar from "./components/WindowMenuBar.jsx";
 import WelcomeScreen from "./components/onboarding/WelcomeScreen.jsx";
 import UpdateNotifier from "./components/update/UpdateNotifier.jsx";
@@ -312,7 +311,6 @@ function AppRoot() {
             catalogHydrated={catalogHydrated}
             catalogRefreshing={catalogRefreshing}
             catalogError={catalogError}
-            projectMenu={<ProjectMenu />}
             onModelsSidebarChange={handleModelsSidebarChange}
             onToolsSheetChange={handleToolsSheetChange}
             closeLeftSidebarSignal={closeLeftSidebarSignal}

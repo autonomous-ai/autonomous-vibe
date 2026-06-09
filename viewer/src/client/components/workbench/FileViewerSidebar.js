@@ -9,6 +9,7 @@ import {
   DraftingCompass,
   FileBox,
   Folder,
+  FolderPlus,
   Layers3,
   LoaderCircle,
   Package,
@@ -675,6 +676,7 @@ function FileViewerContents({
   onToggleDirectory,
   onSelectEntry,
   onSelectProject,
+  onCreateProject,
   onRequestDeleteProject,
   onRenameProject,
   generatingProjectIds,
@@ -728,8 +730,23 @@ function FileViewerContents({
   return (
     <>
       <SidebarHeader>
-        <div className="px-1 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Projects
+        <div className="flex items-center justify-between px-1 pb-1">
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Projects
+          </span>
+          {onCreateProject ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-6 text-muted-foreground"
+              aria-label="New project"
+              title="New project"
+              onClick={() => onCreateProject()}
+            >
+              <FolderPlus className="size-4" aria-hidden="true" />
+            </Button>
+          ) : null}
         </div>
         <SidebarInput
           type="search"
@@ -791,6 +808,7 @@ export default function FileViewerSidebar({
   onToggleDirectory,
   onSelectEntry,
   onSelectProject,
+  onCreateProject,
   onRequestDeleteProject,
   onRenameProject,
   generatingProjectIds,
@@ -832,6 +850,7 @@ export default function FileViewerSidebar({
       onToggleDirectory={onToggleDirectory}
       onSelectEntry={onSelectEntry}
       onSelectProject={onSelectProject}
+      onCreateProject={onCreateProject}
       onRequestDeleteProject={onRequestDeleteProject}
       onRenameProject={onRenameProject}
       generatingProjectIds={generatingProjectIds}

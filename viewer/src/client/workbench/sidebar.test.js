@@ -900,7 +900,7 @@ test("workspace global session state stores global panel open state and only cus
   const customFileSheetWidth = CAD_WORKSPACE_DEFAULT_TAB_TOOLS_WIDTH + 72;
 
   assert.deepEqual(readCadWorkspaceSessionState({ storage }), {
-    fileViewerOpen: false,
+    fileViewerOpen: true,
     fileViewerExpandedDirectoryIds: null,
     fileViewerWidthPx: null,
     fileSheetOpen: null,
@@ -939,7 +939,7 @@ test("workspace global session state stores global panel open state and only cus
     storage,
     defaultFileSheetWidthPx: CAD_WORKSPACE_COMPACT_TAB_TOOLS_WIDTH
   }), {
-    fileViewerOpen: false,
+    fileViewerOpen: true,
     fileViewerExpandedDirectoryIds: null,
     fileViewerWidthPx: null,
     fileSheetOpen: null,
@@ -960,7 +960,7 @@ test("workspace global session state stores global panel open state and only cus
     }
   );
   assert.deepEqual(readCadWorkspaceSessionState({ storage }), {
-    fileViewerOpen: false,
+    fileViewerOpen: true,
     fileViewerExpandedDirectoryIds: null,
     fileViewerWidthPx: customFileViewerWidth,
     fileSheetOpen: null,
@@ -1027,7 +1027,7 @@ test("workspace global session state stores global panel open state and only cus
     }
   );
   assert.deepEqual(readCadWorkspaceSessionState({ storage }), {
-    fileViewerOpen: false,
+    fileViewerOpen: true,
     fileViewerExpandedDirectoryIds: ["assemblies", "parts/servo"],
     fileViewerWidthPx: null,
     fileSheetOpen: null,
@@ -1046,7 +1046,7 @@ test("workspace global session state stores global panel open state and only cus
     }
   );
   assert.deepEqual(readCadWorkspaceSessionState({ storage }), {
-    fileViewerOpen: false,
+    fileViewerOpen: true,
     fileViewerExpandedDirectoryIds: [],
     fileViewerWidthPx: null,
     fileSheetOpen: null,

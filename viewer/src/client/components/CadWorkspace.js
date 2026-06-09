@@ -2,7 +2,7 @@
 
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeftRight, ArrowRight, Circle, Eraser, Minus, PaintBucket, PenTool, Square } from "lucide-react";
-import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import CadRenderPane from "./workbench/CadRenderPane";
 import DxfFileSheet from "./workbench/DxfFileSheet";
 import GcodeFileSheet from "./workbench/GcodeFileSheet";
@@ -15,7 +15,6 @@ import UrdfFileSheet from "./workbench/UrdfFileSheet";
 import ViewerAlertDialog from "./workbench/ViewerAlertDialog";
 import ViewerLoadingOverlay from "./workbench/ViewerLoadingOverlay";
 import FloatingToolBar from "./workbench/FloatingToolBar";
-import CadWorkspaceTopBar from "./workbench/CadWorkspaceTopBar";
 import { useCadAssets } from "./workbench/hooks/useCadAssets";
 import {
   resolveDesktopPanelWidths,
@@ -265,6 +264,7 @@ import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
 import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, selectSliceTargetStl, getChatState, useChatStore } from "@/store/chat";
 import { useProjectsStore } from "@/store/projects.ts";
 import { sortProjects } from "@/components/library/projectListHelpers.js";
+import { PLACEHOLDER_PROJECT_NAME } from "@/components/chat/chatInputHelpers";
 import { useProjectsFileTree } from "./workbench/hooks/useProjectsFileTree";
 import DeleteConfirmDialog from "@/components/library/DeleteConfirmDialog.jsx";
 
@@ -279,7 +279,6 @@ const DEFAULT_SIDEBAR_WIDTH = CAD_WORKSPACE_DEFAULT_SIDEBAR_WIDTH;
 const DESKTOP_TAB_TOOLS_MIN_WIDTH = 240;
 const DESKTOP_TAB_TOOLS_MAX_WIDTH = 448;
 const DEFAULT_TAB_TOOLS_WIDTH = CAD_WORKSPACE_DEFAULT_TAB_TOOLS_WIDTH;
-const CAD_WORKSPACE_TOP_BAR_HEIGHT = 44;
 const DEFAULT_LARGE_FILE_STATE = Object.freeze({
   selectableTopologyEnabled: false
 });
@@ -554,7 +553,6 @@ export default function CadWorkspace({
   catalogHydrated = false,
   catalogRefreshing = false,
   catalogError = "",
-  projectMenu = null,
   onModelsSidebarChange = null,
   onToolsSheetChange = null,
   closeLeftSidebarSignal = 0
@@ -590,6 +588,7 @@ export default function CadWorkspace({
     [turnOwners],
   );
   const openProject = useProjectsStore((state) => state.open);
+  const createProject = useProjectsStore((state) => state.create);
   const deleteProject = useProjectsStore((state) => state.delete);
   const renameProject = useProjectsStore((state) => state.rename);
   const [projectPendingDelete, setProjectPendingDelete] = useState(null);
@@ -5764,6 +5763,20 @@ export default function CadWorkspace({
     });
   }, [renameProject]);
 
+  // "New project" from the sidebar header. Mirrors the removed top-bar
+  // ProjectMenu: create with a placeholder name (Claude Code's AI title
+  // replaces it in place later) and make it the active chat project.
+  const handleCreateProject = useCallback(async () => {
+    try {
+      const summary = await createProject(PLACEHOLDER_PROJECT_NAME);
+      if (summary?.id) {
+        setChatProject(summary.id);
+      }
+    } catch (err) {
+      console.warn("Failed to create project", err);
+    }
+  }, [createProject]);
+
   const handleConfirmDeleteProject = useCallback(async () => {
     const target = projectPendingDelete;
     if (!target?.id) {
@@ -5819,6 +5832,20 @@ export default function CadWorkspace({
           setAutoSelectStem(stems[stems.length - 1]);
         }
       }
+    });
+  }, []);
+
+  // The native "Printer → Add Printer…" menu item (see src-tauri/src/menu.rs)
+  // emits `open_add_printer`. It used to be handled by the top-bar ProjectMenu,
+  // which has been removed; host the listener here next to the AddPrinterDialog
+  // this workspace already renders so the menu item keeps working.
+  useEffect(() => {
+    const transport = getTransport();
+    if (!transport?.events?.subscribe) {
+      return undefined;
+    }
+    return transport.events.subscribe("open_add_printer", () => {
+      setAddPrinterOpen(true);
     });
   }, []);
 
@@ -6700,7 +6727,9 @@ export default function CadWorkspace({
       }).sidebarWidth
     : DEFAULT_SIDEBAR_WIDTH;
   const viewportFrameInsets = {
-    top: previewMode ? 0 : CAD_WORKSPACE_TOP_BAR_HEIGHT,
+    // The top header bar was removed, so the viewport reclaims the full height;
+    // the floating sidebar toggle and toolbar overlay rather than reserve space.
+    top: 0,
     right: activeSheetWidth,
     bottom: 0,
     left: activeSidebarWidth
@@ -6815,50 +6844,6 @@ export default function CadWorkspace({
       </div>
 
       <SidebarInset className="pointer-events-none relative z-10 h-full min-w-0 overflow-hidden bg-transparent">
-        <CadWorkspaceTopBar
-          previewMode={previewMode}
-          projectMenu={projectMenu}
-          sidebarLabelForEntry={sidebarLabelForEntry}
-          directoryTree={allEntriesTree}
-          selectedKey={selectedKey}
-          selectedEntry={selectedEntry}
-          onSelectEntry={handleSelectEntry}
-          entrySourceFormat={entrySourceFormat}
-          entryHasMesh={entryHasMesh}
-          entryHasDxf={entryHasDxf}
-          entryHasGcode={entryHasGcode}
-          entryHasUrdf={entryHasUrdf}
-          activeGenerationFiles={activeGeneratorFiles}
-          activeStepArtifactGenerationFile={activeStepArtifactGenerationFiles}
-          stepArtifactGenerationAvailable={stepArtifactGenerationAvailable}
-          themePresets={availableThemePresets}
-          themeSettings={themeSettings}
-          themePresetId={themePresetId}
-          resolvedColorSchemeMode={resolvedColorSchemeMode}
-          onColorSchemePreferenceChange={handleColorSchemePreferenceChange}
-          updateThemeSettings={updateThemeSettings}
-          handleResetThemeSettings={handleResetThemeSettings}
-          handleSaveCustomThemePreset={handleSaveCustomThemePreset}
-          handleUpdateThemePresetSettings={handleUpdateThemePresetSettings}
-          handleDeleteCustomThemePreset={handleDeleteCustomThemePreset}
-          handleEditThemePreset={handleEditThemePreset}
-          handleResetThemePresetToDefault={handleResetThemePresetToDefault}
-          handleRestoreDefaultThemePresets={handleRestoreDefaultThemePresets}
-          filenameLoadActivity={filenameLoadActivity}
-          selectedStepSourceStatus={selectedStepSourceStatus}
-          canRevealFileAssets={fileRevealAvailable}
-          canCopyFileAssetLinks={fileLinkCopyAvailable}
-          canCopyFileAssetPaths={filePathCopyAvailable}
-          fileAccessBusyKey={fileAccessBusyKey}
-          onDownloadFileAsset={handleDownloadFileAsset}
-          onRevealFileAsset={handleRevealFileAsset}
-          onRevealInExplorerView={handleRevealEntryInExplorerView}
-          onCopyFileAssetReference={handleCopyFileAssetReference}
-          fileSheetKind={selectedFileSheetHasSections ? selectedFileSheetKind : null}
-          fileSheetOpen={fileSheetOpen}
-          onToggleFileSheet={handleToggleFileSheet}
-        />
-
         <div className="pointer-events-none relative min-h-0 flex-1 overflow-hidden">
           <div className="flex h-full min-w-0">
             <FileViewerSidebar
@@ -6871,6 +6856,7 @@ export default function CadWorkspace({
               onToggleDirectory={onToggleProjectDirectory}
               onSelectEntry={handleSidebarSelectEntry}
               onSelectProject={handleSelectProject}
+              onCreateProject={handleCreateProject}
               generatingProjectIds={generatingProjectIds}
               onRequestDeleteProject={handleRequestDeleteProject}
               onRenameProject={handleRenameProject}
@@ -6898,6 +6884,22 @@ export default function CadWorkspace({
             />
 
             <div className="pointer-events-none relative min-w-0 flex-1 overflow-hidden">
+              {/* The top header bar was removed; this floating icon is now the
+                  only affordance to hide/show the Models sidebar. It anchors to
+                  the top-left of the viewport column, so it never overlaps the
+                  sidebar when open (it sits just to its right) and lands at the
+                  far left when the sidebar is collapsed. Mirrors the toolbar's
+                  14px inset on the opposite corner. */}
+              {!previewMode ? (
+                <div className="cad-glass-surface pointer-events-auto absolute left-3.5 top-3.5 z-20 rounded-md border border-sidebar-border text-sidebar-foreground shadow-sm">
+                  <SidebarTrigger
+                    title="Toggle Models"
+                    aria-label="Toggle Models"
+                    className="size-8"
+                  />
+                </div>
+              ) : null}
+
               <FloatingToolBar
                 previewMode={previewMode}
                 selectedEntry={selectedEntry}

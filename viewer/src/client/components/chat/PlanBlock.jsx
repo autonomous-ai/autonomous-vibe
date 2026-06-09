@@ -60,12 +60,12 @@ export default function PlanBlock({ plan, status }) {
       data-slot="chat-plan"
       data-status={status}
       className={cn(
-        "overflow-hidden rounded-2xl border border-white/[0.08] bg-[#16181c] text-sm text-zinc-100 shadow-(--ui-shadow-soft)",
+        "overflow-hidden rounded-2xl border border-white/[0.08] bg-[#16181c] text-sm text-zinc-100",
         "bg-[linear-gradient(to_bottom,rgba(52,211,153,0.1)_0,rgba(52,211,153,0.1)_46px,rgba(52,211,153,0)_64px)]",
         status === "superseded" && "opacity-60",
       )}
     >
-      <header className="flex items-center gap-2.5 px-5 pt-4 pb-3.5">
+      <header className="flex items-center gap-2.5 px-3.5 py-3.5">
         <ClipboardList className="size-[18px] shrink-0 text-emerald-400" aria-hidden />
         <span className="text-[15px] font-semibold text-white">Here&apos;s my plan</span>
         <span className={cn("ml-auto rounded-full border px-2.5 py-1 text-[11px] font-semibold", pill.cls)}>
@@ -73,7 +73,7 @@ export default function PlanBlock({ plan, status }) {
         </span>
       </header>
 
-      <div className="px-5 pb-4">
+      <div className="px-3.5 py-3.5">
         {editing ? (
           <Textarea
             value={draft}
@@ -120,7 +120,7 @@ export default function PlanBlock({ plan, status }) {
             </div>
           </div>
         ) : (
-          <footer className="flex items-center justify-between gap-2 border-t border-white/[0.06] px-5 py-3.5">
+          <footer className="flex items-center justify-between gap-2 border-t border-white/[0.06] px-3.5 py-3.5">
             <div className="flex items-center gap-2">
               <Button
                 variant="outline"

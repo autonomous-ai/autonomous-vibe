@@ -16,6 +16,7 @@ import {
   sidebarDirectoryPath,
   sidebarDirectoryIdForEntry,
   sidebarLabelForEntry,
+  nearestLevelEntryKey,
   cadPathForEntry,
   entryStlFile,
   gcodeSourceStl,
@@ -708,6 +709,34 @@ test("buildSidebarDirectoryTree lists CAD files in their exact source directory"
     // Rail labels are the bare part stem now — no .dxf/.step extension.
     ["entry:sample_plate", "entry:sample_plate"]
   );
+});
+
+test("nearestLevelEntryKey picks the shallowest model so header activation lands on a real file", () => {
+  // A multi-level project: deeper files appear first in catalog order. The
+  // viewer must still default to the nearest-to-root model, not the first or a
+  // nested one — otherwise activating the project from its header resolves the
+  // previous project's lingering `?file=` path and renders "File does not exist".
+  const entries = [
+    { file: "assemblies/robot/arm/base.step", kind: "part", source: { format: "step", path: "assemblies/robot/arm/base.step" } },
+    { file: "bracket.step", kind: "part", source: { format: "step", path: "bracket.step" } },
+    { file: "parts/plate.step", kind: "part", source: { format: "step", path: "parts/plate.step" } }
+  ];
+  assert.equal(nearestLevelEntryKey(entries), "bracket.step");
+});
+
+test("nearestLevelEntryKey tie-breaks shallowest entries by sidebar display order", () => {
+  // Two models share the (shallowest) root level; pick the one the tree lists
+  // first so the default matches what the user sees at the top.
+  const entries = [
+    { file: "zeta.step", kind: "part", source: { format: "step", path: "zeta.step" } },
+    { file: "alpha.step", kind: "part", source: { format: "step", path: "alpha.step" } }
+  ];
+  assert.equal(nearestLevelEntryKey(entries), "alpha.step");
+});
+
+test("nearestLevelEntryKey returns empty string for a project with no models yet", () => {
+  assert.equal(nearestLevelEntryKey([]), "");
+  assert.equal(nearestLevelEntryKey(null), "");
 });
 
 test("sidebar directory helpers find nested folders and ancestor paths", () => {

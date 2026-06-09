@@ -1,6 +1,6 @@
 "use client";
 
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeftRight, ArrowRight, Circle, Eraser, Minus, PaintBucket, PenTool, Square } from "lucide-react";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import CadRenderPane from "./workbench/CadRenderPane";
@@ -173,6 +173,7 @@ import {
   fileKey,
   firstSelectableEntryKey,
   gcodeSourceStl,
+  nearestLevelEntryKey,
   soleCatalogStl,
   missingFileRefForCatalog,
   readCadParam,
@@ -5644,23 +5645,64 @@ export default function CadWorkspace({
       });
   }, [currentProjectId, handleSelectEntry, openProject]);
 
-  // Activate a project from its sidebar header (no specific file). This is the
-  // only way to reopen a project with no files yet — e.g. a freshly created one
-  // you started chatting in, then navigated away from. Switches the chat
-  // session + workspace to it; the catalog/3D view follow.
+  // Activate a project from its sidebar header (no specific file). Switches the
+  // chat session + workspace to it; the catalog/3D view follow. With no file
+  // targeted, the previous project's `?file=` param lingers in the URL — if the
+  // new project's catalog can't resolve it (common for deeper, multi-level
+  // projects), the viewer renders a spurious "File does not exist". Defer a
+  // default selection so once the new catalog settles we land on its nearest-
+  // to-root model. `key: null` marks the request as "pick the default"; a
+  // project with no models yet resolves to nothing and keeps the empty state —
+  // which is still the only way to reopen such a project. `observedRefresh`
+  // gates the pick on the new project's catalog actually loading (see resolver),
+  // not the previous project's entries that stay hydrated through the switch.
   const handleSelectProject = useCallback((projectId) => {
     if (!projectId || projectId === currentProjectId) return;
-    pendingCrossProjectSelectionRef.current = null;
+    pendingCrossProjectSelectionRef.current = { projectId, key: null, observedRefresh: false };
     openProject(projectId)
       .then(() => setChatProject(projectId))
       .catch((err) => {
         console.warn("Failed to open project from sidebar", err);
+        pendingCrossProjectSelectionRef.current = null;
       });
   }, [currentProjectId, openProject]);
 
-  useEffect(() => {
+  // Runs as a layout effect so the selection commits before paint: the render
+  // where the new catalog settles still has the previous project's stale
+  // `?file=` in the URL, which would otherwise flash "File does not exist" for a
+  // frame before this resolves it.
+  useLayoutEffect(() => {
     const pending = pendingCrossProjectSelectionRef.current;
     if (!pending || pending.projectId !== currentProjectId) {
+      return;
+    }
+    // Header activation (no specific file): wait for *this* project's catalog to
+    // load, then select its nearest-to-root model. The previous project's
+    // entries stay hydrated through the switch, so we can't pick on the first
+    // settled catalog — instead we watch the refresh lifecycle. `main.jsx`
+    // re-reads the catalog with `markRefreshing: true` on every project change,
+    // so the catalog is guaranteed to go refreshing → settled for the new
+    // project; only once we've seen `catalogRefreshing` flip true (this
+    // project's load began) and back to false do we pick. A settled-but-empty
+    // catalog clears the request and leaves the empty state.
+    if (pending.key === null) {
+      if (catalogRefreshing) {
+        pending.observedRefresh = true;
+        return;
+      }
+      if (!pending.observedRefresh || !catalogHydrated) {
+        return;
+      }
+      pendingCrossProjectSelectionRef.current = null;
+      const defaultKey = nearestLevelEntryKey(catalogEntries);
+      if (!defaultKey) {
+        return;
+      }
+      const defaultEntry = entryMap.get(defaultKey);
+      if (defaultEntry) {
+        expandFileViewerTreeToEntry(defaultEntry);
+      }
+      handleSelectEntry(defaultKey);
       return;
     }
     const entry = entryMap.get(pending.key);
@@ -5674,7 +5716,15 @@ export default function CadWorkspace({
     // the clicked file renders collapsed after the project switch.
     expandFileViewerTreeToEntry(entry);
     handleSelectEntry(pending.key);
-  }, [currentProjectId, entryMap, handleSelectEntry, expandFileViewerTreeToEntry]);
+  }, [
+    currentProjectId,
+    entryMap,
+    catalogEntries,
+    catalogHydrated,
+    catalogRefreshing,
+    handleSelectEntry,
+    expandFileViewerTreeToEntry
+  ]);
 
   // Per-project delete from the sidebar. Opens a confirm dialog; on confirm,
   // deletes the project. When the deleted project was active, fall back to the

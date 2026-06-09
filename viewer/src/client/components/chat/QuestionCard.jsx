@@ -57,15 +57,15 @@ export default function QuestionCard({ questions }) {
   return (
     <div
       data-slot="chat-questions"
-      className="rounded-xl border border-border/70 bg-[#18191d] p-3.5 text-sm shadow-(--ui-shadow-soft)"
+      className="rounded-2xl border border-white/8 bg-[#16181c] p-3 text-sm shadow-(--ui-shadow-soft)"
     >
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-3.5">
         {list.map((q, qi) => {
           const multi = !!q.multiSelect;
           const picks = selected[qi] || [];
           return (
-            <div key={qi} data-slot="chat-question" className="flex flex-col gap-2">
-              <p className="text-[13px] font-semibold leading-tight text-zinc-100">{q.question}</p>
+            <div key={qi} data-slot="chat-question" className="flex flex-col gap-2.5">
+              <p className="text-sm font-semibold leading-tight text-zinc-100">{q.question}</p>
               <div className="flex flex-wrap gap-2">
                 {(q.options || []).map((opt) => {
                   const active = picks.includes(opt.label);
@@ -79,10 +79,10 @@ export default function QuestionCard({ questions }) {
                       data-slot="chat-question-option"
                       data-active={active ? "true" : "false"}
                       className={cn(
-                        "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                        "inline-flex items-center rounded-full border px-3 py-2 text-[13px] font-medium transition-colors",
                         active
-                          ? "border-zinc-300/60 bg-white/12 text-zinc-100 ring-1 ring-white/25"
-                          : "border-white/10 bg-white/4 text-zinc-400 hover:border-white/20 hover:bg-white/[0.07] hover:text-zinc-200",
+                          ? "border-[#34d399]/55 bg-[#34d399]/20 text-white"
+                          : "border-white/8 bg-white/[0.05] text-zinc-400 hover:border-white/15 hover:bg-white/[0.08] hover:text-zinc-200",
                         submitted && !active && "opacity-55",
                       )}
                     >
@@ -95,7 +95,7 @@ export default function QuestionCard({ questions }) {
           );
         })}
       </div>
-      <div className="mt-5 flex justify-end">
+      <div className="mt-4 flex justify-end">
         <Button
           type="button"
           size="sm"
@@ -104,10 +104,11 @@ export default function QuestionCard({ questions }) {
           data-slot="chat-questions-send"
           // Fixed width so the label swap can't reflow the button (the swap
           // used to leave a "Send a…"/"Sent" ghost). Sent reads as a quiet,
-          // deliberate confirmation rather than a half-disabled button.
+          // deliberate green confirmation rather than a half-disabled button.
           className={cn(
-            "min-w-20 rounded-lg bg-zinc-200 px-4 text-zinc-950 hover:bg-zinc-100 disabled:bg-zinc-500 disabled:text-zinc-950 disabled:opacity-100",
-            submitted && "bg-white/10 text-zinc-100 hover:bg-white/10",
+            "min-w-20 rounded-lg bg-[#10b981] px-4 font-medium text-white hover:bg-[#34d399] disabled:bg-zinc-700 disabled:text-zinc-400 disabled:opacity-100",
+            submitted &&
+              "bg-[#34d399]/20 text-[#34d399] ring-1 ring-[#34d399]/30 hover:bg-[#34d399]/20 disabled:bg-[#34d399]/20 disabled:text-[#34d399]",
           )}
         >
           {submitted ? (

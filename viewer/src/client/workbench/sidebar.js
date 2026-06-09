@@ -195,6 +195,31 @@ export function selectedEntryKeyFromUrl(entries, { cadRefs = readCadRefQueryPara
   return match ? fileKey(match) : "";
 }
 
+// Pick the entry the viewer should land on when no file is explicitly selected
+// (initial load) or the prior `?file=` param no longer resolves (project
+// switch). Prefer the first entry that can actually render, falling back to the
+// first entry that didn't fail generation, then the first entry — so we never
+// land on a "File does not exist" / failed-artifact file when a good one exists.
+export function firstSelectableEntry(entries = [], isRenderable = null) {
+  const list = Array.isArray(entries) ? entries : [];
+  if (!list.length) {
+    return null;
+  }
+  const notErrored = (entry) => entry?.artifact?.ok !== false;
+  if (typeof isRenderable === "function") {
+    const renderable = list.find((entry) => notErrored(entry) && isRenderable(entry));
+    if (renderable) {
+      return renderable;
+    }
+  }
+  return list.find(notErrored) || list[0];
+}
+
+export function firstSelectableEntryKey(entries = [], isRenderable = null) {
+  const entry = firstSelectableEntry(entries, isRenderable);
+  return entry ? fileKey(entry) : "";
+}
+
 export function writeCadParam(urlPath) {
   if (typeof window === "undefined") {
     return;

@@ -719,6 +719,9 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
     case "app_submit_login_code":
       // Feeds the live PTY — Tauri only. No-op in browser dev.
       return undefined as unknown as T;
+    case "app_cancel_panda_login":
+      // No-op in browser dev (no in-flight Tauri sign-in to cancel).
+      return undefined as unknown as T;
     case "app_panda_login":
       // Proxy sign-in talks to Panda's backend — Tauri only. Surface the same
       // "not available yet" shape the placeholder command returns so the
@@ -881,6 +884,10 @@ const transportBase = {
   // success Rust persists the token + flips use_panda_cloud; progress streams
   // via the `panda_login_progress` event (see onPandaLoginProgress).
   app_panda_login: () => invoke<PandaLoginResult>("app_panda_login"),
+  // Cancel an in-flight Panda sign-in (user closed the browser / chose another
+  // path); the awaiting app_panda_login returns immediately instead of waiting
+  // out the 10-min timeout.
+  app_cancel_panda_login: () => invoke<void>("app_cancel_panda_login"),
   // Switch the active Claude access mode (proxy ↔ own local Claude) without
   // re-onboarding. Enabling the proxy requires a prior Panda sign-in (errors
   // PANDA_NOT_SIGNED_IN otherwise). Returns the updated settings.

@@ -13,7 +13,8 @@ use std::process::Command;
 use std::process::Stdio;
 use tauri::Emitter;
 use tokio::io::{AsyncBufReadExt, BufReader};
-#[cfg(not(target_os = "windows"))]
+// Used by `download_slicer_asset`, which now runs on every platform (Windows
+// gained a real OrcaSlicer auto-installer).
 use tokio::io::AsyncWriteExt;
 
 /// Tauri event channel for `claude_install_progress` payloads.
@@ -32,13 +33,11 @@ pub const PANDA_LOGIN_PROGRESS_EVENT: &str = "panda_login_progress";
 const LOGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// Tauri event channel for `slicer_install_progress` payloads.
-#[cfg(not(target_os = "windows"))]
 pub const SLICER_INSTALL_PROGRESS_EVENT: &str = "slicer_install_progress";
 
 /// Pinned OrcaSlicer release, embedded at compile time so the runtime
 /// auto-installer downloads exactly the version the bundled sidecar build
 /// targets. Looks like `v2.3.2`.
-#[cfg(not(target_os = "windows"))]
 const SLICER_VERSION_PIN: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/build/SLICER_VERSION.txt"));
 
@@ -1164,6 +1163,18 @@ pub async fn app_panda_login(
     Ok(PandaLoginResult { ok: true })
 }
 
+/// Cancel an in-flight Panda sign-in — the user closed the browser tab or chose
+/// another path and doesn't want to wait out `LOGIN_TIMEOUT`. Taking the pending
+/// slot drops its oneshot sender, which makes the awaiting `app_panda_login`'s
+/// receiver resolve immediately (interrupted) instead of blocking for 10 minutes.
+/// Also stops a late deep-link callback from silently completing a sign-in the
+/// user abandoned (it finds no pending slot → no-op). No-op if nothing pending.
+#[tauri::command]
+pub async fn app_cancel_panda_login(state: tauri::State<'_, AppState>) -> IpcResult<()> {
+    state.take_pending_panda_login();
+    Ok(())
+}
+
 /// Strip ANSI/VT escape sequences (CSI `ESC [ … final` and OSC
 /// `ESC ] … BEL/ST`) from PTY output so URL/token scanning sees clean text.
 /// A small hand-rolled scanner — we only need it good enough to recover
@@ -1539,24 +1550,10 @@ pub async fn app_submit_login_code(
 /// One-click OrcaSlicer installer. Downloads the pinned OrcaSlicer release for
 /// the host platform from GitHub, installs it into a user-writable location
 /// (`~/Applications/OrcaSlicer.app` on macOS, `~/.local/bin/orcaslicer` on
-/// Linux), then re-runs `detect_slicer` to confirm the binary is resolvable by
-/// the same probe the slice path uses. Progress streams via the
-/// `slicer_install_progress` Tauri event.
-///
-/// Windows is not auto-installed (the upstream release is a portable zip with
-/// no installer) — it returns `PLATFORM_UNSUPPORTED` and the UI points the user
-/// at the official download.
+/// Linux, portable-zip extract on Windows), then re-runs `detect_slicer` to
+/// confirm the binary is resolvable by the same probe the slice path uses.
+/// Progress streams via the `slicer_install_progress` Tauri event.
 #[tauri::command]
-#[cfg(target_os = "windows")]
-pub async fn app_install_orcaslicer(_app: tauri::AppHandle) -> IpcResult<InstalledSlicer> {
-    Err(IpcError::new(
-        "PLATFORM_UNSUPPORTED",
-        "Automatic OrcaSlicer install isn't supported on Windows — download it from orcaslicer.com",
-    ))
-}
-
-#[tauri::command]
-#[cfg(not(target_os = "windows"))]
 pub async fn app_install_orcaslicer(app: tauri::AppHandle) -> IpcResult<InstalledSlicer> {
     let emit = |progress: SlicerInstallProgress| {
         let _ = app.emit(SLICER_INSTALL_PROGRESS_EVENT, &progress);
@@ -1569,6 +1566,8 @@ pub async fn app_install_orcaslicer(app: tauri::AppHandle) -> IpcResult<Installe
     let asset = format!("OrcaSlicer_Mac_universal_{version}.dmg");
     #[cfg(target_os = "linux")]
     let asset = format!("OrcaSlicer_Linux_AppImage_Ubuntu2404_{version}.AppImage");
+    #[cfg(target_os = "windows")]
+    let asset = windows_portable_asset_name(&version);
     let url =
         format!("https://github.com/SoftFever/OrcaSlicer/releases/download/{version}/{asset}");
 
@@ -1630,7 +1629,6 @@ pub async fn app_install_orcaslicer(app: tauri::AppHandle) -> IpcResult<Installe
 
 /// Stream `url` to `dest`, emitting `Downloading` progress every ~4 MB. Kept a
 /// free function so the platform install helpers can share it.
-#[cfg(not(target_os = "windows"))]
 async fn download_slicer_asset(
     app: &tauri::AppHandle,
     url: &str,
@@ -1790,6 +1788,186 @@ async fn install_downloaded_slicer(app: &tauri::AppHandle, appimage: &Path) -> I
     Ok(())
 }
 
+/// Release-asset filename for the Windows portable zip. The release *tag* is
+/// lowercase (`v2.3.2`) but the asset *filename* capitalizes the version
+/// (`OrcaSlicer_Windows_V2.3.2_portable.zip`), so normalize the pin's leading
+/// `v`/`V` to an uppercase `V`. Getting this wrong is a silent 404.
+#[cfg(target_os = "windows")]
+fn windows_portable_asset_name(version: &str) -> String {
+    let ver = version.trim().trim_start_matches(['v', 'V']);
+    format!("OrcaSlicer_Windows_V{ver}_portable.zip")
+}
+
+/// Windows: extract the portable zip and move its tree (the `orca-slicer.exe`
+/// plus its sibling DLLs/resources) into the Panda-managed install dir, which
+/// is one of `well_known_slicer_paths()`.
+#[cfg(target_os = "windows")]
+async fn install_downloaded_slicer(app: &tauri::AppHandle, zip: &Path) -> IpcResult<()> {
+    let emit = |progress: SlicerInstallProgress| {
+        let _ = app.emit(SLICER_INSTALL_PROGRESS_EVENT, &progress);
+    };
+
+    emit(SlicerInstallProgress::Extracting);
+    let extract_dir = zip.with_extension("extract");
+    let _ = tokio::fs::remove_dir_all(&extract_dir).await; // clear any stale run
+    tokio::fs::create_dir_all(&extract_dir)
+        .await
+        .map_err(IpcError::from)?;
+    extract_zip(zip, &extract_dir).await?;
+
+    let dest = crate::commands::slicer::managed_slicer_dir()
+        .ok_or_else(|| IpcError::new("INSTALL_FAILED", "LOCALAPPDATA is not set"))?;
+
+    emit(SlicerInstallProgress::Installing);
+    // Recursive walk + directory move — run off the async runtime.
+    let from = extract_dir.clone();
+    let to = dest.clone();
+    let result = tokio::task::spawn_blocking(move || install_portable_tree(&from, &to))
+        .await
+        .map_err(|e| IpcError::new("INSTALL_FAILED", format!("install task failed: {e}")))?;
+    let _ = tokio::fs::remove_dir_all(&extract_dir).await;
+    result
+}
+
+/// Unzip `zip` into `dest`. Prefers Windows' bundled bsdtar
+/// (`%SystemRoot%\System32\tar.exe`) — fast and zip-capable — invoked by
+/// absolute path so a GNU `tar` earlier on PATH (which cannot read zips) can't
+/// shadow it. Falls back to PowerShell `Expand-Archive`.
+#[cfg(target_os = "windows")]
+async fn extract_zip(zip: &Path, dest: &Path) -> IpcResult<()> {
+    use tokio::process::Command as TokioCommand;
+
+    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+    let bsdtar = PathBuf::from(&system_root)
+        .join("System32")
+        .join("tar.exe");
+    if bsdtar.exists() {
+        if let Ok(status) = TokioCommand::new(&bsdtar)
+            .arg("-xf")
+            .arg(zip)
+            .arg("-C")
+            .arg(dest)
+            .status()
+            .await
+        {
+            if status.success() {
+                return Ok(());
+            }
+        }
+    }
+
+    let status = TokioCommand::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command"])
+        .arg(format!(
+            "Expand-Archive -Force -LiteralPath '{}' -DestinationPath '{}'",
+            zip.display(),
+            dest.display()
+        ))
+        .status()
+        .await
+        .map_err(|e| IpcError::new("INSTALL_FAILED", format!("Expand-Archive failed to start: {e}")))?;
+    if !status.success() {
+        return Err(IpcError::new(
+            "INSTALL_FAILED",
+            "could not extract the OrcaSlicer portable zip",
+        ));
+    }
+    Ok(())
+}
+
+/// Locate `orca-slicer.exe` inside the extracted tree and move its containing
+/// directory into `dest`, replacing any prior managed install. Synchronous —
+/// invoked via `spawn_blocking`.
+#[cfg(target_os = "windows")]
+fn install_portable_tree(extracted: &Path, dest: &Path) -> IpcResult<()> {
+    let exe = find_slicer_exe(extracted, 5).ok_or_else(|| {
+        IpcError::new(
+            "INSTALL_FAILED",
+            "orca-slicer.exe was not found inside the portable zip",
+        )
+    })?;
+    let src_dir = exe.parent().ok_or_else(|| {
+        IpcError::new("INSTALL_FAILED", "extracted slicer binary has no parent dir")
+    })?;
+
+    // `dest` may already exist as a stale install *directory* OR as a leftover
+    // placeholder *file* — e.g. the 4-byte "stub" a prior build/install dropped
+    // at the managed slicer path. `remove_dir_all` errors on a non-directory on
+    // Windows, which would abort the install and leave the user with no slicer,
+    // so branch on the actual type (without following a symlink) and clear it.
+    remove_path_any(dest)?;
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(IpcError::from)?;
+    }
+    // Fast path is a rename (temp dir + LOCALAPPDATA share the system drive);
+    // fall back to a recursive copy if that crosses a volume.
+    match std::fs::rename(src_dir, dest) {
+        Ok(()) => Ok(()),
+        Err(_) => copy_dir_recursive(src_dir, dest),
+    }
+}
+
+/// Remove whatever exists at `path` — a directory tree, a regular file, or a
+/// symlink — and treat "already absent" as success. `std::fs::remove_dir_all`
+/// alone is insufficient on Windows because it errors when the target is a
+/// file, so we dispatch on the (non-followed) metadata.
+#[cfg(target_os = "windows")]
+fn remove_path_any(path: &Path) -> IpcResult<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(path).map_err(IpcError::from),
+        Ok(_) => std::fs::remove_file(path).map_err(IpcError::from),
+        Err(_) => Ok(()), // nothing there
+    }
+}
+
+/// Shallowest-first search for `orca-slicer.exe` / `OrcaSlicer.exe` under
+/// `root`, bounded to `max_depth` directory levels.
+#[cfg(target_os = "windows")]
+fn find_slicer_exe(root: &Path, max_depth: usize) -> Option<PathBuf> {
+    let mut frontier = vec![(root.to_path_buf(), 0usize)];
+    while !frontier.is_empty() {
+        let mut next = Vec::new();
+        for (dir, depth) in frontier {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let Ok(ft) = entry.file_type() else { continue };
+                let path = entry.path();
+                if ft.is_file() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        let lower = name.to_ascii_lowercase();
+                        if lower == "orca-slicer.exe" || lower == "orcaslicer.exe" {
+                            return Some(path);
+                        }
+                    }
+                } else if ft.is_dir() && depth < max_depth {
+                    next.push((path, depth + 1));
+                }
+            }
+        }
+        frontier = next; // process a full depth level before descending
+    }
+    None
+}
+
+/// Recursively copy `src` into `dest` (cross-volume fallback for a rename).
+#[cfg(target_os = "windows")]
+fn copy_dir_recursive(src: &Path, dest: &Path) -> IpcResult<()> {
+    std::fs::create_dir_all(dest).map_err(IpcError::from)?;
+    for entry in std::fs::read_dir(src).map_err(IpcError::from)? {
+        let entry = entry.map_err(IpcError::from)?;
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        if entry.file_type().map_err(IpcError::from)?.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to).map_err(IpcError::from)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1800,6 +1978,105 @@ mod tests {
         assert_eq!(info.pid, std::process::id());
         assert_eq!(info.app_version, APP_VERSION);
         assert!(!info.root_path.is_empty());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_portable_asset_capitalizes_version() {
+        // The pin is lowercase (`v2.3.2`) but the real GitHub asset filename
+        // uses a capital `V` — a mismatch is a silent 404.
+        assert_eq!(
+            windows_portable_asset_name("v2.3.2"),
+            "OrcaSlicer_Windows_V2.3.2_portable.zip"
+        );
+        assert_eq!(
+            windows_portable_asset_name("V2.3.2"),
+            "OrcaSlicer_Windows_V2.3.2_portable.zip"
+        );
+        assert_eq!(
+            windows_portable_asset_name(" 2.3.2\n"),
+            "OrcaSlicer_Windows_V2.3.2_portable.zip"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn find_slicer_exe_locates_nested_binary() {
+        use std::io::Write;
+        let root = std::env::temp_dir().join(format!("panda-find-exe-{}", std::process::id()));
+        let nested = root.join("OrcaSlicer").join("bin");
+        std::fs::create_dir_all(&nested).unwrap();
+        let exe = nested.join("orca-slicer.exe");
+        std::fs::File::create(&exe).unwrap().write_all(b"MZ").unwrap();
+
+        let found = find_slicer_exe(&root, 5);
+        assert_eq!(found.as_deref(), Some(exe.as_path()));
+        // A shallow depth bound must not reach it.
+        assert!(find_slicer_exe(&root, 1).is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Regression: a stale 4-byte "stub" *file* sitting at the managed slicer
+    // path used to abort the install (`remove_dir_all` errors on a file on
+    // Windows). The portable tree must overwrite a file destination, not just a
+    // directory one.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn install_portable_tree_overwrites_stub_file_destination() {
+        use std::io::Write;
+        let root = std::env::temp_dir().join(format!("panda-install-stub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        // Extracted portable zip: flat tree with the exe at its root.
+        let extracted = root.join("extracted");
+        std::fs::create_dir_all(&extracted).unwrap();
+        std::fs::File::create(extracted.join("orca-slicer.exe"))
+            .unwrap()
+            .write_all(b"MZ\x90\x00")
+            .unwrap();
+        std::fs::File::create(extracted.join("libfoo.dll"))
+            .unwrap()
+            .write_all(b"MZ\x90\x00")
+            .unwrap();
+
+        // Destination already exists as a 4-byte stub FILE (the bug trigger).
+        let dest = root.join("OrcaSlicer");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::File::create(&dest).unwrap().write_all(b"stub").unwrap();
+        assert!(dest.is_file(), "precondition: dest is a stub file");
+
+        install_portable_tree(&extracted, &dest).expect("install must overwrite a stub file");
+
+        assert!(dest.is_dir(), "dest is now the installed directory");
+        assert!(dest.join("orca-slicer.exe").is_file());
+        assert!(dest.join("libfoo.dll").is_file());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn remove_path_any_handles_file_dir_and_absent() {
+        use std::io::Write;
+        let root = std::env::temp_dir().join(format!("panda-rm-any-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let file = root.join("a-file");
+        std::fs::File::create(&file).unwrap().write_all(b"x").unwrap();
+        remove_path_any(&file).unwrap();
+        assert!(!file.exists());
+
+        let dir = root.join("a-dir");
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        remove_path_any(&dir).unwrap();
+        assert!(!dir.exists());
+
+        // Absent path is a no-op success.
+        remove_path_any(&root.join("missing")).unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // -----------------------------------------------------------------

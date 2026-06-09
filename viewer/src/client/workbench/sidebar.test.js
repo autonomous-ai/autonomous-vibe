@@ -5,6 +5,8 @@ import {
   buildSidebarDirectoryTree,
   findSidebarDirectoryById,
   findEntryByUrlPath,
+  firstSelectableEntry,
+  firstSelectableEntryKey,
   missingFileRefForCatalog,
   selectedEntryKeyFromUrl,
   listSidebarItems,
@@ -2068,4 +2070,48 @@ test("Change 3: a changed printable artifact resolves to its printable catalog e
   assert.equal(match.file, "parts/bracket.glb");
   // The raw STEP is correctly excluded by the printable filter.
   assert.equal(isPrintableModelEntry(entries[0]), false);
+});
+
+// --- Auto-select first non-error file on load / project switch -------------
+// `firstSelectableEntry`/`firstSelectableEntryKey` pick the file the viewer
+// lands on when nothing valid is selected, so a project switch never leaves a
+// stale "File does not exist" alert from the prior project's `?file=` param.
+test("firstSelectableEntry prefers a renderable, non-error entry", () => {
+  const entries = [
+    { file: "parts/failed.step", artifact: { ok: false, error: "step_artifact_unavailable" } },
+    { file: "parts/pending.step" },
+    { file: "parts/good.step" },
+  ];
+  const isRenderable = (entry) => entry.file === "parts/good.step";
+
+  assert.equal(firstSelectableEntry(entries, isRenderable).file, "parts/good.step");
+  assert.equal(firstSelectableEntryKey(entries, isRenderable), "parts/good.step");
+});
+
+test("firstSelectableEntry skips failed artifacts when nothing is renderable", () => {
+  const entries = [
+    { file: "parts/failed.step", artifact: { ok: false } },
+    { file: "parts/ok.step" },
+  ];
+
+  // No renderable predicate / nothing renderable: fall back to the first entry
+  // whose artifact didn't fail rather than the failed one.
+  assert.equal(firstSelectableEntryKey(entries), "parts/ok.step");
+  assert.equal(firstSelectableEntryKey(entries, () => false), "parts/ok.step");
+});
+
+test("firstSelectableEntry falls back to the first entry when every entry errored", () => {
+  const entries = [
+    { file: "parts/a.step", artifact: { ok: false } },
+    { file: "parts/b.step", artifact: { ok: false } },
+  ];
+
+  assert.equal(firstSelectableEntryKey(entries), "parts/a.step");
+});
+
+test("firstSelectableEntry handles an empty or invalid catalog", () => {
+  assert.equal(firstSelectableEntry([]), null);
+  assert.equal(firstSelectableEntry(null), null);
+  assert.equal(firstSelectableEntryKey([]), "");
+  assert.equal(firstSelectableEntryKey(undefined), "");
 });

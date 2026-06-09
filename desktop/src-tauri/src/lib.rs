@@ -140,6 +140,7 @@ pub fn run() {
             app::app_login_claude,
             app::app_submit_login_code,
             app::app_panda_login,
+            app::app_cancel_panda_login,
             app::app_set_auth_mode,
             app::app_install_orcaslicer,
             // catalog

@@ -50,6 +50,9 @@ export default function WelcomeScreen({ onComplete }) {
   const welcomeRef = useRef(null);
   const activeFlowRef = useRef(null);
   const pollTimerRef = useRef(0);
+  // Set when the user cancels an in-flight sign-in so the resolving flow returns
+  // quietly to idle instead of flashing an error.
+  const cancelledRef = useRef(false);
   // Mirror pandaState into a ref so the poll loop can read the latest value
   // without taking it as an effect dependency (which would re-subscribe the
   // timer — and cancel the in-flight flow — on every transition).
@@ -144,7 +147,9 @@ export default function WelcomeScreen({ onComplete }) {
         });
         activeFlowRef.current = flow;
         void flow.start().then(() => {
-          if (flow.state === "done") {
+          if (cancelledRef.current) {
+            resolve(false);
+          } else if (flow.state === "done") {
             resolve(true);
           } else {
             setPandaError(describeClaudeInstallProgress(flow.progress));
@@ -170,7 +175,9 @@ export default function WelcomeScreen({ onComplete }) {
         });
         activeFlowRef.current = flow;
         void flow.start().then(() => {
-          if (flow.state === "done") {
+          if (cancelledRef.current) {
+            resolve(false);
+          } else if (flow.state === "done") {
             resolve(true);
           } else {
             setPandaError(describePandaLoginProgress(flow.progress));
@@ -182,8 +189,21 @@ export default function WelcomeScreen({ onComplete }) {
     [],
   );
 
+  // Abandon an in-flight sign-in: tell Rust to drop the pending login (so it
+  // doesn't wait out the 10-min timeout), stop the local flow, and reset to idle
+  // so "Use my own Claude Code" is immediately usable again.
+  const cancelPandaLogin = useCallback(() => {
+    cancelledRef.current = true;
+    if (activeFlowRef.current) activeFlowRef.current.cancel();
+    void transport.app_cancel_panda_login().catch(() => {});
+    setPandaState("idle");
+    setPandaProgress(null);
+    setPandaError("");
+  }, []);
+
   const signInWithPanda = useCallback(async () => {
     if (busy) return;
+    cancelledRef.current = false;
     setPandaError("");
     setPandaProgress(null);
 
@@ -333,7 +353,7 @@ export default function WelcomeScreen({ onComplete }) {
               {pandaError}
             </p>
           ) : null}
-          <div>
+          <div className="flex items-center gap-2">
             <Button
               variant="default"
               onClick={() => void signInWithPanda()}
@@ -355,6 +375,15 @@ export default function WelcomeScreen({ onComplete }) {
                 </>
               )}
             </Button>
+            {pandaState === "installing" || pandaState === "signing_in" ? (
+              <Button
+                variant="ghost"
+                onClick={() => cancelPandaLogin()}
+                data-testid="panda-sign-in-cancel"
+              >
+                Cancel
+              </Button>
+            ) : null}
           </div>
         </div>
 

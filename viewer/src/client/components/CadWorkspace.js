@@ -170,6 +170,7 @@ import {
   collectSidebarDirectoryIds,
   findEntryByUrlPath,
   fileKey,
+  firstSelectableEntryKey,
   missingFileRefForCatalog,
   readCadParam,
   readCadRefQueryParams,
@@ -364,6 +365,10 @@ function describePrintError(err) {
 // the stage word rather than a percent, which would otherwise sit frozen at a
 // single value for the whole (potentially multi-minute) slice.
 const SLICE_STAGE_LABELS = {
+  // First-run on a machine with no slicer: the backend installs OrcaSlicer on
+  // demand (~150 MB) before slicing, and streams this stage so the button shows
+  // progress instead of a silent multi-minute hang.
+  installing_slicer: "Installing slicer…",
   preparing: "Preparing…",
   slicing: "Slicing…",
   running: "Slicing…",
@@ -5750,6 +5755,56 @@ export default function CadWorkspace({
       setAutoSelectGcodePath("");
     }
   }, [autoSelectGcodePath, lookupEntries, handleSelectEntry]);
+
+  // Land the viewer on a real file when nothing valid is selected — on initial
+  // load (no `?file=`) and after a project switch (the prior project's
+  // `?file=` no longer resolves, which otherwise leaves a stale "File does not
+  // exist" alert). Pick the first renderable, non-error model so the user sees
+  // geometry instead of an empty/error viewport. Deliberately yields to any
+  // pending *specific* selection — a still-resolving valid `?file=`/cadRef
+  // param, a cross-project file click, or a post-build auto-open — so this only
+  // fills the gap when no targeted file is on its way.
+  useEffect(() => {
+    if (!catalogHydrated || catalogRefreshing || !catalogEntries.length) {
+      return;
+    }
+    if (selectedKey && entryMap.has(selectedKey)) {
+      return;
+    }
+    if (
+      fileParamSelectionPending ||
+      pendingCrossProjectSelectionRef.current ||
+      pendingCadRefQueryParams.length ||
+      autoSelectStem ||
+      autoSelectGcodePath
+    ) {
+      return;
+    }
+    // A specific selection may resolve in the same commit as this effect (e.g.
+    // a cross-project file click that writes `?file=` and clears its pending
+    // ref just before we run). Re-read the URL fresh — if it now points at a
+    // real entry, that targeted file is the selection; don't race it.
+    const urlKey = selectedEntryKeyFromUrl(lookupEntries);
+    if (urlKey && entryMap.has(urlKey)) {
+      return;
+    }
+    const nextKey = firstSelectableEntryKey(catalogEntries, entryHasMesh);
+    if (nextKey) {
+      handleSelectEntry(nextKey);
+    }
+  }, [
+    autoSelectGcodePath,
+    autoSelectStem,
+    catalogEntries,
+    catalogHydrated,
+    catalogRefreshing,
+    entryMap,
+    fileParamSelectionPending,
+    handleSelectEntry,
+    lookupEntries,
+    pendingCadRefQueryParams,
+    selectedKey
+  ]);
 
   const handleRevealEntryInExplorerView = useCallback((entry) => {
     const targetKey = fileKey(entry);

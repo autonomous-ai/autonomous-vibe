@@ -104,7 +104,7 @@ async fn run_slice_job(
     inspect_mesh_input(&mesh_path)?;
 
     let settings = read_app_settings_for_slice().await;
-    let slicer_bin = resolve_slicer_binary(settings.slicer_binary_path.as_str())?;
+    let slicer_bin = resolve_or_install_slicer(app, settings.slicer_binary_path.as_str()).await?;
 
     let gcode_path = gcode_path_for(&mesh_path);
     let out_dir = gcode_path
@@ -181,13 +181,7 @@ async fn run_slice_job(
     let exec_result = exec_result?;
 
     if !exec_result.success {
-        // OrcaSlicer often prints its real failure reason to stdout rather than
-        // stderr, so summarize stderr when present and fall back to stdout.
-        let summary = if exec_result.stderr.iter().any(|b| !b.is_ascii_whitespace()) {
-            stderr_summary(&exec_result.stderr)
-        } else {
-            stderr_summary(&exec_result.stdout)
-        };
+        let summary = friendly_slice_failure(&exec_result.stdout, &exec_result.stderr);
         return Err(IpcError::new("SLICE_FAILED", summary).with_detail(serde_json::json!({
             "exitCode": exec_result.exit_code,
             "command": format!("{} {}", slicer_bin.display(), args.join(" ")),
@@ -344,16 +338,35 @@ fn effective_profiles(
     )
 }
 
-/// Locate the bundled OrcaSlicer profile tree relative to its binary. On macOS
-/// OrcaSlicer lives at `<…>.app/Contents/MacOS/OrcaSlicer` with its profiles at
-/// `<…>.app/Contents/Resources/profiles` — true for both our shipped sidecar
-/// and a drag-to-Applications install. Returns `None` when that layout isn't
-/// present (e.g. a bare Linux/Windows sidecar).
+/// Locate the bundled OrcaSlicer profile tree relative to its binary, across
+/// every packaging layout — so a fresh install slices against real Bambu
+/// profiles on *all* platforms, not just macOS. Without this the CLI falls back
+/// to OrcaSlicer's internal default config, which fails validation with
+/// "Relative extruder addressing requires resetting the extruder position …
+/// Add G92 E0 to layer_gcode" → `Slic3r::CLI::run found error`.
+///
+/// Layouts checked, in order:
+///   - Windows/Linux portable: `<install>/resources/profiles` (exe at the tree
+///     root, beside its `resources/`),
+///   - macOS `.app`: `<…>/Contents/Resources/profiles` (binary in
+///     `Contents/MacOS`, profiles a sibling under `Contents/Resources`).
+///
+/// Both lowercase (`resources`, Linux is case-sensitive) and capitalized
+/// (`Resources`, the macOS bundle) spellings are covered. Returns `None` only
+/// when no profile tree is present.
 fn slicer_profiles_dir(slicer_bin: &Path) -> Option<PathBuf> {
-    let macos_dir = slicer_bin.parent()?; // …/Contents/MacOS
-    let contents = macos_dir.parent()?; // …/Contents
-    let profiles = contents.join("Resources/profiles");
-    profiles.is_dir().then_some(profiles)
+    let bin_dir = slicer_bin.parent()?;
+    let mut candidates = vec![
+        bin_dir.join("resources/profiles"),
+        bin_dir.join("Resources/profiles"),
+    ];
+    // macOS: the binary sits in `Contents/MacOS`, so the profile tree is one
+    // level up under `Contents/Resources`.
+    if let Some(contents) = bin_dir.parent() {
+        candidates.push(contents.join("Resources/profiles"));
+        candidates.push(contents.join("resources/profiles"));
+    }
+    candidates.into_iter().find(|p| p.is_dir())
 }
 
 struct DefaultProfiles {
@@ -560,6 +573,39 @@ fn variant_count(obj: &Map<String, Value>) -> usize {
 // Slicer-binary resolution
 // ---------------------------------------------------------------------------
 
+/// Resolve OrcaSlicer, installing it on first use if the machine has none.
+///
+/// This is what makes slicing work out of the box on *every* machine rather
+/// than per-machine hand-holding: the bundle ships only a tiny placeholder
+/// sidecar (the real slicer is ~150 MB — too large to embed), and a user may
+/// have finished onboarding before the in-app installer existed. So "no slicer
+/// yet" is an expected, recoverable state on a fresh install, not a hard error.
+/// We download + install OrcaSlicer into the managed dir, then retry the
+/// resolve exactly once. The placeholder sidecar can never be mistaken for a
+/// real binary (`file_is_executable` requires the PE `MZ` magic on Windows), so
+/// a stub install reliably surfaces as `SLICER_NOT_FOUND` and triggers this.
+///
+/// Install progress streams over `slicer_install_progress`; we also emit one
+/// coarse `slice_progress` frame so the Slice button reads "Installing slicer…"
+/// instead of hanging silently through a multi-minute first-run download.
+async fn resolve_or_install_slicer(app: &AppHandle, configured: &str) -> Result<PathBuf, IpcError> {
+    match resolve_slicer_binary(configured) {
+        Ok(bin) => Ok(bin),
+        Err(e) if e.code == "SLICER_NOT_FOUND" => {
+            let _ = app.emit(
+                SLICE_PROGRESS_EVENT,
+                SliceProgressEvent {
+                    stage: "installing_slicer".to_string(),
+                    progress: 0.1,
+                },
+            );
+            crate::commands::app::app_install_orcaslicer(app.clone()).await?;
+            resolve_slicer_binary(configured)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 pub(crate) fn resolve_slicer_binary(configured: &str) -> Result<PathBuf, IpcError> {
     let trimmed = configured.trim();
     if !trimmed.is_empty() {
@@ -639,6 +685,13 @@ fn well_known_slicer_paths() -> Vec<PathBuf> {
 
     #[cfg(target_os = "windows")]
     {
+        // Panda's own managed install (the portable zip we extract during
+        // onboarding) lives here — checked first so a Panda-installed slicer
+        // is found without the user touching Settings.
+        if let Some(dir) = managed_slicer_dir() {
+            out.push(dir.join("orca-slicer.exe"));
+            out.push(dir.join("OrcaSlicer.exe"));
+        }
         for root in ["C:/Program Files", "C:/Program Files (x86)"] {
             out.push(PathBuf::from(root).join("OrcaSlicer/orca-slicer.exe"));
             out.push(PathBuf::from(root).join("OrcaSlicer/OrcaSlicer.exe"));
@@ -647,6 +700,18 @@ fn well_known_slicer_paths() -> Vec<PathBuf> {
 
     let _ = &home; // silence unused warning on platforms that don't read it
     out
+}
+
+/// Directory Panda extracts its managed OrcaSlicer into on Windows. The
+/// upstream Windows release is a portable zip with no installer, so Panda owns
+/// the install location: `%LOCALAPPDATA%\Panda\OrcaSlicer`. Shared by
+/// `well_known_slicer_paths()` (resolution) and the auto-installer in
+/// `commands::app` so the two never disagree. `None` only if `LOCALAPPDATA` is
+/// unset (effectively never on a real Windows session).
+#[cfg(target_os = "windows")]
+pub(crate) fn managed_slicer_dir() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .map(|base| PathBuf::from(base).join("Panda").join("OrcaSlicer"))
 }
 
 /// Candidate paths for the OrcaSlicer we ship as a Tauri sidecar/resource,
@@ -709,9 +774,37 @@ fn file_is_executable(p: &Path) -> bool {
     // On Unix the placeholder file may be 0-bytes. Treat empty files as
     // "not executable" so we fall through to which::which() in tests.
     match std::fs::metadata(p) {
-        Ok(m) => m.is_file() && m.len() > 0,
-        Err(_) => false,
+        Ok(m) if m.is_file() && m.len() > 0 => {
+            // On Windows the staged `externalBin` sidecar is a tiny *text*
+            // placeholder (the 4-byte literal "stub") when no real OrcaSlicer
+            // was bundled. A non-empty file isn't enough: require the DOS "MZ"
+            // PE magic so a stub can never shadow a real install and get
+            // spawned — Windows rejects a non-PE with os error 216
+            // (ERROR_EXE_MACHINE_TYPE_MISMATCH), which is opaque to the user.
+            #[cfg(target_os = "windows")]
+            {
+                file_starts_with_mz(p)
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                true
+            }
+        }
+        _ => false,
     }
+}
+
+/// True when `p` begins with the DOS `MZ` magic (`0x4D 0x5A`) — the first two
+/// bytes of every Windows PE executable. Used to reject non-executable
+/// placeholders during slicer resolution.
+#[cfg(target_os = "windows")]
+fn file_starts_with_mz(p: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(p) else {
+        return false;
+    };
+    let mut magic = [0u8; 2];
+    f.read_exact(&mut magic).is_ok() && &magic == b"MZ"
 }
 
 // ---------------------------------------------------------------------------
@@ -1018,6 +1111,38 @@ async fn spawn_slicer(bin: &Path, args: &[String]) -> Result<SlicerOutcome, IpcE
                 ),
             ))
         }
+    }
+}
+
+/// Turn a failed OrcaSlicer run into a clear, actionable message. The CLI's own
+/// last stderr line is usually the opaque `Slic3r::CLI::run found error, exit`;
+/// the real, human-meaningful reason is an `[error]` line buried earlier in
+/// stdout. Recognize the common ones and explain what to do; otherwise fall back
+/// to the raw last line so nothing is hidden (the full tails ride in the IPC
+/// error detail regardless).
+fn friendly_slice_failure(stdout: &[u8], stderr: &[u8]) -> String {
+    let haystack = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(stdout),
+        String::from_utf8_lossy(stderr)
+    )
+    .to_lowercase();
+
+    // Model larger than the build volume, or positioned off the plate, so the
+    // slicer finds nothing inside the printable area. This is the cryptic one:
+    // its only stderr line is `Slic3r::CLI::run found error, exit`.
+    if haystack.contains("no object is fully inside the print volume")
+        || haystack.contains("nothing to be sliced")
+    {
+        return "This model doesn't fit the printer bed — it's larger than the build area or sits off the plate. Scale it down or split it into smaller parts, then slice again.".to_string();
+    }
+
+    // OrcaSlicer often prints its real failure reason to stdout rather than
+    // stderr, so summarize stderr when present and fall back to stdout.
+    if stderr.iter().any(|b| !b.is_ascii_whitespace()) {
+        stderr_summary(stderr)
+    } else {
+        stderr_summary(stdout)
     }
 }
 
@@ -1797,6 +1922,48 @@ G1 X0 Y0
         assert_eq!(err.code, "SLICER_NOT_FOUND");
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn file_is_executable_rejects_text_stub_accepts_pe() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("panda-exec-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // The exact placeholder Tauri stages when no real sidecar was bundled.
+        let stub = dir.join("orcaslicer-stub.exe");
+        std::fs::File::create(&stub).unwrap().write_all(b"stub").unwrap();
+        assert!(
+            !file_is_executable(&stub),
+            "a 4-byte text stub must not be treated as executable"
+        );
+
+        // A file that begins with the DOS MZ magic looks like a real PE.
+        let pe = dir.join("orcaslicer-pe.exe");
+        std::fs::File::create(&pe).unwrap().write_all(b"MZ\x90\x00rest").unwrap();
+        assert!(
+            file_is_executable(&pe),
+            "a file with the MZ PE magic must be treated as executable"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn well_known_paths_include_managed_install_dir() {
+        // Whatever LOCALAPPDATA is on the test host, the managed OrcaSlicer
+        // path must be a resolution candidate so a Panda-installed slicer is
+        // found with no configured path.
+        let Some(dir) = managed_slicer_dir() else {
+            return; // no LOCALAPPDATA in this env — nothing to assert
+        };
+        let cands = well_known_slicer_paths();
+        assert!(
+            cands.iter().any(|p| p == &dir.join("orca-slicer.exe")),
+            "managed install dir must be a well-known candidate"
+        );
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn well_known_paths_include_applications_app_bundle() {
@@ -1913,10 +2080,197 @@ G1 X0 Y0
     }
 
     #[test]
+    fn slicer_profiles_dir_finds_windows_linux_portable_layout() {
+        // Regression: on Windows/Linux the exe sits at the install root beside
+        // `resources/profiles`. The resolver used to only know the macOS
+        // `.app/Contents/Resources/profiles` layout, so a fresh install passed
+        // NO profiles and OrcaSlicer's default config failed CLI validation
+        // ("Add G92 E0 to layer_gcode" → Slic3r::CLI::run found error).
+        let root = std::env::temp_dir().join(format!("panda-prof-win-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let profiles = root.join("resources/profiles");
+        std::fs::create_dir_all(&profiles).unwrap();
+        let exe = root.join("orca-slicer.exe");
+        std::fs::write(&exe, b"MZ").unwrap();
+
+        assert_eq!(slicer_profiles_dir(&exe).as_deref(), Some(profiles.as_path()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn slicer_profiles_dir_finds_macos_app_layout() {
+        // macOS: binary in Contents/MacOS, profiles under Contents/Resources.
+        let root = std::env::temp_dir().join(format!("panda-prof-mac-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let macos = root.join("Contents/MacOS");
+        let profiles = root.join("Contents/Resources/profiles");
+        std::fs::create_dir_all(&macos).unwrap();
+        std::fs::create_dir_all(&profiles).unwrap();
+        let exe = macos.join("OrcaSlicer");
+        std::fs::write(&exe, b"\x7fELF").unwrap();
+
+        assert_eq!(slicer_profiles_dir(&exe).as_deref(), Some(profiles.as_path()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn slicer_profiles_dir_none_without_tree() {
+        let root = std::env::temp_dir().join(format!("panda-prof-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let exe = root.join("orca-slicer.exe");
+        std::fs::write(&exe, b"MZ").unwrap();
+        assert!(slicer_profiles_dir(&exe).is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// End-to-end smoke test of the real slice pipeline (profile resolution →
+    /// normalization → CLI spawn) against an actually-installed OrcaSlicer.
+    /// `#[ignore]`d because it needs the ~150 MB slicer present and takes tens of
+    /// seconds; run manually after a slicer install with:
+    ///   cargo test -- --ignored slice_pipeline_e2e
+    /// Verifies the Windows profile-dir fix actually yields gcode (no
+    /// "Slic3r::CLI::run found error"). Skips cleanly if no slicer/mesh is found.
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    #[ignore]
+    async fn slice_pipeline_e2e_produces_gcode() {
+        let Some(local) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) else {
+            eprintln!("skip: LOCALAPPDATA unset");
+            return;
+        };
+        let slicer_bin = local.join("Panda/OrcaSlicer/orca-slicer.exe");
+        if !slicer_bin.exists() {
+            eprintln!("skip: no installed slicer at {}", slicer_bin.display());
+            return;
+        }
+        // Deterministic input: a 20 mm cube centered well inside the X1C bed, so
+        // the test exercises the profile pipeline (the bug) and never the
+        // separate "object doesn't fit the plate" condition.
+        let mesh = std::env::temp_dir().join(format!("panda-e2e-cube-{}.stl", std::process::id()));
+        std::fs::write(&mesh, cube_stl_ascii(118.0, 118.0, 0.0, 20.0)).unwrap();
+
+        let settings = AppSettings::default();
+        let (settings_profile, filament_profile) =
+            effective_profiles(&settings, &slicer_bin, FilamentKind::Pla);
+        assert!(
+            !settings_profile.is_empty(),
+            "the profile-dir fix must resolve bundled Bambu profiles; got empty"
+        );
+
+        let tmp = make_profile_tmpdir().expect("temp profile dir");
+        let settings_profile = normalize_settings_list(&settings_profile, &tmp);
+        let filament_profile = normalize_profile_to(&filament_profile, &tmp, "filament.json");
+
+        let out_dir = std::env::temp_dir().join(format!("panda-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let export_3mf = out_dir.join("plate.3mf");
+        let args = build_orcaslicer_args(SlicerInvocation {
+            out_dir: &out_dir,
+            mesh: &mesh,
+            settings_profile: &settings_profile,
+            filament_profile: &filament_profile,
+            export_3mf: &export_3mf,
+        });
+
+        let outcome = spawn_slicer(&slicer_bin, &args).await.expect("spawn ok");
+        let gcode_count = std::fs::read_dir(&out_dir)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| {
+                        e.path()
+                            .extension()
+                            .and_then(|x| x.to_str())
+                            .map(|x| x.eq_ignore_ascii_case("gcode"))
+                            .unwrap_or(false)
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        let last_line = String::from_utf8_lossy(&outcome.stdout)
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .to_string();
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&out_dir);
+        let _ = std::fs::remove_file(&mesh);
+
+        assert!(outcome.success, "slice failed: {last_line}");
+        assert!(gcode_count > 0, "no gcode produced");
+    }
+
+    /// Minimal ASCII STL of an axis-aligned cube with its low corner at
+    /// (`x`, `y`, `z`) and edge length `s`. Enough for a slice smoke test.
+    #[cfg(target_os = "windows")]
+    fn cube_stl_ascii(x: f64, y: f64, z: f64, s: f64) -> String {
+        let v = [
+            [x, y, z],
+            [x + s, y, z],
+            [x + s, y + s, z],
+            [x, y + s, z],
+            [x, y, z + s],
+            [x + s, y, z + s],
+            [x + s, y + s, z + s],
+            [x, y + s, z + s],
+        ];
+        // 12 triangles (2 per face), winding outward (normals left zeroed —
+        // slicers recompute them).
+        let faces = [
+            [0, 3, 2],
+            [0, 2, 1], // bottom
+            [4, 5, 6],
+            [4, 6, 7], // top
+            [0, 1, 5],
+            [0, 5, 4], // front
+            [1, 2, 6],
+            [1, 6, 5], // right
+            [2, 3, 7],
+            [2, 7, 6], // back
+            [3, 0, 4],
+            [3, 4, 7], // left
+        ];
+        let mut s_out = String::from("solid cube\n");
+        for f in faces {
+            s_out.push_str("facet normal 0 0 0\nouter loop\n");
+            for idx in f {
+                let p = v[idx];
+                s_out.push_str(&format!("vertex {} {} {}\n", p[0], p[1], p[2]));
+            }
+            s_out.push_str("endloop\nendfacet\n");
+        }
+        s_out.push_str("endsolid cube\n");
+        s_out
+    }
+
+    #[test]
     fn stderr_summary_picks_last_nonempty_line() {
         let stderr = b"warning: blah\nerror: profile not loaded\n";
         assert_eq!(stderr_summary(stderr), "error: profile not loaded");
         assert_eq!(stderr_summary(b""), "slicer exited non-zero with no stderr");
+    }
+
+    #[test]
+    fn friendly_slice_failure_explains_off_bed_model() {
+        // The real "model too big / off plate" failure: the human reason is an
+        // [error] line in stdout, while stderr only has the opaque CLI line.
+        let stdout = b"best:-0.0 -0.0 1.0, costs:...\n[2026-06-09 14:57:22] [error]   plate 1: Nothing to be sliced, Either the print is empty or no object is fully inside the print volume before apply.\n";
+        let stderr = b"\nSlic3r::CLI::run found error, exit\n";
+        let msg = friendly_slice_failure(stdout, stderr);
+        assert!(msg.contains("doesn't fit the printer bed"), "got: {msg}");
+        assert!(!msg.contains("Slic3r::CLI"), "must not leak the opaque line");
+    }
+
+    #[test]
+    fn friendly_slice_failure_falls_back_to_raw_summary() {
+        // Unknown failure: surface the raw last line rather than a wrong guess.
+        let stdout = b"";
+        let stderr = b"error: something unexpected went wrong\n";
+        assert_eq!(
+            friendly_slice_failure(stdout, stderr),
+            "error: something unexpected went wrong"
+        );
     }
 
     // --- Profile normalization -------------------------------------------

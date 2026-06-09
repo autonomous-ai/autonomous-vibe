@@ -139,6 +139,27 @@ export default function AuthModeControl() {
     [busy, hasToken, refresh],
   );
 
+  // Sign out of the Panda proxy entirely: clears the stored token and reverts
+  // to local Claude. Distinct from switchTo(false), which only flips the mode
+  // but keeps the token for a later one-click switch back.
+  const signOutPanda = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const next = await transport.app_panda_logout();
+      setSettings(next);
+    } catch (err) {
+      setError(
+        err && typeof err === "object" && "message" in err
+          ? String(err.message || "Failed to sign out")
+          : String(err || "Failed to sign out"),
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [busy]);
+
   const label = usePanda ? "Panda" : "Your Claude";
   const dotClass = usePanda ? "bg-emerald-500" : "bg-sky-500";
 
@@ -211,6 +232,18 @@ export default function AuthModeControl() {
               ) : null}
             </button>
           </div>
+
+          {hasToken ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void signOutPanda()}
+              data-testid="auth-mode-panda-logout"
+              className="self-start text-xs text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline disabled:opacity-50"
+            >
+              Sign out of Panda
+            </button>
+          ) : null}
 
           {pandaProgress ? (
             <div className="text-xs text-muted-foreground">

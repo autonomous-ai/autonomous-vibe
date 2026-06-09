@@ -729,6 +729,16 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
         hasOnboarded: true,
         autoUpdate: false,
       } as unknown as T;
+    case "app_panda_logout":
+      // Echo a signed-out settings snapshot so the badge falls back to local
+      // in browser dev.
+      return {
+        defaultFilament: "PLA",
+        slicerBinaryPath: "",
+        usePandaCloud: false,
+        hasOnboarded: true,
+        autoUpdate: false,
+      } as unknown as T;
     case "app_install_claude_code":
       // Browser dev stub. The real command runs only inside Tauri — in
       // a plain browser there's no shell to run sh on. Return a labeled
@@ -926,6 +936,10 @@ const transportBase = {
   // PANDA_NOT_SIGNED_IN otherwise). Returns the updated settings.
   app_set_auth_mode: (usePandaCloud: boolean) =>
     invoke<AppSettings>("app_set_auth_mode", { usePandaCloud }),
+  // Sign out of the Panda proxy: clears the stored token and flips
+  // use_panda_cloud off so chat falls back to the user's own local Claude.
+  // Returns the updated settings.
+  app_panda_logout: () => invoke<AppSettings>("app_panda_logout"),
   app_install_orcaslicer: () =>
     invoke<InstalledSlicer>("app_install_orcaslicer"),
 

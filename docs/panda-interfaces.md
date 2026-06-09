@@ -542,6 +542,12 @@ interface AppSettings {
 function app_settings_read(): Promise<AppSettings>;
 function app_settings_write(s: AppSettings): Promise<void>;
 
+// Panda proxy sign-out: clears pandaToken + pandaBaseUrl and flips usePandaCloud
+// off, so the next chat turn falls back to the user's own local Claude Code auth
+// (the inverse of the app_panda_login sign-in). Idempotent. Returns the updated
+// settings so the UI can reflect the new mode immediately.
+function app_panda_logout(): Promise<AppSettings>;
+
 // Track I — auto-install Claude Code from the first-run wizard.
 //
 // Fetches Anthropic's official installer over HTTPS, then runs it through

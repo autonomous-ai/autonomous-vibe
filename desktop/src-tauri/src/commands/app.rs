@@ -1153,6 +1153,22 @@ pub async fn app_set_auth_mode(use_panda_cloud: bool) -> IpcResult<AppSettings> 
     Ok(settings)
 }
 
+/// Sign out of the Panda proxy: drop the stored `panda_token` + `panda_base_url`
+/// and flip `use_panda_cloud` off, so the next turn falls back to the user's own
+/// local Claude Code auth. The inverse of [`store_panda_session`]; the rest of
+/// settings is preserved. Idempotent — a no-token state logs out to the same
+/// result. Returns the updated settings so the UI can reflect the new mode
+/// immediately (matching [`app_set_auth_mode`]).
+#[tauri::command]
+pub async fn app_panda_logout() -> IpcResult<AppSettings> {
+    let mut settings = load_settings().await.unwrap_or_default();
+    settings.panda_token = None;
+    settings.panda_base_url = None;
+    settings.use_panda_cloud = false;
+    app_settings_write(settings.clone()).await?;
+    Ok(settings)
+}
+
 /// Drive the Panda proxy sign-in (PKCE + deep-link OAuth). Opens the browser,
 /// waits for the `myide://auth/callback` deep link, exchanges the code,
 /// and persists the session. Progress streams via `panda_login_progress`. In

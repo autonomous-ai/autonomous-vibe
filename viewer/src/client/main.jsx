@@ -42,12 +42,28 @@ function ensureFavicon() {
   icon.href = `${faviconUrl}?v=planetary-gear-workbench`;
 }
 
+// In the production desktop bundle the WKWebView's native right-click menu
+// exposes "Reload"/"Back"/"Forward", which silently throws away in-flight chat
+// and viewer state. Suppress the native context menu in production builds only;
+// in dev we keep it so the inspector's "Inspect Element" stays reachable. The
+// app's own right-click menus (Radix FileAccessContextMenu) are unaffected —
+// they open via React state and preventDefault on their own trigger regardless.
+function suppressNativeContextMenuInProduction() {
+  if (typeof document === "undefined" || !import.meta.env.PROD) {
+    return;
+  }
+  document.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+  });
+}
+
 function bootstrap() {
   const rootElement = document.getElementById(ROOT_ID);
   if (!rootElement) {
     throw new Error(`Missing #${ROOT_ID} mount point.`);
   }
   ensureFavicon();
+  suppressNativeContextMenuInProduction();
   document.title = "Panda";
   const cachedRoot = globalThis[ROOT_CACHE_KEY];
   const root = cachedRoot?.element === rootElement && cachedRoot?.root

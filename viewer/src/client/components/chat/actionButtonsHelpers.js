@@ -1,6 +1,13 @@
 // Pure printer/slice helpers (used by CadWorkspace), split out so node:test can
 // import them without JSX. Keep this file dependency-free.
 
+// Window event dispatched when the print config (paired printers / default
+// device) may have changed from a UI that doesn't own the toolbar — e.g. the
+// native Printer menu's Add-printer dialog in ProjectMenu. CadWorkspace listens
+// for it to re-read the config so the Print button label stays in sync without a
+// settings-changed backend event or an app reload.
+export const PRINT_CONFIG_CHANGED_EVENT = "panda:print-config-changed";
+
 export function pickPrinterForSlice(printerList, preferredId = "") {
   const list = Array.isArray(printerList) ? printerList : [];
   // An explicit user default (AppSettings.defaultPrinterId) wins whenever it

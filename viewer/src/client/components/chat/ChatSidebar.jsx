@@ -7,6 +7,7 @@ import ChatHistory from "./ChatHistory";
 import ChatInput from "./ChatInput";
 // import ActionButtons from "./ActionButtons";
 import AuthModeControl from "./AuthModeControl";
+import PandaReauthBanner from "./PandaReauthBanner";
 import { MessageSquare } from "lucide-react";
 
 const SIDEBAR_WIDTH = 440;
@@ -67,6 +68,7 @@ export default function ChatSidebar({
   className,
 }) {
   const lastError = useChatStore((state) => state.lastError);
+  const needsPandaReauth = useChatStore((state) => state.needsPandaReauth);
   const history = useChatStore((state) => state.history);
   const projectId = useChatStore((state) => state.currentProjectId);
   const currentProjectName = useProjectsStore((state) => {
@@ -77,6 +79,7 @@ export default function ChatSidebar({
   const summaryTitle = currentProjectName.trim() || (history.length ? "Untitled chat" : "New chat");
 
   const resizeStateRef = useRef(null);
+  const chatInputRef = useRef(null);
   // The window-level pointer handlers below are installed once; these refs keep
   // them reading the latest layout and callbacks without re-subscribing.
   const layoutRef = useRef(layout);
@@ -163,6 +166,12 @@ export default function ChatSidebar({
     [width],
   );
 
+  const handleRequestInputFocus = useCallback(() => {
+    window.requestAnimationFrame?.(() => {
+      chatInputRef.current?.focus({ preventScroll: true });
+    });
+  }, []);
+
   return (
     <aside
       data-slot="chat-sidebar"
@@ -182,7 +191,7 @@ export default function ChatSidebar({
         className="absolute left-0 top-0 z-40 h-full w-1.5 -translate-x-1/2 cursor-col-resize touch-none bg-transparent transition-colors hover:bg-primary/30"
       />
 
-      <header className="flex items-center gap-2 border-b border-border/60 px-4 py-2.5">
+      <header className="flex h-11 shrink-0 items-center gap-2.5 border-b border-border/60 px-3.5">
         <MessageSquare className="size-4 text-muted-foreground" aria-hidden />
         <div className="min-w-0 flex-1">
           <div
@@ -200,22 +209,28 @@ export default function ChatSidebar({
       <div className="min-h-0 flex-1">
         {isEmpty ? (
           <div
-            data-slot="chat-empty-intro"
-            className="flex h-full flex-col items-center justify-center gap-1 px-3.5 text-center text-xs text-muted-foreground"
+            data-slot="chat-empty-composer"
+            className="flex h-full flex-col items-center justify-center gap-4 px-3.5"
           >
-            <p>Describe what you want to print.</p>
-            <p className="opacity-70">I'll draft a plan first — you can edit and approve it before I build.</p>
-            <p className="opacity-70">Click a face on the model to refer to it in your message.</p>
+            <div className="flex flex-col items-center gap-1 text-center text-xs text-muted-foreground">
+              <p>Describe what you want to print.</p>
+              <p className="opacity-70">I'll draft a plan first — you can edit and approve it before I build.</p>
+              <p className="opacity-70">Click a face on the model to refer to it in your message.</p>
+            </div>
+            <ChatInput ref={chatInputRef} className="w-full bg-transparent px-0 py-0" />
           </div>
         ) : (
           <ChatHistory
             history={history}
             onOpenArtifact={onOpenArtifact}
+            onRequestInputFocus={handleRequestInputFocus}
           />
         )}
       </div>
 
-      {lastError ? (
+      <PandaReauthBanner />
+
+      {lastError && !needsPandaReauth ? (
         <div
           data-slot="chat-error-banner"
           className="border-t border-destructive/40 bg-destructive/10 px-3 py-1 text-xs text-destructive"
@@ -224,7 +239,7 @@ export default function ChatSidebar({
         </div>
       ) : null}
 
-      <ChatInput />
+      {isEmpty ? null : <ChatInput ref={chatInputRef} />}
     </aside>
   );
 }

@@ -7,6 +7,7 @@ pub mod files;
 pub mod step;
 pub mod chat;
 pub mod claude_driver;
+pub mod claude_stream_debug;
 pub mod slicer;
 pub mod printer;
 pub mod cloud;

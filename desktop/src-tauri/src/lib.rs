@@ -57,6 +57,12 @@ pub fn run() {
             // Devtools no longer auto-open: in a debug build the docked
             // inspector stole half the window (and, for automation, the chat
             // input). Opt in with `PANDA_DEVTOOLS=1` when you actually need it.
+            //
+            // Debug-only: the webview inspector isn't compiled into release
+            // builds (no `devtools` Cargo feature — see Cargo.toml), and
+            // `open_devtools()` only exists under `cfg(debug_assertions)` there,
+            // so this block must be debug-gated to compile in production.
+            #[cfg(debug_assertions)]
             if std::env::var("PANDA_DEVTOOLS").is_ok_and(|v| v != "0" && !v.is_empty()) {
                 if let Some(window) = tauri::Manager::get_webview_window(app, "main") {
                     window.open_devtools();

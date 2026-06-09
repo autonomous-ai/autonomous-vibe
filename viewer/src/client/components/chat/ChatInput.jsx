@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { ArrowUp, Plus, Square, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -19,7 +19,9 @@ import { blobToAttachment, imageFilesFromDataTransfer, MAX_ATTACHMENTS } from ".
 
 export { buildSendValue };
 
-export default function ChatInput({ className }) {
+const MAX_TEXTAREA_HEIGHT = 192; // tailwind max-h-48
+
+function ChatInput({ className }, ref) {
   const [value, setValue] = useState("");
   const turnInProgress = useChatStore((state) => state.turnInProgress);
   const pendingTokens = useChatStore((state) => state.pendingTokens);
@@ -165,6 +167,21 @@ export default function ChatInput({ className }) {
     window.requestAnimationFrame?.(() => textareaRef.current?.focus());
   }, []);
 
+  const adjustTextareaHeight = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "0px";
+    const nextHeight = Math.min(textarea.scrollHeight, MAX_TEXTAREA_HEIGHT);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > MAX_TEXTAREA_HEIGHT ? "auto" : "hidden";
+  }, []);
+
+  useImperativeHandle(ref, () => ({
+    focus(options) {
+      textareaRef.current?.focus(options);
+    },
+  }), []);
+
   // Auto-dismiss the notice so it doesn't linger.
   useEffect(() => {
     if (!notice) return undefined;
@@ -179,6 +196,10 @@ export default function ChatInput({ className }) {
   }, [turnInProgress]);
 
   const hasStrip = pendingTokens.length > 0 || pendingAttachments.length > 0;
+
+  useEffect(() => {
+    adjustTextareaHeight();
+  }, [value, hasStrip, adjustTextareaHeight]);
 
   return (
     <div
@@ -258,7 +279,7 @@ export default function ChatInput({ className }) {
           onPaste={handlePaste}
           placeholder="Do anything"
           rows={2}
-          className="min-h-10 flex-1 resize-none border-0 bg-transparent! px-0 py-0 text-sm shadow-none placeholder:text-muted-foreground/70 focus-visible:ring-0 dark:bg-transparent!"
+          className="scrollbar-thin min-h-10 resize-none border-0 bg-transparent! px-0 py-0 text-sm shadow-none placeholder:text-muted-foreground/70 focus-visible:ring-0 dark:bg-transparent!"
           data-slot="chat-input-textarea"
         />
 
@@ -330,3 +351,5 @@ export default function ChatInput({ className }) {
     </div>
   );
 }
+
+export default forwardRef(ChatInput);

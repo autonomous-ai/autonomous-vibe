@@ -51,7 +51,11 @@ function DesktopFloatingToolBar({
   canPrint = false,
   printing = false,
   printLabel = "Print",
-  handlePrint
+  handlePrint,
+  canOpenInStudio = false,
+  openingInStudio = false,
+  openInStudioLabel = "Open in Bambu Studio",
+  handleOpenInStudio
 }) {
   const dxfMode = renderFormat === RENDER_FORMAT.DXF;
   const urdfMode = renderFormat === RENDER_FORMAT.URDF;
@@ -135,6 +139,23 @@ function DesktopFloatingToolBar({
             >
               <Printer className="size-4" strokeWidth={2} aria-hidden="true" />
               {printLabel}
+            </ToolbarButton>
+          ) : null}
+
+          {/* Dedicated STL hand-off: always enabled (it needs no paired printer
+              or slice — just opens the model in the locally installed Bambu
+              Studio), disabled only while the open is in flight. */}
+          {canOpenInStudio ? (
+            <ToolbarButton
+              label={openInStudioLabel}
+              onClick={() => {
+                void handleOpenInStudio?.();
+              }}
+              disabled={openingInStudio}
+              className="h-9 w-auto gap-1.5 px-3 text-sm font-medium"
+            >
+              <Printer className="size-4" strokeWidth={2} aria-hidden="true" />
+              {openInStudioLabel}
             </ToolbarButton>
           ) : null}
         </div>

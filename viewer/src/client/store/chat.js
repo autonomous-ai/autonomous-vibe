@@ -23,8 +23,9 @@ import { __setTransportForTesting, getTransport } from "../lib/transport.ts";
  * @typedef {Object} ChatToolUseBlock
  * @property {"tool_use"} kind
  * @property {string} tool
+ * @property {string=} toolUseId
  * @property {unknown=} input
- * @property {"running"|"ok"|"error"} status
+ * @property {"running"|"ok"|"error"|"cancelled"} status
  *
  * @typedef {Object} ChatArtifactBlock
  * @property {"artifact"} kind
@@ -77,6 +78,11 @@ export const INITIAL_CHAT_STATE = Object.freeze({
   // transport) plus a local objectUrl (for an instant composer thumbnail).
   pendingAttachments: [],
   lastError: "",
+  // Set when a turn fails because the Panda proxy rejected auth (revoked/expired
+  // key → BE 401, surfaced as an `auth_expired` chat event). Drives the
+  // "Sign in again" banner; cleared on a successful re-login or the next
+  // turn_start. App-wide (not per-session) since the proxy key is global.
+  needsPandaReauth: false,
   // Project-relative path of the part the user currently has selected in the
   // workspace (the breadcrumb / Models rail). Drives the Slice button target
   // so "slice" acts on the viewed part, not just the most recent artifact.
@@ -110,6 +116,11 @@ export const INITIAL_CHAT_STATE = Object.freeze({
   // new chat turn may supersede it with a freshly generated/sliced model).
   lastSlice: { gcodeFile: "", gcode3mfFile: "" },
 });
+
+// User-facing copy when the Panda proxy key is revoked/expired (the BE 401 →
+// `auth_expired` event). Shown in the chat error block and the re-auth banner.
+export const PANDA_REAUTH_MESSAGE =
+  "Your Panda sign-in expired or was revoked. Sign in again to keep chatting.";
 
 // ---------------------------------------------------------------------------
 // Reducer — pure; the only place state evolves
@@ -176,27 +187,51 @@ function appendThinkingDelta(turn, text) {
   return { ...turn, blocks };
 }
 
-function appendToolUseStart(turn, tool, input) {
+function appendToolUseStart(turn, tool, input, toolUseId) {
   return {
     ...turn,
     blocks: [
       ...turn.blocks,
-      { kind: "tool_use", tool, input, status: "running" },
+      { kind: "tool_use", tool, toolUseId, input, status: "running" },
     ],
   };
 }
 
-function markToolUseEnd(turn, tool, ok) {
+// Resolve a running tool block to ok/error. Pair by `toolUseId` when present
+// (names collide when several tools of the same kind run in one turn — matching
+// by name would flip the wrong block and strand the real one on "Running");
+// fall back to name only for legacy/id-less events. An end with no matching
+// start is still recorded, for observability.
+function markToolUseEnd(turn, toolUseId, tool, ok) {
   const blocks = [...turn.blocks];
   for (let i = blocks.length - 1; i >= 0; i -= 1) {
     const block = blocks[i];
-    if (block.kind === "tool_use" && block.tool === tool && block.status === "running") {
+    if (block.kind !== "tool_use" || block.status !== "running") continue;
+    const matches = toolUseId ? block.toolUseId === toolUseId : block.tool === tool;
+    if (matches) {
       blocks[i] = { ...block, status: ok ? "ok" : "error" };
       return { ...turn, blocks };
     }
   }
-  blocks.push({ kind: "tool_use", tool, status: ok ? "ok" : "error" });
+  blocks.push({ kind: "tool_use", tool, toolUseId, status: ok ? "ok" : "error" });
   return { ...turn, blocks };
+}
+
+// When a turn ends, any tool still "running" never received a tool_result (a
+// dropped/desynced event, or the child was killed early on plan/cancel) — sweep
+// it to "cancelled" so the UI can't show a permanent spinner after the turn is
+// done. Real tool failures arrive as tool_use_end{ok:false} → "error" and are
+// left untouched: "cancelled" means "no result ever came back", not "it failed".
+function finalizeRunningTools(turn) {
+  let changed = false;
+  const blocks = turn.blocks.map((block) => {
+    if (block.kind === "tool_use" && block.status === "running") {
+      changed = true;
+      return { ...block, status: "cancelled" };
+    }
+    return block;
+  });
+  return changed ? { ...turn, blocks } : turn;
 }
 
 function appendArtifact(turn, file, reason) {
@@ -297,7 +332,7 @@ function applyChatEventToSession(session, event, now) {
         history: updateAssistantTurn(
           ensureAssistantTurn(session.history, turnId, now),
           turnId,
-          (turn) => appendToolUseStart(turn, event.tool, event.input),
+          (turn) => appendToolUseStart(turn, event.tool, event.input, event.toolUseId),
         ),
       };
     case "tool_use_end":
@@ -306,7 +341,7 @@ function applyChatEventToSession(session, event, now) {
         history: updateAssistantTurn(
           ensureAssistantTurn(session.history, turnId, now),
           turnId,
-          (turn) => markToolUseEnd(turn, event.tool, event.ok),
+          (turn) => markToolUseEnd(turn, event.toolUseId, event.tool, event.ok),
         ),
       };
     case "artifact_changed":
@@ -324,7 +359,7 @@ function applyChatEventToSession(session, event, now) {
         currentTurnId: session.currentTurnId === turnId ? "" : session.currentTurnId,
         turnInProgress: false,
         history: updateAssistantTurn(session.history, turnId, (turn) => ({
-          ...turn,
+          ...finalizeRunningTools(turn),
           status: turn.status === "error" ? "error" : "complete",
           endedAt: now,
         })),
@@ -338,7 +373,21 @@ function applyChatEventToSession(session, event, now) {
         history: updateAssistantTurn(
           ensureAssistantTurn(session.history, turnId, now),
           turnId,
-          (turn) => ({ ...appendError(turn, event.message), endedAt: now }),
+          (turn) => ({ ...appendError(finalizeRunningTools(turn), event.message), endedAt: now }),
+        ),
+      };
+    case "auth_expired":
+      // Same turn lifecycle as `error`, with fixed copy. The top-level
+      // `needsPandaReauth` flag (set in chatReducer) drives the action banner.
+      return {
+        ...session,
+        currentTurnId: session.currentTurnId === turnId ? "" : session.currentTurnId,
+        turnInProgress: false,
+        lastError: PANDA_REAUTH_MESSAGE,
+        history: updateAssistantTurn(
+          ensureAssistantTurn(session.history, turnId, now),
+          turnId,
+          (turn) => ({ ...appendError(turn, PANDA_REAUTH_MESSAGE), endedAt: now }),
         ),
       };
     default:
@@ -453,10 +502,24 @@ export function chatReducer(state, action, now = Date.now()) {
       let turnOwners = state.turnOwners;
       if (event.kind === "turn_start" && !knownOwner && ownerProject) {
         turnOwners = { ...turnOwners, [turnId]: ownerProject };
-      } else if (event.kind === "turn_end" || event.kind === "error") {
+      } else if (
+        event.kind === "turn_end" ||
+        event.kind === "error" ||
+        event.kind === "auth_expired"
+      ) {
         const { [turnId]: _drop, ...rest } = turnOwners;
         turnOwners = rest;
       }
+
+      // The proxy key is app-wide, so a Panda auth rejection raises the re-auth
+      // flag regardless of which project's turn hit it; a fresh turn_start
+      // clears it (the user re-signed-in or is retrying).
+      const reauthPatch =
+        event.kind === "auth_expired"
+          ? { needsPandaReauth: true }
+          : event.kind === "turn_start"
+            ? { needsPandaReauth: false }
+            : {};
 
       // Owned by (or just started in) the project on screen → advance the
       // visible session. A new turn supersedes a stale toolbar slice — clear
@@ -466,6 +529,7 @@ export function chatReducer(state, action, now = Date.now()) {
           ...state,
           ...applyChatEventToSession(sessionSlice(state), event, now),
           turnOwners,
+          ...reauthPatch,
           ...(event.kind === "turn_start"
             ? { lastSlice: INITIAL_CHAT_STATE.lastSlice }
             : {}),
@@ -478,11 +542,12 @@ export function chatReducer(state, action, now = Date.now()) {
       // event — its result is persisted and reloaded on return.
       const stash = state.sessions[ownerProject];
       if (!stash) {
-        return { ...state, turnOwners };
+        return { ...state, turnOwners, ...reauthPatch };
       }
       return {
         ...state,
         turnOwners,
+        ...reauthPatch,
         sessions: {
           ...state.sessions,
           [ownerProject]: applyChatEventToSession(stash, event, now),
@@ -531,6 +596,9 @@ export function chatReducer(state, action, now = Date.now()) {
     }
     case "set_error":
       return { ...state, lastError: action.message };
+    case "clear_panda_reauth":
+      if (!state.needsPandaReauth) return state;
+      return { ...state, needsPandaReauth: false };
     case "reset":
       return INITIAL_CHAT_STATE;
     default:
@@ -872,6 +940,11 @@ export function removePendingAttachment(id) {
 
 export function consumePendingAttachments() {
   dispatch({ type: "consume_pending_attachments" });
+}
+
+/** Clear the "Sign in again" banner after a successful Panda re-login. */
+export function clearPandaReauth() {
+  dispatch({ type: "clear_panda_reauth" });
 }
 
 export function resetChatStore() {

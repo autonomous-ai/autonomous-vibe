@@ -17,6 +17,9 @@ import {
   sidebarDirectoryIdForEntry,
   sidebarLabelForEntry,
   cadPathForEntry,
+  entryStlFile,
+  gcodeSourceStl,
+  soleCatalogStl,
   shouldDeferFileParamSelection
 } from "./sidebar.js";
 import { isPrintableModelEntry } from "./isPrintableModelEntry.js";
@@ -2114,4 +2117,123 @@ test("firstSelectableEntry handles an empty or invalid catalog", () => {
   assert.equal(firstSelectableEntry(null), null);
   assert.equal(firstSelectableEntryKey([]), "");
   assert.equal(firstSelectableEntryKey(undefined), "");
+});
+
+test("entryStlFile returns an STL entry's own file (standalone model or assembly part)", () => {
+  assert.equal(entryStlFile({ file: "model.stl", kind: "stl" }), "model.stl");
+  assert.equal(
+    entryStlFile({ file: "widget_parts/base.stl", kind: "stl" }),
+    "widget_parts/base.stl"
+  );
+});
+
+test("entryStlFile derives the sibling preview STL for a STEP entry that has one on disk", () => {
+  // The catalog attaches `artifact.stlUrl` only when the sibling `.stl` exists,
+  // so a STEP/part view (rendered as B-rep) still resolves a sliceable file —
+  // this is what makes a library-opened project openable in Bambu Studio.
+  assert.equal(
+    entryStlFile({
+      file: "model.step",
+      kind: "part",
+      artifact: { stlUrl: "tauri://localhost/model.stl?v=1-2" },
+    }),
+    "model.stl"
+  );
+  assert.equal(
+    entryStlFile({
+      file: "sub/model.stp",
+      kind: "part",
+      artifact: { stlUrl: "tauri://localhost/sub/model.stl?v=1-2" },
+    }),
+    "sub/model.stl"
+  );
+});
+
+test("entryStlFile returns '' when there is no sliceable STL on disk", () => {
+  // STEP without a generated preview STL, and non-mesh kinds, have nothing to
+  // hand to Bambu Studio — the caller then falls back to the latest chat STL.
+  assert.equal(entryStlFile({ file: "model.step", kind: "part" }), "");
+  assert.equal(entryStlFile({ file: "drawing.dxf", kind: "dxf" }), "");
+  assert.equal(entryStlFile({ file: "toolpath.gcode", kind: "gcode" }), "");
+  assert.equal(entryStlFile(null), "");
+  assert.equal(entryStlFile(undefined), "");
+});
+
+test("gcodeSourceStl maps a sliced gcode back to its source STL via the catalog", () => {
+  // Slicing names the toolpath after its source mesh (same dir + stem), so a
+  // gcode view resolves the model to open in Bambu Studio.
+  const entries = [
+    { file: "model.step", kind: "part", artifact: { stlUrl: "tauri://x/model.stl?v=1" } },
+    { file: "model.stl", kind: "stl" },
+    { file: "model.gcode", kind: "gcode" },
+  ];
+  assert.equal(gcodeSourceStl({ file: "model.gcode", kind: "gcode" }, entries), "model.stl");
+
+  // Matches a STEP source whose only mesh on disk is the sibling preview STL.
+  const stepOnly = [
+    { file: "sub/widget.step", kind: "part", artifact: { stlUrl: "tauri://x/sub/widget.stl?v=1" } },
+    { file: "sub/widget.gcode", kind: "gcode" },
+  ];
+  assert.equal(
+    gcodeSourceStl({ file: "sub/widget.gcode", kind: "gcode" }, stepOnly),
+    "sub/widget.stl"
+  );
+});
+
+test("gcodeSourceStl maps an assembly PART gcode to its own part STL, not the integrated model", () => {
+  // Per-part STLs are hidden from the flat catalog but ride on the integrated
+  // model as expanded `__partOf` children; the resolver is fed those children so
+  // viewing a part's gcode opens that part, not the whole assembly. (Regression:
+  // it previously fell through to the integrated model's STL — the wrong file.)
+  const entries = [
+    { file: "robot/robot.stl", kind: "stl" },
+    { file: "robot/robot.gcode", kind: "gcode" },
+    { file: "robot/robot_parts/head.stl", kind: "stl", __partOf: "robot/robot.stl" },
+    { file: "robot/robot_parts/arm.stl", kind: "stl", __partOf: "robot/robot.stl" },
+    { file: "robot/robot_parts/head.gcode", kind: "gcode" },
+  ];
+  assert.equal(
+    gcodeSourceStl({ file: "robot/robot_parts/head.gcode", kind: "gcode" }, entries),
+    "robot/robot_parts/head.stl"
+  );
+  // The integrated gcode still resolves to the integrated model.
+  assert.equal(
+    gcodeSourceStl({ file: "robot/robot.gcode", kind: "gcode" }, entries),
+    "robot/robot.stl"
+  );
+});
+
+test("gcodeSourceStl returns '' for non-gcode entries or when no model matches", () => {
+  const entries = [{ file: "model.stl", kind: "stl" }];
+  // Not a gcode — the entry-based resolver (entryStlFile) handles these instead.
+  assert.equal(gcodeSourceStl({ file: "model.stl", kind: "stl" }, entries), "");
+  // A gcode whose source model isn't in the catalog (e.g. sliced from an .obj,
+  // or the model was deleted) yields nothing — caller falls back to chat state.
+  assert.equal(gcodeSourceStl({ file: "orphan.gcode", kind: "gcode" }, entries), "");
+  assert.equal(gcodeSourceStl({ file: "model.gcode", kind: "gcode" }, []), "");
+});
+
+test("soleCatalogStl returns the lone model STL, '' when zero or ambiguous", () => {
+  // One model — its STL is the obvious thing to open. A STEP entry and its
+  // sibling `.stl` entry resolve to the SAME file, so that still counts as one.
+  assert.equal(soleCatalogStl([{ file: "model.stl", kind: "stl" }]), "model.stl");
+  assert.equal(
+    soleCatalogStl([
+      { file: "model.step", kind: "part", artifact: { stlUrl: "tauri://x/model.stl?v=1" } },
+      { file: "model.stl", kind: "stl" },
+      { file: "model.gcode", kind: "gcode" },
+    ]),
+    "model.stl"
+  );
+  // Two distinct models — ambiguous, so stay silent rather than open the wrong one.
+  assert.equal(
+    soleCatalogStl([
+      { file: "a.stl", kind: "stl" },
+      { file: "b.stl", kind: "stl" },
+    ]),
+    ""
+  );
+  // No printable STL at all.
+  assert.equal(soleCatalogStl([{ file: "x.gcode", kind: "gcode" }]), "");
+  assert.equal(soleCatalogStl([]), "");
 });

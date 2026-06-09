@@ -284,11 +284,17 @@ pub enum ChatEvent {
     ToolUseStart {
         turn_id: String,
         tool: String,
+        /// Stable `tool_use_id` from the stream so the UI can pair this start
+        /// with its `ToolUseEnd` by id (names collide when several tools of the
+        /// same kind run in one turn).
+        tool_use_id: String,
         input: serde_json::Value,
     },
     ToolUseEnd {
         turn_id: String,
         tool: String,
+        /// Matches the `ToolUseStart.tool_use_id` this result completes.
+        tool_use_id: String,
         ok: bool,
     },
     ArtifactChanged {
@@ -302,6 +308,14 @@ pub enum ChatEvent {
     Error {
         turn_id: String,
         message: String,
+    },
+    /// The Panda proxy rejected the turn's auth (revoked/expired `ccr-` key →
+    /// the BE returns 401). Emitted instead of a generic `Error` when
+    /// `use_panda_cloud` is on and the failure looks like an auth error, so the
+    /// chat UI can offer a "Sign in again" action rather than a cryptic message.
+    /// Ends the turn like `Error` does.
+    AuthExpired {
+        turn_id: String,
     },
 }
 

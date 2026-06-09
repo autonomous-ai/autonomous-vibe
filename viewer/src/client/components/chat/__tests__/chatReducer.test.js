@@ -13,6 +13,7 @@ import {
   selectLatestGcode3mf,
   selectLatestStl,
   INITIAL_CHAT_STATE,
+  PANDA_REAUTH_MESSAGE,
 } from "../../../store/chat.js";
 
 const FIXED_NOW = 1_700_000_000_000;
@@ -210,6 +211,36 @@ test("error event flips turn status to error and records lastError", () => {
   assert.equal(errorBlocks[0].message, "sandbox timeout");
 });
 
+test("auth_expired ends the turn and raises the re-auth flag", () => {
+  const events = [
+    { kind: "turn_start", turnId: "t-9" },
+    { kind: "auth_expired", turnId: "t-9" },
+  ];
+  const state = applyEvents(INITIAL_CHAT_STATE, events);
+  assert.equal(state.turnInProgress, false);
+  assert.equal(state.needsPandaReauth, true);
+  assert.equal(state.lastError, PANDA_REAUTH_MESSAGE);
+  assert.equal(state.history[0].status, "error");
+});
+
+test("a fresh turn_start clears the re-auth flag, and clear_panda_reauth resets it", () => {
+  let state = applyEvents(INITIAL_CHAT_STATE, [
+    { kind: "turn_start", turnId: "t-a" },
+    { kind: "auth_expired", turnId: "t-a" },
+  ]);
+  assert.equal(state.needsPandaReauth, true);
+  // Retrying (new turn) optimistically clears it.
+  state = chatReducer(state, {
+    type: "chat_event",
+    event: { kind: "turn_start", turnId: "t-b" },
+  }, FIXED_NOW);
+  assert.equal(state.needsPandaReauth, false);
+  // The explicit clear action is idempotent.
+  state = { ...state, needsPandaReauth: true };
+  state = chatReducer(state, { type: "clear_panda_reauth" });
+  assert.equal(state.needsPandaReauth, false);
+});
+
 test("tool_use_end without a running start is still recorded for observability", () => {
   const events = [
     { kind: "turn_start", turnId: "t-4" },
@@ -220,6 +251,64 @@ test("tool_use_end without a running start is still recorded for observability",
   assert.equal(blocks.length, 1);
   assert.equal(blocks[0].kind, "tool_use");
   assert.equal(blocks[0].status, "error");
+});
+
+test("interleaved same-name tools resolve by tool_use_id, not by name/recency", () => {
+  // Two Edit calls run concurrently; their results arrive out of order. Matching
+  // by name+recency would flip the wrong block and strand one on "Running".
+  const events = [
+    { kind: "turn_start", turnId: "t-5" },
+    { kind: "tool_use_start", turnId: "t-5", tool: "Edit", toolUseId: "tu_a", input: { n: 1 } },
+    { kind: "tool_use_start", turnId: "t-5", tool: "Edit", toolUseId: "tu_b", input: { n: 2 } },
+    // Resolve the *first* (older) call first.
+    { kind: "tool_use_end", turnId: "t-5", tool: "Edit", toolUseId: "tu_a", ok: true },
+    { kind: "tool_use_end", turnId: "t-5", tool: "Edit", toolUseId: "tu_b", ok: false },
+    { kind: "turn_end", turnId: "t-5" },
+  ];
+  const state = applyEvents(INITIAL_CHAT_STATE, events);
+  const tools = state.history[0].blocks.filter((b) => b.kind === "tool_use");
+  assert.equal(tools.length, 2);
+  assert.equal(tools.find((b) => b.toolUseId === "tu_a").status, "ok");
+  assert.equal(tools.find((b) => b.toolUseId === "tu_b").status, "error");
+  // No leftover spinner.
+  assert.ok(!tools.some((b) => b.status === "running"));
+});
+
+test("turn_end sweeps a tool whose result never arrived to 'cancelled' (no stuck spinner)", () => {
+  const events = [
+    { kind: "turn_start", turnId: "t-6" },
+    { kind: "tool_use_start", turnId: "t-6", tool: "Edit", toolUseId: "tu_a", input: {} },
+    { kind: "tool_use_end", turnId: "t-6", tool: "Edit", toolUseId: "tu_a", ok: true },
+    // This one never gets a tool_use_end (dropped event / early kill).
+    { kind: "tool_use_start", turnId: "t-6", tool: "Bash", toolUseId: "tu_b", input: {} },
+    { kind: "turn_end", turnId: "t-6" },
+  ];
+  const state = applyEvents(INITIAL_CHAT_STATE, events);
+  const turn = state.history[0];
+  assert.equal(turn.status, "complete");
+  const tools = turn.blocks.filter((b) => b.kind === "tool_use");
+  assert.equal(tools.find((b) => b.toolUseId === "tu_a").status, "ok");
+  assert.equal(tools.find((b) => b.toolUseId === "tu_b").status, "cancelled");
+  assert.ok(!tools.some((b) => b.status === "running"));
+});
+
+test("cancel/error sweeps running tools to 'cancelled' but keeps real tool errors as 'error'", () => {
+  const events = [
+    { kind: "turn_start", turnId: "t-7" },
+    // A tool that genuinely failed — must stay "error", not be relabelled.
+    { kind: "tool_use_start", turnId: "t-7", tool: "Bash", toolUseId: "tu_a", input: {} },
+    { kind: "tool_use_end", turnId: "t-7", tool: "Bash", toolUseId: "tu_a", ok: false },
+    // A tool still running when the turn is cancelled.
+    { kind: "tool_use_start", turnId: "t-7", tool: "Edit", toolUseId: "tu_b", input: {} },
+    { kind: "error", turnId: "t-7", message: "cancelled" },
+  ];
+  const state = applyEvents(INITIAL_CHAT_STATE, events);
+  const turn = state.history[0];
+  assert.equal(turn.status, "error");
+  const tools = turn.blocks.filter((b) => b.kind === "tool_use");
+  assert.equal(tools.find((b) => b.toolUseId === "tu_a").status, "error");
+  assert.equal(tools.find((b) => b.toolUseId === "tu_b").status, "cancelled");
+  assert.ok(!tools.some((b) => b.status === "running"));
 });
 
 test("pendingTokens dedupes and supports add/consume", () => {

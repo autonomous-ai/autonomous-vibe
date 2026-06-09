@@ -20,7 +20,12 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["devtools"] }
+# NB: no `devtools` feature. In debug builds Tauri enables the webview inspector
+# automatically; the `devtools` feature would also enable it in *release*
+# (production) builds, exposing right-click → Inspect Element to end users. We
+# want devtools in dev only, so we omit the feature and gate the programmatic
+# `open_devtools()` call behind `cfg(debug_assertions)` in lib.rs.
+tauri = { version = "2" }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"

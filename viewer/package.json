@@ -19,6 +19,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "gcode-preview": "^2.18.0",
+    "highlight.js": "^11.11.1",
     "implicitjs": "file:./packages/implicitjs",
     "lucide-react": "^1.8.0",
     "radix-ui": "^1.4.3",

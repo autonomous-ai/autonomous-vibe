@@ -66,7 +66,10 @@ const GcodePreviewPane = forwardRef(function GcodePreviewPane({
     const preview = initGcodePreview({
       canvas,
       buildVolume: buildVolume || undefined,
-      backgroundColor: readCssVar("--ui-app-bg", "#0b0e14"),
+      // Match the CAD/STL viewer's near-black scene background (BASE_VIEWER_THEME
+      // sceneBackground) so the gcode mode reads as dark and consistent rather
+      // than the lighter app chrome background.
+      backgroundColor: readCssVar("--ui-viewer-bg", "#09090b"),
       renderExtrusion: true,
       renderTravel: showTravel,
       renderTubes

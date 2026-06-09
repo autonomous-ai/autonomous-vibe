@@ -18,21 +18,30 @@ import {
   SLICER_CHECK_POLL_INTERVAL_MS,
 } from "./onboardingHelpers.js";
 
-export default function SlicerCheckStep({ onAdvance }) {
-  const [status, setStatus] = useState("checking"); // checking | missing | found | error
+export default function SlicerCheckStep({ onAdvance, initialStatus = "checking" }) {
+  const [status, setStatus] = useState(initialStatus); // checking | missing | found | error
   const [error, setError] = useState("");
   const [installState, setInstallState] = useState("idle"); // idle | installing | done | error
   const [installProgress, setInstallProgress] = useState(null);
   const pollTimerRef = useRef(0);
   const advancedRef = useRef(false);
   const installFlowRef = useRef(null);
+  // The "checking" placeholder is only honest before the first result. Once we
+  // know the slicer's state (either passed in by the caller or resolved here),
+  // background polls re-confirm silently so the install card never flickers back
+  // to a spinner. Starting with a non-"checking" status means the caller already
+  // detected the slicer, so we begin in the resolved state.
+  const hasResultRef = useRef(initialStatus !== "checking");
 
   const runCheck = useCallback(async () => {
-    setStatus((current) => (current === "found" ? current : "checking"));
+    if (!hasResultRef.current) {
+      setStatus((current) => (current === "found" ? current : "checking"));
+    }
     setError("");
     try {
       const check = await transport.app_prereq_check();
       const result = evaluateSlicerCheck(check);
+      hasResultRef.current = true;
       if (result.proceed) {
         setStatus("found");
         if (!advancedRef.current) {
@@ -47,6 +56,7 @@ export default function SlicerCheckStep({ onAdvance }) {
         err && typeof err === "object" && "message" in err
           ? String(err.message || "Failed to check prerequisites")
           : String(err || "Failed to check prerequisites");
+      hasResultRef.current = true;
       setError(message);
       setStatus("error");
     }

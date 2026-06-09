@@ -107,6 +107,37 @@ pub fn sync_skill_trees(
     Ok(installed)
 }
 
+/// Write `~/.claude/panda-mcp-config.json` with an empty `mcpServers` map.
+///
+/// This file is passed as `--mcp-config` to every spawned `claude -p` subprocess
+/// so that the user's globally-configured MCP servers (e.g. a Reminders or
+/// Calendar integration) cannot start inside Panda's sandboxed turns and trigger
+/// unexpected macOS privacy permission dialogs. Best-effort: a write failure is
+/// logged and swallowed — it must never block a chat turn.
+pub fn install_panda_mcp_config() {
+    let Some(home) = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+    else {
+        eprintln!("[panda] HOME unset; skipping panda-mcp-config install");
+        return;
+    };
+    let path = home.join(".claude").join("panda-mcp-config.json");
+    // Idempotent: skip if the file already exists (content never changes).
+    if path.exists() {
+        return;
+    }
+    if let Some(parent) = path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            eprintln!("[panda] panda-mcp-config install failed (mkdir): {e}");
+            return;
+        }
+    }
+    if let Err(e) = fs::write(&path, r#"{"mcpServers":{}}"#) {
+        eprintln!("[panda] panda-mcp-config install failed (write): {e}");
+    }
+}
+
 /// True when `dst` already holds a stamp matching `version`.
 fn is_up_to_date(dst: &Path, version: &str) -> bool {
     fs::read_to_string(dst.join(VERSION_STAMP))

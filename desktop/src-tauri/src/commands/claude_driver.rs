@@ -290,6 +290,17 @@ pub fn build_command(cfg: &ClaudeRunConfig) -> Vec<String> {
         cmd.push("--add-dir".into());
         cmd.push(skills_dir.display().to_string());
     }
+    // Prevent the user's globally-configured MCP servers from loading inside
+    // Panda's sandboxed turns. Global MCPs (e.g. a Reminders integration) are
+    // irrelevant to CAD generation and can trigger unexpected macOS privacy
+    // permission dialogs. `install_panda_mcp_config` writes this file at app
+    // startup; guard with exists() so a first-launch race never breaks a turn.
+    if let Some(mcp_cfg) = home_dir().map(|h| h.join(".claude").join("panda-mcp-config.json")) {
+        if mcp_cfg.exists() {
+            cmd.push("--mcp-config".into());
+            cmd.push(mcp_cfg.display().to_string());
+        }
+    }
     if let Some(session) = &cfg.claude_session_id {
         if claude_session_exists(&cfg.workspace, session) {
             cmd.push("--resume".into());
@@ -1840,6 +1851,84 @@ mod tests {
             .collect();
         assert!(add_dirs.contains(&&"/tmp/proj".to_string()));
         assert!(add_dirs.contains(&&skills));
+    }
+
+    #[test]
+    fn build_command_mcp_config_included_when_file_exists() {
+        // Create a real temp file so the exists() guard passes.
+        let tmp = std::env::temp_dir().join("panda-mcp-config-test.json");
+        std::fs::write(&tmp, r#"{"mcpServers":{}}"#).unwrap();
+
+        // Point HOME at a dir that contains the file via a symlink-free path.
+        // Simplest: just verify the logic by calling build_command in an env
+        // where the file is at the expected location.  We do this by temporarily
+        // setting HOME to a temp dir that has the right sub-path.
+        let home_tmp = std::env::temp_dir().join("panda-mcp-config-home-test");
+        let claude_dir = home_tmp.join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        let cfg_path = claude_dir.join("panda-mcp-config.json");
+        std::fs::write(&cfg_path, r#"{"mcpServers":{}}"#).unwrap();
+
+        // Temporarily override HOME so home_dir() resolves to our temp dir.
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &home_tmp);
+
+        let cfg = ClaudeRunConfig {
+            prompt: "test".into(),
+            workspace: PathBuf::from("/tmp/proj"),
+            claude_session_id: None,
+            model: None,
+            use_panda_cloud: false,
+            panda_token: None,
+            panda_base_url: None,
+            phase: TurnPhase::Plan,
+        };
+        let cmd = build_command(&cfg);
+
+        // Restore HOME before any assert so we don't poison other tests.
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+
+        let mc_pos = cmd.iter().position(|a| a == "--mcp-config");
+        assert!(mc_pos.is_some(), "--mcp-config flag should be present");
+        assert_eq!(cmd[mc_pos.unwrap() + 1], cfg_path.display().to_string());
+
+        let _ = std::fs::remove_file(&cfg_path);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn build_command_mcp_config_omitted_when_file_absent() {
+        let home_tmp = std::env::temp_dir().join("panda-mcp-config-absent-test");
+        std::fs::create_dir_all(home_tmp.join(".claude")).unwrap();
+        // Deliberately do NOT write panda-mcp-config.json here.
+
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &home_tmp);
+
+        let cfg = ClaudeRunConfig {
+            prompt: "test".into(),
+            workspace: PathBuf::from("/tmp/proj"),
+            claude_session_id: None,
+            model: None,
+            use_panda_cloud: false,
+            panda_token: None,
+            panda_base_url: None,
+            phase: TurnPhase::Plan,
+        };
+        let cmd = build_command(&cfg);
+
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(
+            !cmd.iter().any(|a| a == "--mcp-config"),
+            "--mcp-config should be absent when config file does not exist"
+        );
     }
 
     #[test]

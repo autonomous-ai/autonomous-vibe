@@ -85,6 +85,7 @@ pub fn run() {
             // generator) can find them. Best-effort; symlinked skill dirs are
             // left alone for dev live-editing. See `crate::skills`.
             skills::install_bundled_skills(&tauri::Manager::app_handle(app).clone());
+            skills::install_panda_mcp_config();
             // Replace Tauri's default macOS menu with one that adds a
             // "Check for Updates…" item under the Panda app menu, so the
             // update flow stays reachable after the in-app toast is dismissed.

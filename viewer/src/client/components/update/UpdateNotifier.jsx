@@ -15,6 +15,11 @@ import { transport } from "@/lib/transport.ts";
 //   - Option 4 "download progress"     → the `downloading` progress bar.
 //   - Option 1 "restart to apply"      → the `ready` banner with Restart now
 //     (also how the silent auto-update mode surfaces itself).
+//
+// Mounted once at the app's top level (see main.jsx) so it shows on every
+// screen — the onboarding wizard and the workspace alike. It sits at `z-[60]`,
+// above the onboarding dialog's `z-50` overlay, so the prompt stays visible
+// there too.
 
 function formatBytes(n) {
   if (!Number.isFinite(n) || n <= 0) return "0 MB";
@@ -131,7 +136,7 @@ export default function UpdateNotifier() {
       <button
         type="button"
         onClick={() => setCollapsed(false)}
-        className="cad-glass-popover fixed bottom-4 left-4 z-50 flex items-center gap-2 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-popover-foreground shadow-lg shadow-black/10 transition hover:bg-muted/40"
+        className="cad-glass-popover fixed bottom-4 left-4 z-[60] flex items-center gap-2 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-popover-foreground shadow-lg shadow-black/10 transition hover:bg-muted/40"
         data-testid="update-badge"
       >
         <span className="relative flex size-2">
@@ -155,7 +160,7 @@ export default function UpdateNotifier() {
 
   return (
     <div
-      className="cad-glass-popover fixed bottom-4 left-4 z-50 w-[min(calc(100vw-2rem),24rem)] rounded-lg border border-border p-4 text-sm text-popover-foreground shadow-xl shadow-black/15"
+      className="cad-glass-popover fixed bottom-4 left-4 z-[60] w-[min(calc(100vw-2rem),24rem)] rounded-lg border border-border p-4 text-sm text-popover-foreground shadow-xl shadow-black/15"
       data-testid="update-notifier"
       data-phase={phase}
     >

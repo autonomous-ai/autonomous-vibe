@@ -16,6 +16,7 @@ import { sortProjects } from "@/components/library/projectListHelpers.js";
 import { PLACEHOLDER_PROJECT_NAME } from "@/components/chat/chatInputHelpers";
 import DeleteConfirmDialog from "@/components/library/DeleteConfirmDialog.jsx";
 import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
+import { PRINT_CONFIG_CHANGED_EVENT } from "@/components/chat/actionButtonsHelpers";
 import { transport } from "@/lib/transport.ts";
 
 /**
@@ -127,7 +128,19 @@ export default function ProjectMenu() {
         }}
       />
 
-      <AddPrinterDialog open={addPrinterOpen} onOpenChange={setAddPrinterOpen} />
+      <AddPrinterDialog
+        open={addPrinterOpen}
+        onOpenChange={(next) => {
+          setAddPrinterOpen(next);
+          // This dialog (opened from the native Printer menu) can change the
+          // paired printers / default device, but the workspace toolbar lives in
+          // another component. Signal it on close so the Print button label
+          // re-reads the config instead of showing a stale device.
+          if (!next && typeof window !== "undefined") {
+            window.dispatchEvent(new Event(PRINT_CONFIG_CHANGED_EVENT));
+          }
+        }}
+      />
     </>
   );
 }

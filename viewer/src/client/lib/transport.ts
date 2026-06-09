@@ -899,6 +899,8 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
     case "update_install":
     case "update_relaunch":
       return undefined as unknown as T;
+    case "update_latest_version":
+      return "0.0.0-stub" as unknown as T;
     default:
       throw new Error(`${STUB_TAG} unknown command: ${cmd}`);
   }
@@ -1029,6 +1031,9 @@ const transportBase = {
   update_check: () => invoke<UpdateInfo | null>("update_check"),
   update_install: () => invoke<void>("update_install"),
   update_relaunch: () => invoke<void>("update_relaunch"),
+  // Latest published version (from the updater's latest.json feed), shown in
+  // the in-window About box. Persisted server-side for an offline fallback.
+  update_latest_version: () => invoke<string>("update_latest_version"),
 
   // events
   //

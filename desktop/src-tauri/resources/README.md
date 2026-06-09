@@ -52,17 +52,28 @@ suffix at bundle time.
 
 ## Platform support (v1)
 
-| Triple                       | Python | OrcaSlicer | Tested |
-| :--------------------------- | :----: | :--------: | :----: |
-| `aarch64-apple-darwin`       | yes    | yes        | yes    |
-| `x86_64-apple-darwin`        | yes    | yes        | no     |
-| `x86_64-unknown-linux-gnu`   | yes    | yes        | no     |
-| `x86_64-pc-windows-msvc`     | yes    | yes        | no     |
+| Triple                       | Python | OrcaSlicer    | Tested |
+| :--------------------------- | :----: | :-----------: | :----: |
+| `aarch64-apple-darwin`       | yes    | yes (bundled) | yes    |
+| `x86_64-apple-darwin`        | yes    | yes (bundled) | no     |
+| `x86_64-unknown-linux-gnu`   | yes    | yes (bundled) | no     |
+| `x86_64-pc-windows-msvc`     | yes    | auto-install  | no     |
 
 Non-macOS targets are implemented in the scripts but have not been smoke-
-tested. Verifying them is v1.1 work. The Windows branch may also need a
-`.exe` suffix tweak in `tauri.conf.json` (Tauri appends `.exe` for
-Windows triples automatically).
+tested. Verifying them is v1.1 work.
+
+**Windows OrcaSlicer is not bundled — it is auto-installed at first slice.**
+The upstream Windows release is a *portable* tree: `orca-slicer.exe` plus ~50
+sibling DLLs (Qt, wxWidgets, and the VC++ runtime — `VCRUNTIME140_1.dll`, …).
+A single `externalBin` sidecar can only stage one file next to `Panda.exe`, so
+the DLLs would be left behind and the staged exe would die on launch with
+`VCRUNTIME140_1.dll was not found`. Instead the build script keeps the committed
+4-byte `stub` for `orcaslicer-x86_64-pc-windows-msvc.exe`; the resolver's PE
+`MZ`-magic gate rejects the stub, so slicing falls through to
+`commands/app.rs::app_install_orcaslicer`, which downloads the pinned portable
+zip and extracts the **whole** tree (DLLs included) into
+`%LOCALAPPDATA%\Panda\OrcaSlicer`. This is the same auto-install path macOS uses
+in production for a drag-to-Applications-style install.
 
 ## Why the placeholder files are committed
 

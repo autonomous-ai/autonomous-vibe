@@ -113,7 +113,7 @@ export default function PlanBlock({ plan, status }) {
                 onClick={handleSendFeedback}
                 disabled={busy || !feedback.trim()}
                 data-slot="chat-plan-feedback-send"
-                className="h-9 rounded-lg bg-emerald-400 px-4 font-semibold text-emerald-950 hover:bg-emerald-300"
+                className="h-9 rounded-lg bg-emerald-400 px-4 text-emerald-950 hover:bg-emerald-300"
               >
                 Send feedback
               </Button>
@@ -148,7 +148,7 @@ export default function PlanBlock({ plan, status }) {
               onClick={handleApprove}
               disabled={busy}
               data-slot="chat-plan-approve"
-              className="h-9 rounded-lg bg-emerald-400 px-4 font-semibold text-emerald-950 hover:bg-emerald-300"
+              className="h-9 rounded-lg bg-emerald-400 px-4 text-emerald-950 hover:bg-emerald-300"
             >
               <Check className="size-4" aria-hidden />
               {busy ? "Building…" : "Approve & build"}

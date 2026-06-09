@@ -18,3 +18,9 @@ export function buildSendValue(rawText, pendingTokens) {
 // place (see commands/project.rs `resolve_ai_title`). Must match the Rust
 // `PLACEHOLDER_PROJECT_NAME` constant.
 export const PLACEHOLDER_PROJECT_NAME = "New project";
+
+// Window event the top-bar project menu fires after creating a fresh project.
+// The chat sidebar owns the composer ref and listens for it to focus the
+// textarea — the textarea's mount-time autoFocus doesn't re-fire when the
+// active project switches in place (e.g. new project from an already-empty one).
+export const FOCUS_CHAT_INPUT_EVENT = "panda:focus-chat-input";

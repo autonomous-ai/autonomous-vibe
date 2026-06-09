@@ -79,7 +79,7 @@ The one thing that can't be faked — the gate between "demo" and "ship."
       `--load-settings` / `--load-filaments` keyed off the connected printer model,
       instead of relying on generic defaults (`slicer.rs:380` currently only passes
       `--filament-profile "Generic …"` and ignores `printer_id`). This is the main
-      slice-side quality work for v1; the `gcode` skill wrapper already supports it.
+      slice-side quality work for v1.
 
 **Print** (`commands/printer.rs`), against a real Bambu printer on LAN:
 - [ ] Discovery (SSDP ports 1990/2021 + mDNS).

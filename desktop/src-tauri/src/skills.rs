@@ -147,12 +147,12 @@ mod tests {
         let dst = tmp.path().join("dst");
         write(&src.join("cadcode/SKILL.md"), "v1");
         write(&src.join("cadcode/scripts/cad"), "#!/bin/sh");
-        write(&src.join("gcode/SKILL.md"), "g");
+        write(&src.join("step-parts/SKILL.md"), "g");
 
         // First install copies both skills, stamps, and preserves the tree.
         let mut done = sync_skill_trees(&src, &dst, "1.0.0").unwrap();
         done.sort();
-        assert_eq!(done, vec!["cadcode".to_string(), "gcode".to_string()]);
+        assert_eq!(done, vec!["cadcode".to_string(), "step-parts".to_string()]);
         assert_eq!(fs::read_to_string(dst.join("cadcode/SKILL.md")).unwrap(), "v1");
         assert!(dst.join("cadcode/scripts/cad").exists());
 

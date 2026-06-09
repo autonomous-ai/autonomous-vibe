@@ -18,6 +18,7 @@ import {
   describeClaudeInstallProgress,
   describePandaLoginProgress,
   evaluateWelcomeState,
+  installErrorHint,
   PANDA_SETUP_URL,
 } from "./onboardingHelpers.js";
 
@@ -349,9 +350,17 @@ export default function WelcomeScreen({ onComplete }) {
             </div>
           ) : null}
           {pandaError ? (
-            <p className="text-sm text-destructive" role="alert">
-              {pandaError}
-            </p>
+            <div role="alert" className="flex flex-col gap-1">
+              <p className="text-sm text-destructive">{pandaError}</p>
+              {installErrorHint(pandaError) ? (
+                <p
+                  className="text-sm text-muted-foreground"
+                  data-testid="panda-error-hint"
+                >
+                  {installErrorHint(pandaError)}
+                </p>
+              ) : null}
+            </div>
           ) : null}
           <div className="flex items-center gap-2">
             <Button

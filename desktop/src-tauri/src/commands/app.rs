@@ -408,16 +408,20 @@ pub async fn app_install_claude_code(app: tauri::AppHandle) -> IpcResult<Install
     let stderr_lines = stderr_tail.lock().clone();
 
     if !status.success() {
-        let last_line = stderr_lines
-            .iter()
-            .rev()
-            .find(|l| !l.trim().is_empty())
-            .cloned()
+        // Deep-dive aid: dump the full record to stderr (visible when the app
+        // is launched from a terminal). The user-facing message is the
+        // distilled reason — never PowerShell's `+ FullyQualifiedErrorId`
+        // trailer, which the old "last non-empty line" heuristic surfaced.
+        eprintln!(
+            "[claude-install] PowerShell installer failed ({status}); stderr tail:\n{}",
+            stderr_lines.join("\n")
+        );
+        let message = installer_error_message(&stderr_lines)
             .unwrap_or_else(|| format!("installer exited with {status}"));
         emit(ClaudeInstallProgress::Error {
-            message: last_line.clone(),
+            message: message.clone(),
         });
-        return Err(IpcError::new("INSTALL_FAILED", last_line).with_detail(serde_json::json!({
+        return Err(IpcError::new("INSTALL_FAILED", message).with_detail(serde_json::json!({
             "exitCode": status.code(),
             "stderrTail": stderr_lines,
         })));
@@ -697,6 +701,59 @@ pub(crate) fn parse_progress_line(line: &str) -> Option<ClaudeInstallProgress> {
         return Some(ClaudeInstallProgress::Running);
     }
     None
+}
+
+/// Pick the human-meaningful line out of a failed PowerShell installer's
+/// stderr. The upstream `install.ps1` sets `$ErrorActionPreference = "Stop"`,
+/// so every `Write-Error` becomes a terminating error that PowerShell renders
+/// as a multi-line record:
+///
+/// ```text
+/// C:\…\panda-claude-install-4236.ps1 : Installation failed (exit code 1)
+///     + CategoryInfo          : NotSpecified: (:) [Write-Error], WriteErrorException
+///     + FullyQualifiedErrorId : Microsoft.PowerShell.Commands.WriteErrorException,panda-claude-install-4236.ps1
+/// ```
+///
+/// The naive "last non-empty line" surfaces the `+ FullyQualifiedErrorId`
+/// trailer — pure noise. The real reason is the first line, prefixed with
+/// `<script>.ps1 : ` (and possibly wrapped across the next few lines before
+/// the first `+ …` frame). Extract that; fall back to the last line that
+/// isn't an error-record frame for non-PowerShell stderr.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn installer_error_message(stderr_lines: &[String]) -> Option<String> {
+    let is_frame = |l: &str| l.trim_start().starts_with('+');
+
+    if let Some(start) = stderr_lines.iter().position(|l| l.contains(".ps1 : ")) {
+        let head = stderr_lines[start]
+            .split_once(".ps1 : ")
+            .map(|(_, rest)| rest)
+            .unwrap_or(&stderr_lines[start])
+            .trim();
+        let mut parts = vec![head.to_string()];
+        // Fold wrapped continuation lines until the first `+ …` record frame.
+        for line in &stderr_lines[start + 1..] {
+            if is_frame(line) {
+                break;
+            }
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                parts.push(trimmed.to_string());
+            }
+        }
+        let msg = parts.join(" ").trim().to_string();
+        if !msg.is_empty() {
+            return Some(msg);
+        }
+    }
+
+    // No recognizable PowerShell error record — surface the last meaningful
+    // line, skipping any `+ …` record frames.
+    stderr_lines
+        .iter()
+        .rev()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty() && !l.starts_with('+'))
+        .map(|l| l.to_string())
 }
 
 /// Same resolver as `detect_claude_cli`, but returns the resolved path
@@ -2009,6 +2066,56 @@ mod tests {
         assert_eq!(info.pid, std::process::id());
         assert_eq!(info.app_version, APP_VERSION);
         assert!(!info.root_path.is_empty());
+    }
+
+    #[test]
+    fn installer_error_message_extracts_real_reason_from_powershell_record() {
+        // PowerShell renders Write-Error (under `$ErrorActionPreference=Stop`)
+        // as a multi-line record whose LAST line is the useless
+        // `+ FullyQualifiedErrorId` trailer the user reported seeing. The real
+        // reason is the first line, prefixed with `<script>.ps1 : `.
+        let stderr = vec![
+            "C:\\Users\\PC\\AppData\\Local\\Temp\\panda-claude-install-4236.ps1 : Installation failed (exit code 1)".to_string(),
+            "    + CategoryInfo          : NotSpecified: (:) [Write-Error], WriteErrorException".to_string(),
+            "    + FullyQualifiedErrorId : Microsoft.PowerShell.Commands.WriteErrorException,panda-claude-install-4236.ps1".to_string(),
+        ];
+        assert_eq!(
+            installer_error_message(&stderr).as_deref(),
+            Some("Installation failed (exit code 1)"),
+        );
+    }
+
+    #[test]
+    fn installer_error_message_folds_wrapped_message_lines() {
+        // PowerShell wraps a long message across stderr lines before the first
+        // `+ …` frame; fold them back into one message.
+        let stderr = vec![
+            "C:\\Temp\\panda-claude-install-99.ps1 : Failed to download binary: The remote name".to_string(),
+            "could not be resolved".to_string(),
+            "    + CategoryInfo          : NotSpecified: (:) [Write-Error], WriteErrorException".to_string(),
+            "    + FullyQualifiedErrorId : Microsoft.PowerShell.Commands.WriteErrorException,panda-claude-install-99.ps1".to_string(),
+        ];
+        assert_eq!(
+            installer_error_message(&stderr).as_deref(),
+            Some("Failed to download binary: The remote name could not be resolved"),
+        );
+    }
+
+    #[test]
+    fn installer_error_message_falls_back_to_last_non_frame_line() {
+        // Non-PowerShell stderr (e.g. native output from claude.exe) has no
+        // `.ps1 :` record — surface the last meaningful line, never a `+` frame
+        // and never a blank line.
+        let stderr = vec![
+            "warning: something".to_string(),
+            "fatal: could not write to disk".to_string(),
+            "".to_string(),
+        ];
+        assert_eq!(
+            installer_error_message(&stderr).as_deref(),
+            Some("fatal: could not write to disk"),
+        );
+        assert_eq!(installer_error_message(&[]), None);
     }
 
     #[cfg(target_os = "windows")]

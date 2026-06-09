@@ -201,6 +201,56 @@ export function describeClaudeInstallProgress(event) {
 }
 
 /**
+ * Map a distilled Claude Code install error (the message surfaced by the
+ * Rust installer's `installer_error_message`) to a short, actionable hint
+ * for the user. The upstream `install.ps1` only fails for a handful of
+ * reasons, and the common ones on a stranger's machine are network/proxy/TLS
+ * and antivirus interference — neither obvious from the raw message.
+ *
+ * Returns `null` for messages we can't confidently classify, so the UI shows
+ * only the raw error rather than guessing.
+ */
+export function installErrorHint(message) {
+  if (!message || typeof message !== "string") {
+    return null;
+  }
+  const lower = message.toLowerCase();
+
+  // Download/manifest/version fetch failed — almost always connectivity:
+  // no internet, a corporate proxy/firewall, or Windows PowerShell 5.1 not
+  // negotiating TLS 1.2 against downloads.claude.ai.
+  if (
+    lower.includes("download") ||
+    lower.includes("manifest") ||
+    lower.includes("latest version") ||
+    lower.includes("resolve") ||
+    lower.includes("timed out") ||
+    lower.includes("connection")
+  ) {
+    return "Couldn’t reach the download servers. Check your internet connection — and if you’re on a work or VPN network, a proxy or firewall may be blocking downloads.claude.ai (it needs TLS 1.2).";
+  }
+
+  // The download arrived but didn't verify — typically antivirus or a proxy
+  // rewriting the bytes in transit.
+  if (lower.includes("checksum")) {
+    return "The download didn’t verify — antivirus or a network proxy may have altered it. Try another network or temporarily disable antivirus, then retry.";
+  }
+
+  // The runtime downloaded but `claude.exe install` failed — most often
+  // antivirus quarantining the freshly downloaded executable.
+  if (lower.includes("installation failed") || lower.includes("exit code")) {
+    return "The Claude Code runtime downloaded but its install step failed — antivirus may have blocked it. Allow claude.exe in your antivirus, then try again.";
+  }
+
+  // Unsupported platform.
+  if (lower.includes("32-bit") || lower.includes("64-bit")) {
+    return "Claude Code requires 64-bit Windows.";
+  }
+
+  return null;
+}
+
+/**
  * Slicer counterpart to `describeClaudeInstallProgress`. Maps a
  * `slicer_install_progress` event to a short status label for the install
  * button + progress card. Unknown stages report a generic "Working…".
@@ -325,6 +375,17 @@ export function buildClaudeInstallFlow({
         err && typeof err === "object" && "message" in err
           ? String(err.message || "Install failed")
           : String(err || "Install failed");
+      // Deep-dive aid: the card shows the distilled `message`, but the full
+      // installer stderr (carried on the IpcError `detail`) is what you need to
+      // diagnose *why* it failed. Log it so it's available with
+      // PANDA_DEVTOOLS=1 without cluttering the onboarding UI.
+      const stderrTail =
+        err && typeof err === "object" && err.detail && typeof err.detail === "object"
+          ? err.detail.stderrTail
+          : null;
+      if (stderrTail) {
+        console.error("[claude-install] failed:", message, "\n", stderrTail);
+      }
       progress = { stage: "error", message };
       emit();
     } finally {

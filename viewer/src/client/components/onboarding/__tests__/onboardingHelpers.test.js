@@ -7,11 +7,36 @@ import {
   evaluateAuthCheck,
   evaluateClaudeCheck,
   evaluateSlicerCheck,
+  installErrorHint,
   isOnboardingComplete,
   nextOnboardingStep,
   ONBOARDING_STEPS,
   previousOnboardingStep,
 } from "../onboardingHelpers.js";
+
+test("installErrorHint guides network/download failures toward proxy/TLS", () => {
+  assert.match(
+    installErrorHint("Failed to download binary: The remote name could not be resolved"),
+    /internet|proxy|firewall|network/i
+  );
+  assert.match(installErrorHint("Failed to get manifest: timed out"), /internet|proxy|firewall|network/i);
+  assert.match(installErrorHint("Failed to get latest version: 403"), /internet|proxy|firewall|network/i);
+});
+
+test("installErrorHint guides checksum failures toward antivirus/proxy", () => {
+  assert.match(installErrorHint("Checksum verification failed"), /antivirus|proxy/i);
+});
+
+test("installErrorHint guides install sub-step failures toward antivirus", () => {
+  assert.match(installErrorHint("Installation failed (exit code 1)"), /antivirus|allow/i);
+});
+
+test("installErrorHint returns null for unknown or empty errors", () => {
+  assert.equal(installErrorHint("some unexpected error"), null);
+  assert.equal(installErrorHint(""), null);
+  assert.equal(installErrorHint(null), null);
+  assert.equal(installErrorHint(undefined), null);
+});
 
 test("ONBOARDING_STEPS exposes the six-step machine with sign-in and slicer", () => {
   assert.deepEqual(ONBOARDING_STEPS, [

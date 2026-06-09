@@ -83,6 +83,10 @@
   --sidebar-ring: oklch(0.705 0.015 286.067);
 
   --ui-app-bg: var(--background);
+  /* Near-black backdrop for 3D viewers (gcode/CAD). Fixed across themes to
+     match the CAD viewer's BASE_VIEWER_THEME sceneBackground (#09090b) and keep
+     the model surfaces high-contrast. */
+  --ui-viewer-bg: #09090b;
   --ui-app-gradient: none;
   --ui-panel: var(--card);
   --ui-panel-strong: var(--muted);

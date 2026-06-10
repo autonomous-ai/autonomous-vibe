@@ -103,6 +103,23 @@ fn detect_claude_cli() -> ClaudeCliStatus {
     ClaudeCliStatus { found, version }
 }
 
+/// A `std::process::Command` for `program` that never pops a console window on
+/// Windows when this GUI app spawns it. The prereq probes below run on every
+/// `app_prereq_check`, which onboarding/Add-Printer poll every few seconds — so
+/// without `CREATE_NO_WINDOW` each poll would flash a console window on Windows
+/// (the same fix the slicer/installer spawns use). No-op on other platforms.
+#[allow(unused_mut)]
+fn quiet_command(program: &Path) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 /// Run `<claude> --version` and return the trimmed output, or `None` if it
 /// can't be executed. Detection treats only `found` as authoritative, so a
 /// failed probe just leaves the version blank — it never blocks onboarding.
@@ -110,7 +127,7 @@ fn detect_claude_cli() -> ClaudeCliStatus {
 /// batch wrappers directly, so no `cmd /C` wrapper is needed — see
 /// `claude_driver::resolve_claude`.
 fn claude_version(path: &Path) -> Option<String> {
-    Command::new(path)
+    quiet_command(path)
         .arg("--version")
         .output()
         .ok()
@@ -155,7 +172,7 @@ fn expected_py_minor() -> String {
 /// probe can't run. Version is informational, so a failed probe just leaves it
 /// blank rather than blocking onboarding.
 fn python_version(py: &Path) -> Option<String> {
-    Command::new(py)
+    quiet_command(py)
         .args(["-c", "import sys;print('%d.%d.%d' % sys.version_info[:3])"])
         .output()
         .ok()
@@ -167,7 +184,7 @@ fn python_version(py: &Path) -> Option<String> {
 /// Does the interpreter import the full cadpy stack? This is the authoritative
 /// "usable" check — version alone doesn't prove the vendored deps are intact.
 fn python_smoke_ok(py: &Path) -> bool {
-    Command::new(py)
+    quiet_command(py)
         .args(["-c", PYTHON_SMOKE_IMPORT])
         .output()
         .map(|out| out.status.success())
@@ -1697,11 +1714,37 @@ pub async fn app_submit_login_code(
 /// Progress streams via the `slicer_install_progress` Tauri event.
 #[tauri::command]
 pub async fn app_install_orcaslicer(app: tauri::AppHandle) -> IpcResult<InstalledSlicer> {
+    // Serialize installs. A single Panda process can trigger this from two
+    // places at once — a mid-slice auto-install (`resolve_or_install_slicer`)
+    // and the Add-Printer "Install for me" button. Without a guard they share
+    // the same per-process temp/extract dir and the one managed install path and
+    // clobber each other mid-extract, leaving a half-written, DLL-less slicer.
+    // The lock makes the second caller wait; it then sees the slicer already
+    // present (below) and returns without re-downloading ~150 MB.
+    static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _install_guard = INSTALL_LOCK.lock().await;
+
     let emit = |progress: SlicerInstallProgress| {
         let _ = app.emit(SLICER_INSTALL_PROGRESS_EVENT, &progress);
     };
 
     let version = SLICER_VERSION_PIN.trim().to_string();
+
+    // A concurrent install may have completed while this call waited on the
+    // lock. If the slicer is now resolvable, report it and skip the download —
+    // the normal install flows only reach here when it was missing, so this
+    // only short-circuits a genuine double-install race.
+    let already = detect_slicer();
+    if already.found {
+        emit(SlicerInstallProgress::Done {
+            version: version.clone(),
+            binary_path: already.binary_path.clone(),
+        });
+        return Ok(InstalledSlicer {
+            version,
+            binary_path: already.binary_path,
+        });
+    }
 
     // Asset name follows the convention in scripts/build/build-slicer-sidecar.sh.
     #[cfg(target_os = "macos")]
@@ -1977,34 +2020,41 @@ async fn install_downloaded_slicer(app: &tauri::AppHandle, zip: &Path) -> IpcRes
 /// shadow it. Falls back to PowerShell `Expand-Archive`.
 #[cfg(target_os = "windows")]
 async fn extract_zip(zip: &Path, dest: &Path) -> IpcResult<()> {
+    use std::os::windows::process::CommandExt;
     use tokio::process::Command as TokioCommand;
+    // Don't flash a console window when this GUI app spawns the extractor
+    // (tar.exe / powershell are both console-subsystem programs).
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
     let bsdtar = PathBuf::from(&system_root)
         .join("System32")
         .join("tar.exe");
     if bsdtar.exists() {
-        if let Ok(status) = TokioCommand::new(&bsdtar)
+        let mut std_tar = std::process::Command::new(&bsdtar);
+        std_tar
             .arg("-xf")
             .arg(zip)
             .arg("-C")
             .arg(dest)
-            .status()
-            .await
-        {
+            .creation_flags(CREATE_NO_WINDOW);
+        if let Ok(status) = TokioCommand::from(std_tar).status().await {
             if status.success() {
                 return Ok(());
             }
         }
     }
 
-    let status = TokioCommand::new("powershell")
+    let mut std_ps = std::process::Command::new("powershell");
+    std_ps
         .args(["-NoProfile", "-NonInteractive", "-Command"])
         .arg(format!(
             "Expand-Archive -Force -LiteralPath '{}' -DestinationPath '{}'",
             zip.display(),
             dest.display()
         ))
+        .creation_flags(CREATE_NO_WINDOW);
+    let status = TokioCommand::from(std_ps)
         .status()
         .await
         .map_err(|e| IpcError::new("INSTALL_FAILED", format!("Expand-Archive failed to start: {e}")))?;

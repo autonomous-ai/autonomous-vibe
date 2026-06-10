@@ -42,10 +42,12 @@ const GCODE_VIEW_PLANE_FACE_BY_ID = Object.fromEntries(
 const DEFAULT_VIEW_DIRECTION = [1.88, 0, 1];
 
 // Plate-axis colors, matched to ViewPlaneControl's default palette so the origin
-// triad and the gizmo nodes read as the same X/Y/Z (red / green / blue).
-const AXIS_COLOR_X = 0xfa584f;
-const AXIS_COLOR_Y = 0x5ce97b;
-const AXIS_COLOR_Z = 0x5483ff;
+// triad and the gizmo nodes read as the same X/Y/Z (red / green / blue). These
+// are the dark-mode fallbacks; the live values come from the theme-aware
+// --gcode-axis-* CSS vars (see readGcodeColors), which darken for light mode.
+const AXIS_COLOR_X = "#fa584f";
+const AXIS_COLOR_Y = "#5ce97b";
+const AXIS_COLOR_Z = "#5483ff";
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -143,7 +145,7 @@ function defaultGcodeCameraPosition(buildVolume) {
 // a group with the same transform gcode-preview gives its toolpath group, so the
 // arrows inherit the printer orientation (X red along bed X, Y green into the bed,
 // Z blue up).
-function buildOriginAxes(buildVolume) {
+function buildOriginAxes(buildVolume, colors = {}) {
   const group = new Group();
   group.name = "gcode-origin-axes";
   group.quaternion.setFromEuler(new Euler(-Math.PI / 2, 0, 0));
@@ -152,9 +154,12 @@ function buildOriginAxes(buildVolume) {
   const headLength = length * 0.22;
   const headWidth = headLength * 0.62;
   const origin = new Vector3(0, 0, 0);
-  group.add(new ArrowHelper(new Vector3(1, 0, 0), origin, length, AXIS_COLOR_X, headLength, headWidth));
-  group.add(new ArrowHelper(new Vector3(0, 1, 0), origin, length, AXIS_COLOR_Y, headLength, headWidth));
-  group.add(new ArrowHelper(new Vector3(0, 0, 1), origin, length, AXIS_COLOR_Z, headLength, headWidth));
+  const xColor = colors.axisX || AXIS_COLOR_X;
+  const yColor = colors.axisY || AXIS_COLOR_Y;
+  const zColor = colors.axisZ || AXIS_COLOR_Z;
+  group.add(new ArrowHelper(new Vector3(1, 0, 0), origin, length, xColor, headLength, headWidth));
+  group.add(new ArrowHelper(new Vector3(0, 1, 0), origin, length, yColor, headLength, headWidth));
+  group.add(new ArrowHelper(new Vector3(0, 0, 1), origin, length, zColor, headLength, headWidth));
   return group;
 }
 
@@ -176,6 +181,20 @@ function readCssVar(name, fallback) {
   }
   const value = window.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   return value || fallback;
+}
+
+// Theme-aware gcode scene palette, resolved from CSS vars at the current moment
+// (they flip when the app toggles light/dark). All values stay THREE.Color-
+// parseable. Dark mode resolves to the library defaults, so it's unchanged.
+function readGcodeColors() {
+  return {
+    background: readCssVar("--gcode-viewer-bg", "#09090b"),
+    extrusion: readCssVar("--gcode-extrusion", "hotpink"),
+    travel: readCssVar("--gcode-travel", "#990000"),
+    axisX: readCssVar("--gcode-axis-x", AXIS_COLOR_X),
+    axisY: readCssVar("--gcode-axis-y", AXIS_COLOR_Y),
+    axisZ: readCssVar("--gcode-axis-z", AXIS_COLOR_Z)
+  };
 }
 
 // Render the current frame then read the drawing buffer synchronously. The
@@ -223,6 +242,10 @@ const GcodePreviewPane = forwardRef(function GcodePreviewPane({
   // Latest option values, read inside the load effect without re-running it.
   const optionsRef = useRef({ topLayer, showTravel, renderTubes });
   optionsRef.current = { topLayer, showTravel, renderTubes };
+
+  // Latest build volume, read inside the mount-only theme observer below.
+  const buildVolumeRef = useRef(buildVolume || DEFAULT_BUILD_VOLUME);
+  buildVolumeRef.current = buildVolume || DEFAULT_BUILD_VOLUME;
 
   // Sync the gizmo (orientation + highlighted face) to the live camera. Cheap and
   // guarded so the OrbitControls "change" stream doesn't thrash React state.
@@ -322,13 +345,18 @@ const GcodePreviewPane = forwardRef(function GcodePreviewPane({
     }
     const resolvedBuildVolume = buildVolume || DEFAULT_BUILD_VOLUME;
     const initialPosition = defaultGcodeCameraPosition(resolvedBuildVolume);
+    const colors = readGcodeColors();
     const preview = initGcodePreview({
       canvas,
       buildVolume: resolvedBuildVolume,
-      // Match the CAD/STL viewer's near-black scene background (BASE_VIEWER_THEME
-      // sceneBackground) so the gcode mode reads as dark and consistent rather
-      // than the lighter app chrome background.
-      backgroundColor: readCssVar("--ui-viewer-bg", "#09090b"),
+      // Theme-aware scene + toolpath colors (see --gcode-* in globals.css). Dark
+      // mode resolves to the library defaults and the fixed near-black backdrop
+      // (so it's unchanged); light mode gives a light scene with darker, higher-
+      // contrast toolpaths. The theme MutationObserver below re-applies these on
+      // a live light/dark switch.
+      backgroundColor: colors.background,
+      extrusionColor: colors.extrusion,
+      travelColor: colors.travel,
       renderExtrusion: true,
       renderTravel: showTravel,
       renderTubes,
@@ -341,7 +369,7 @@ const GcodePreviewPane = forwardRef(function GcodePreviewPane({
     // render() calls initScene() which strips every scene child. Re-add the same
     // instance (and re-draw, since screenshot capture reads the buffer right after
     // render()) at the tail of every render() call.
-    const originAxes = buildOriginAxes(resolvedBuildVolume);
+    const originAxes = buildOriginAxes(resolvedBuildVolume, colors);
     originAxesRef.current = originAxes;
     const baseRender = preview.render.bind(preview);
     preview.render = () => {
@@ -386,6 +414,38 @@ const GcodePreviewPane = forwardRef(function GcodePreviewPane({
       previewRef.current?.resize?.();
     });
     observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  // Re-apply the theme-aware scene palette on a live light/dark switch. The app
+  // toggles the `.dark` class / `data-theme` on <html> (applyColorSchemeToDocument);
+  // observe that, re-read the --gcode-* vars, and recolor. render() rebuilds the
+  // toolpath geometry from the parsed layers using the current colors, so this
+  // recolors existing content without a reparse; the background/extrusion/travel
+  // setters update the live scene directly.
+  useEffect(() => {
+    if (typeof MutationObserver !== "function") {
+      return undefined;
+    }
+    const root = document.documentElement;
+    const observer = new MutationObserver(() => {
+      const preview = previewRef.current;
+      if (!preview) {
+        return;
+      }
+      const colors = readGcodeColors();
+      preview.backgroundColor = colors.background;
+      preview.extrusionColor = colors.extrusion;
+      preview.travelColor = colors.travel;
+      // Rebuild the bed-origin triad with the new axis colors. Swap the ref
+      // before render() (the wrapped render re-adds originAxesRef.current and
+      // initScene() strips the old instance), then dispose the detached one.
+      const previousAxes = originAxesRef.current;
+      originAxesRef.current = buildOriginAxes(buildVolumeRef.current, colors);
+      preview.render();
+      disposeOriginAxes(previousAxes);
+    });
+    observer.observe(root, { attributes: true, attributeFilter: ["class", "data-theme"] });
     return () => observer.disconnect();
   }, []);
 

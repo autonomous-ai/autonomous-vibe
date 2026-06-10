@@ -67,7 +67,7 @@ export default function QuestionCard({ questions }) {
   return (
     <div
       data-slot="chat-questions"
-      className="rounded-2xl border border-white/8 bg-[#16181c] p-3 text-sm shadow-(--ui-shadow-soft)"
+      className="rounded-2xl border border-border bg-muted p-3 text-sm text-foreground shadow-(--ui-shadow-soft)"
     >
       <div className="flex flex-col gap-3.5">
         {list.map((q, qi) => {
@@ -75,7 +75,7 @@ export default function QuestionCard({ questions }) {
           const picks = selected[qi] || [];
           return (
             <div key={qi} data-slot="chat-question" className="flex flex-col gap-2.5">
-              <p className="text-sm font-semibold leading-tight text-zinc-100">{q.question}</p>
+              <p className="text-sm font-semibold leading-tight text-foreground">{q.question}</p>
               <div className="flex flex-wrap gap-2">
                 {(q.options || []).map((opt) => {
                   const active = picks.includes(opt.label);
@@ -91,8 +91,8 @@ export default function QuestionCard({ questions }) {
                       className={cn(
                         "inline-flex items-center rounded-full border px-3 py-2 text-[13px] font-medium transition-colors",
                         active
-                          ? "border-[#34d399]/55 bg-[#34d399]/20 text-white"
-                          : "border-white/8 bg-white/[0.05] text-zinc-400 hover:border-white/15 hover:bg-white/[0.08] hover:text-zinc-200",
+                          ? "border-emerald-500/55 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                          : "border-border bg-foreground/[0.04] text-muted-foreground hover:border-foreground/20 hover:bg-foreground/[0.08] hover:text-foreground",
                         submitted && !active && "opacity-55",
                       )}
                     >
@@ -113,7 +113,7 @@ export default function QuestionCard({ questions }) {
           onClick={handleDelegate}
           disabled={turnInProgress || submitted}
           data-slot="chat-questions-delegate"
-          className="h-9 rounded-lg border-white/10 bg-white/[0.02] px-4 text-zinc-300 hover:bg-white/[0.07] hover:text-zinc-50 disabled:opacity-55"
+          className="h-9 rounded-lg border-border bg-foreground/[0.02] px-4 text-muted-foreground hover:bg-foreground/[0.07] hover:text-foreground disabled:opacity-55"
         >
           Build the best (you decide)
         </Button>
@@ -127,9 +127,9 @@ export default function QuestionCard({ questions }) {
           // used to leave a "Send a…"/"Sent" ghost). Sent reads as a quiet,
           // deliberate green confirmation rather than a half-disabled button.
           className={cn(
-            "min-w-20 rounded-lg bg-[#10b981] px-4 font-medium text-white hover:bg-[#34d399] disabled:bg-zinc-700 disabled:text-zinc-400 disabled:opacity-100",
+            "min-w-20 rounded-lg bg-emerald-600 px-4 font-medium text-white hover:bg-emerald-500 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
             submitted &&
-              "bg-[#34d399]/20 text-[#34d399] ring-1 ring-[#34d399]/30 hover:bg-[#34d399]/20 disabled:bg-[#34d399]/20 disabled:text-[#34d399]",
+              "bg-emerald-500/15 text-emerald-700 ring-1 ring-emerald-500/30 hover:bg-emerald-500/15 disabled:bg-emerald-500/15 disabled:text-emerald-700 dark:text-emerald-300 dark:disabled:text-emerald-300",
           )}
         >
           {submitted ? (

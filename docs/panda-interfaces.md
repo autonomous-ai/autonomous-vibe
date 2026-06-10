@@ -73,6 +73,12 @@ A dict return must contain **exactly one** of `shape`, `instances`,
     "step_output":           str | Path,   # override the STEP path
     "mesh_tolerance":        float,        # linear, mm; default 0.05
     "mesh_angular_tolerance": float,       # deg; default 3.0
+
+    # Optional (additive): project-declared warnings merged into
+    # validation.warnings alongside the deterministic geometry checks. Each:
+    # {"part", "kind", "detail", "severity"} (kind defaults vary; part→"model",
+    # severity→"warning"). Used for kind:"functional" assembly-feasibility checks.
+    "warnings":              list[dict],
 }
 ```
 
@@ -721,12 +727,18 @@ interface CadcodeResult {
   // origin. Absent/empty for single-solid projects. See contract §1.
   parts?: { name: string; stl_path: string }[];
 
-  // Deterministic geometry sanity checks (additive). Absent/empty when the
-  // geometry is clean. `ok` stays true — these are advisory, not failures;
-  // the skill loop and the harness Review phase use them as a fix gate.
-  // `kind` ∈ { "disconnected_bodies", "sliver", "invalid_brep", "empty",
-  // "check_failed" }; `part` is the part name (or "model" for single-part
-  // projects). Also mirrored into `.step.json` under `validation.warnings`.
+  // Deterministic geometry sanity checks (additive; the `kind` set is open and
+  // grows). Absent/empty when the geometry is clean. `ok` stays true — these are
+  // advisory, not failures; the skill loop and the harness Review phase use them
+  // as a fix gate. Blocking-geometry kinds ∈ { "disconnected_bodies", "sliver",
+  // "invalid_brep", "empty", "check_failed" }. Aesthetic advisories carry
+  // `severity:"info"` and never gate the geometry loop: "sharp_edges" (count of
+  // un-softened convex arrises) seeds the harness's automatic aesthetic-polish
+  // pass. Project-declared "functional" warnings (severity:"warning") flag
+  // assembly/usability problems (the part is a valid solid but won't assemble/
+  // work) and gate the harness's functional-review pass. `part` is the part name
+  // (or "model" for single-part projects). Also mirrored into `.step.json` under
+  // `validation.warnings`.
   warnings?: { part: string; kind: string; detail: string; severity: string }[];
 
   // On failure:

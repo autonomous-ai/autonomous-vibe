@@ -113,7 +113,7 @@ What "fix" means in practice:
 
 - ``ok=false``: read the traceback, change the smallest responsible line, re-run.
 - ``is_solid=false`` or volume far off expected: load `references/repair-loop.md`, classify, fix, re-run.
-- ``warnings`` non-empty (e.g. ``disconnected_bodies``, ``sliver``, ``invalid_brep``): these are deterministic geometry defects — **treat them as blocking**. A ``disconnected_bodies`` warning means a feature is floating off the body (placed outside its footprint, or never unioned) — or, for a **mechanism**, two pinned links whose shared joint was posed by eyeballed angles instead of solved, so they never meet. Anchor it to the body (`references/patterns/anchor-to-body.md`) or solve the loop so the joint coincides (`references/kinematic-placement.md`), and re-run. Do not declare done while any warning remains.
+- ``warnings`` non-empty (e.g. ``disconnected_bodies``, ``sliver``, ``invalid_brep``): these are deterministic geometry defects — **treat them as blocking**. A ``disconnected_bodies`` warning means a feature is floating off the body (placed outside its footprint, or never unioned) — or, for a **mechanism**, two pinned links whose shared joint was posed by eyeballed angles instead of solved, so they never meet. Anchor it to the body (`references/patterns/anchor-to-body.md`) or solve the loop so the joint coincides (`references/kinematic-placement.md`), and re-run. Do not declare done while any **blocking** warning remains. (The advisory `sharp_edges` hint — `severity: "info"` — is **not** blocking: address it within printability and leave functional arrises sharp; see step 6.)
 - Preview STL looks wrong (proportions off, hole misplaced, parts misaligned, a member poking through a plate): edit the `.py` and re-run. **Always inspect every part** — geometry can be valid (`is_solid=true`, no warnings) but still wrong.
 
 You have everything you need to close the loop on your own:
@@ -154,6 +154,35 @@ is an **engineering spec**, not a sales pitch. Hold it to four rules:
 the holes 5 mm apart") needs only the exact before→after values and any physical
 consequence — one to three lines. A new part or any multi-part / load-bearing
 design gets the full treatment.
+
+**Aesthetic discipline.** A Panda part should look like a premium consumer
+product (Apple-anchored, but a broad high-end range — see
+`references/industrial-design.md`), not a blocky CAD default. For any
+user-facing part, give each part in the plan a one-line **`Form`** clause naming
+its radius language (the unified corner/edge radius and where it's applied) and
+its primary surface treatment (e.g. "4 mm unified vertical radius, 1 mm top
+chamfer, calm front face, fasteners hidden on the back"). This is **secondary to
+function and printability** — never trade away strength, wall thickness,
+tolerance, clearance, or print orientation for looks; if an aesthetic choice
+would compromise the part, say so and pick function. Trivial edits skip the
+`Form` clause.
+
+**Assembly & functional discipline.** A part that is a valid solid but can't be
+assembled or used is a failure (the classic miss: a MagSafe stand whose puck
+*pocket* is perfect but whose **captive cable + connector collar** can't pass the
+opening). For any design that integrates a real component, the plan must include:
+- **Assembly & setup sequence** — the ordered steps to assemble and set up the
+  finished print (install each component, route its cable/connector, place the
+  device), and the clearance each step needs. Model the WHOLE component,
+  including captive cables, connector collars, and plugs — look it up in
+  `references/hobbyist-defaults.md`.
+- **Functional requirements** — the checklist of what it must do (hold / charge /
+  route / rest / remove), each tied to a dimension.
+
+Read `references/component-integration.md` for the discipline. Encode the
+constraints two ways (see the build loop): hard `validate()` asserts for
+impossible fits, and `functional` warnings for assembly-feasibility. Trivial
+edits skip this.
 
 ### Where the numbers come from — source them, don't guess
 
@@ -427,6 +456,26 @@ visually wrong:
 - **Justify each part.** For every part, state in one line what it is for and
   what it connects to (which mounting interface / mating face). If you cannot
   justify a part, or it does not connect to anything, it is a defect — fix it.
+- **Verify it assembles and works.** Walk the plan's **assembly & setup
+  sequence** against the renders: for each step, can the component — *and its
+  captive cable / connector collar* — physically get where it needs to go
+  (open route, opening sized for the connector, reachable insertion path)? Encode
+  the constraints as hard `validate()` asserts (impossible fits) **and**
+  `functional` warnings returned from `gen_step()`
+  (`return {"shape": shape, "warnings": functional_checks(p)}`). The
+  `.step.json` `validation.warnings` lists any `functional` failures — fix the
+  geometry/params and re-run until they're gone. See
+  `references/component-integration.md`.
+- **Critique the look against the premium bar.** Reading those same PNGs, judge
+  each part against `references/industrial-design.md`: does it carry one unified
+  radius language, or a scatter of raw 90° arrises? Are transitions blended,
+  primary surfaces calm, fasteners minimized? The JSON's `sharp_edges` advisory
+  (an info warning, never blocking) counts the un-softened convex arrises — drive
+  it toward zero on visible faces with `cadlib.styling` (`soften_edges` /
+  `break_edges`), **within printability and strength limits**. Refine and re-run
+  any part that reads cheap, blocky, or unresolved; leave functional arrises
+  sharp. Do this before hand-off — a part that works but looks like a default box
+  is not done.
 - Compare against the user's prompt and any reference image.
 - Check the bbox in the JSON: does it match the intent (right order of
   magnitude, fits on a 200×200mm bed)?
@@ -466,9 +515,15 @@ assumptions you made.
   throughout. CadQuery is the only modeling library available.
 - Run `scripts/cad` (or at minimum `scripts/check`) before declaring done.
   Never claim a model is printable from reading code alone.
-- Never declare done with a non-empty `warnings` array, a floating/disconnected
-  part, or a part you cannot justify. For assemblies, run `scripts/review` and
-  inspect **every** per-part render — not just the assembled preview.
+- Never declare done with a **blocking** warning (`disconnected_bodies`,
+  `sliver`, `invalid_brep`, `empty`, `check_failed`) **or a `functional`
+  warning** in the `warnings` array, a floating/disconnected part, or a part you
+  cannot justify. A `functional` warning (`severity: "warning"`) means the design
+  can't be assembled/used as intended (e.g. a connector that won't fit its
+  opening) — fix it. The advisory `sharp_edges` hint (`severity: "info"`) is not
+  blocking — soften what you can within printability and leave functional arrises
+  sharp. For assemblies, run `scripts/review` and inspect **every** per-part
+  render — not just the assembled preview.
 - When the prompt is ambiguous on a *geometry-changing* axis, ask **one**
   clarifying question. Otherwise, pick a default and proceed.
 - Use millimeters throughout. Do not convert; do not annotate inches.
@@ -486,6 +541,8 @@ when you need to mimic a pattern):
 | ``assets/example_twisted_vase.py`` | Multi-level loft of rotated cross-sections, ``.shell()`` for hollow walls |
 | ``assets/example_gopro_mount.py`` | Multi-part union (base + stem + 3-finger head), standard GoPro spec, ``.cboreHole`` |
 | ``assets/example_knurled_knob.py`` | Polar array of cutting features (knurling), chamfers, M3 set screw |
+| ``assets/example_desk_valet.py`` | Premium look: unified radius language via ``cadlib.styling`` (``design_radius_for`` + ``soften_edges`` + ``break_edges``), shelled tray |
+| ``assets/example_magsafe_stand.py`` | Functional integration: a captive-cable component done right — `add_open_cable_channel` (connector-clearance), hard `validate()` + soft `functional_checks()` warnings via the envelope dict |
 
 These are the canonical patterns. Mimic the file shape: docstring at top,
 named parameters at the top of the file, single ``result = ...`` at the
@@ -495,6 +552,18 @@ bottom.
 
 Load these only when their trigger applies (saves the host agent's context):
 
+- `references/industrial-design.md` — the premium-product (Apple-anchored)
+  aesthetic bar: unified radius language, proportion and restraint, surface
+  continuity, ergonomics/texture, and printing the show-face down. **Load when
+  designing or polishing the look of any user-facing part** — function and
+  printability still win every conflict. Backed by `cadlib.styling` and the
+  `unified-radius` / `surface-continuity` patterns.
+- `references/component-integration.md` — **load before integrating any real
+  component** (charger, phone, connector, motor, bearing). The discipline for
+  making a design actually assemble and work: model the whole component incl.
+  captive cables / connector collars, write the assembly/setup sequence, and
+  enforce it with hard `validate()` asserts + soft `functional` warnings. Backed
+  by `cadlib.cutouts.add_open_cable_channel` and the `cable-channel` pattern.
 - `references/project-structure.md` — when to use a project directory
   vs a single file, the canonical layout, the seven rules, editing rules.
   **Load before scaffolding any multi-part design.**
@@ -533,8 +602,10 @@ from cadlib.enclosure import hollow_box, add_lid_lip, lid_plate
 from cadlib.mounting  import add_screw_post, add_heat_set_pocket, add_nut_trap
 from cadlib.cutouts   import (
     add_press_fit_pocket, add_magnet_pocket, add_bearing_seat, add_cable_channel,
+    add_open_cable_channel,   # captive cable + connector collar (installable)
 )
 from cadlib.mechanical import add_dovetail_slot, add_rib_stiffener
+from cadlib.styling   import design_radius_for, soften_edges, break_edges
 from cadlib.kinematics import solve_fourbar, place_two_point, circle_intersections
 from cadlib.layout    import four_corner_points, grid_points, circle_points
 from cadlib.tables    import (
@@ -592,6 +663,8 @@ language to the trigger column and `Read` the corresponding file.
 | nut trap, embedded nut, captive nut, hex pocket | `references/patterns/nut-trap.md` |
 | ribs, stiffener, gusset, brace, "make this stronger" | `references/patterns/rib-stiffener.md` |
 | crack at corner, fatigue, stress relief, fillets | `references/patterns/fillet-stress-relief.md` |
+| blocky / cheap-looking, "make it premium / nicer / rounder / more Apple", unified corner radius, clear `sharp_edges` | `references/patterns/unified-radius.md` |
+| hard shoulder, abrupt step, blend a junction, crisp chamfer line, fillet vs chamfer, seamless | `references/patterns/surface-continuity.md` |
 | wall thickness, nozzle width, "how thick should X be" | `references/patterns/wall-thickness-rules.md` |
 | print orientation, layer lines, "how should I print this" | `references/patterns/print-orientation.md` |
 | overhangs, supports, teardrop hole, bridging | `references/patterns/overhang-relief.md` |

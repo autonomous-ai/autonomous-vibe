@@ -48,6 +48,40 @@ defaults to `cable_diameter * 0.9`. Common jacket diameters live in
 > centerline with more than two points. For curved or multi-segment
 > routing see **Beyond the helper** below.
 
+## Captive cable + connector collar (the install-feasibility trap)
+
+Many real devices ship with a **captive cable** that you cannot detach — an
+Apple MagSafe puck, a barrel-jack pigtail, a sensor lead. Its device end has a
+**strain-relief connector collar wider than the jacket** (a MagSafe puck's
+collar is ~Ø9 mm on a Ø3.6 mm cable). Two hard rules follow, and getting either
+wrong means the part is geometrically perfect but **impossible to assemble**:
+
+1. **The route must be OPEN** — you can only lay a captive cable in from the
+   side, never thread it through a closed tunnel.
+2. **The route must clear the CONNECTOR**, not just the jacket — size the entry
+   for the collar Ø, not the cable Ø.
+
+Use the connector-aware helper (see `references/component-integration.md` for the
+discipline and `references/hobbyist-defaults.md` for collar dims):
+
+```python
+from cadlib.cutouts import add_open_cable_channel
+
+part = add_open_cable_channel(
+    part,
+    centerline=[(0, 24), (0, -24)],   # straight; first point = the device/exit end
+    cable_diameter=3.6,               # braided jacket
+    connector_diameter=9.0,           # strain-relief collar — the wide bit
+    connector_length=14.0,            # collar length to clear
+    open_face=">Z",
+)
+```
+
+It cuts an open cable channel for the whole run **plus** a wider
+connector-clearance pocket at `centerline[0]`. Pair it with a `functional`
+check that the pocket clears the collar (`connector_diameter + clearance >=
+collar Ø`) so the driver's functional-review loop catches a too-small opening.
+
 ## Closing the channel
 
 The helper cuts an open-top channel (no lid). Three ways to retain the cable:

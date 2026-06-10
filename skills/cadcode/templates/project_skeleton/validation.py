@@ -1,12 +1,38 @@
 """Runtime checks on Params before any geometry is built.
 
-Catches bad dimensions before paying a render cycle. Edit when you add
-new constraints; do not silence failures.
+Two layers (see references/component-integration.md):
+
+  * ``validate_params`` — HARD asserts for impossible fits. A failure blocks
+    the build (surfaces as VALIDATION_FAILED). Edit when you add new
+    constraints; do not silence failures.
+  * ``functional_warnings`` — SOFT, structured assembly-feasibility checks. The
+    build still renders; the driver's functional-review loop won't finish while
+    any remain. Return ``kind:"functional"`` entries.
 """
 
 from __future__ import annotations
 
 from params import Params
+
+
+def functional_warnings(p: Params) -> list[dict]:
+    """Assembly/installation feasibility → structured `functional` warnings.
+
+    Return one dict per failed check; an empty list means "assembles fine".
+    Each entry: ``{"part", "kind": "functional", "detail", "severity": "warning"}``.
+
+    Example (delete if not integrating a captive-cable component):
+
+        warnings = []
+        if p.connector_pocket_dia < p.connector_dia + 0.6:
+            warnings.append({
+                "part": "body", "kind": "functional",
+                "detail": "connector pocket can't clear the collar — won't install",
+                "severity": "warning",
+            })
+        return warnings
+    """
+    return []
 
 
 def validate_params(p: Params) -> None:

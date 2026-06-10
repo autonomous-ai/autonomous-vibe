@@ -757,6 +757,20 @@ pub struct AppSettings {
     /// install is never applied without the user choosing to relaunch.
     #[serde(default)]
     pub auto_update: bool,
+    /// Autopilot. `true` (default) = the design runs end-to-end with **no plan
+    /// approval gate**: after the model asks its preference questions, it builds
+    /// and runs the full review pipeline (geometry → functional → aesthetic)
+    /// unattended, then delivers the product + parts. `false` restores the
+    /// manual plan → *Approve & build* flow. Defaults true even for settings
+    /// files written before this field existed (`default_true`).
+    #[serde(default = "default_true")]
+    pub auto_build: bool,
+}
+
+/// serde default for fields that should be `true` when absent from an existing
+/// settings file (so a missing `auto_build` means autopilot, not manual).
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -773,6 +787,7 @@ impl Default for AppSettings {
             claude_oauth_token: None,
             has_onboarded: false,
             auto_update: false,
+            auto_build: true,
         }
     }
 }

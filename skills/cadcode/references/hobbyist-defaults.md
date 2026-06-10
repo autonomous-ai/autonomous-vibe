@@ -88,6 +88,28 @@ of one another. The depth is the dimension that matters most for cradles.
 
 **Add 4–6 mm to each dimension to accommodate a typical case.**
 
+## Captive cables & connector collars (install-feasibility)
+
+These devices ship with a **permanently-attached cable** ending in a
+**strain-relief collar / connector wider than the jacket**. Your opening must
+clear the *collar*, and the route must be **open** (lay the cable in from the
+side — you cannot thread a captive cable through a closed tunnel). See
+`references/component-integration.md` and `references/patterns/cable-channel.md`.
+
+| Component | Body | Captive cable Ø | Connector collar Ø × len | Notes |
+|---|---|---|---|---|
+| Apple MagSafe charger (puck) | Ø56 × 5.5–6 mm | 3.6 mm braided | ~9 mm × ~14 mm | Cable exits the puck edge; ~1 m; collar is the wide bit |
+| USB-C connector (plug) | — | ~4.0 mm cable | ~9 × 3.4 mm (rect) + collar Ø~8 mm | Connector body is rectangular |
+| Lightning connector (plug) | — | ~3.2 mm cable | ~7.7 × 3.2 mm (rect) + collar Ø~7 mm | |
+| Barrel jack (5.5/2.1) pigtail | — | ~4 mm cable | Ø~9–11 mm × ~10 mm | |
+| Generic strain-relief collar | — | cable Ø | **≈ 2× cable Ø** × 10–15 mm | Use when the exact part is unknown |
+
+Round openings up: connector pocket Ø = collar Ø **+ ≥0.6 mm**.
+
+| Other cable jackets | Ø |
+|---|---|
+| ribbon ~3, USB-A ~4.5, USB-C ~4, micro-USB ~3.5, JST-XH 2-pin ~2.5, mains 2-core ~6, cat6 ethernet ~6.5 | mm |
+
 ## Common mount patterns
 
 | Standard | Pattern | Notes |

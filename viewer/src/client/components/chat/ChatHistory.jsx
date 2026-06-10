@@ -8,6 +8,11 @@ import { groupTurns } from "./chatHistoryModel";
 const GROUP_GAP = 12;
 const GROUP_ESTIMATE_HEIGHT = 220;
 const BACK_TO_BOTTOM_THRESHOLD = 120;
+// Resuming auto-follow requires the viewport to sit at the *true* bottom, not
+// merely within the (generous) back-to-bottom band. Otherwise a small scroll-up
+// during streaming gets silently re-pinned and the next delta yanks the user
+// back down — the up/down jitter we're guarding against.
+const AT_BOTTOM_EPSILON = 8;
 
 export { groupTurns } from "./chatHistoryModel";
 
@@ -45,8 +50,10 @@ export default function ChatHistory({
     const hasLongHistory = node.scrollHeight > node.clientHeight + 48;
     const distanceFromBottom = node.scrollHeight - node.clientHeight - node.scrollTop;
     const pinned = !hasLongHistory || distanceFromBottom <= BACK_TO_BOTTOM_THRESHOLD;
+    const atBottom = !hasLongHistory || distanceFromBottom <= AT_BOTTOM_EPSILON;
     return {
       pinned,
+      atBottom,
       showBackToBottom: hasLongHistory && distanceFromBottom > BACK_TO_BOTTOM_THRESHOLD,
     };
   }, []);
@@ -64,7 +71,7 @@ export default function ChatHistory({
   }, []);
 
   const updateBackToBottomVisibility = useCallback(() => {
-    const { pinned, showBackToBottom: show } = readScrollPin();
+    const { pinned, atBottom, showBackToBottom: show } = readScrollPin();
     if (programmaticScrollRef.current) {
       programmaticScrollRef.current = false;
       pinnedToBottomRef.current = pinned;
@@ -76,10 +83,15 @@ export default function ChatHistory({
     }
 
     pinnedToBottomRef.current = pinned;
-    if (!pinned) {
-      userDetachedRef.current = true;
-    } else {
+    // Only a user scroll that reaches the true bottom re-arms auto-follow.
+    // Within the back-to-bottom band but above the bottom we leave the detach
+    // flag untouched: a scroll-up mid-stream must stay detached so the next
+    // delta can't force the viewport back down (the up/down race). Detach only
+    // hardens further when the user is clearly away from the bottom.
+    if (atBottom) {
       userDetachedRef.current = false;
+    } else if (!pinned) {
+      userDetachedRef.current = true;
     }
     setShowBackToBottom(show);
   }, [readScrollPin]);

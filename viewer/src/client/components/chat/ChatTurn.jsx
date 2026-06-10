@@ -122,6 +122,15 @@ export default memo(function ChatTurn({ turn, onOpenArtifact }) {
     turn.blocks.some((block) => block.kind === "artifact");
   const copyText = turnCopyText(turn);
   const showCopyButton = turnShowsCopyButton(turn);
+  // Tool calls are intentionally not rendered (see the tool_use case below).
+  // While the turn is running and there's no streaming text to show — either
+  // nothing has arrived yet, or a hidden tool call is the latest activity —
+  // surface one generic "Working…" line so the user knows something is happening.
+  const lastBlock = turn.blocks[turn.blocks.length - 1];
+  const showWorking =
+    !isUser &&
+    turn.status === "running" &&
+    (turn.blocks.length === 0 || lastBlock?.kind === "tool_use");
   return (
     <article
       data-slot="chat-turn"
@@ -167,15 +176,6 @@ export default memo(function ChatTurn({ turn, onOpenArtifact }) {
             ))}
           </div>
         ) : null}
-        {!isUser && turn.status === "running" && turn.blocks.length === 0 ? (
-          <p
-            data-slot="chat-working"
-            className="flex items-center gap-1.5 text-sm text-muted-foreground"
-          >
-            <Loader2 className="size-3.5 animate-spin" aria-hidden />
-            Working…
-          </p>
-        ) : null}
         {turn.blocks.map((block, index) => {
           switch (block.kind) {
             case "text":
@@ -189,15 +189,19 @@ export default memo(function ChatTurn({ turn, onOpenArtifact }) {
             case "thinking":
               return <ThinkingBlock key={index} text={block.text} />;
             case "tool_use":
-              return (
-                <ToolUseBlock
-                  key={index}
-                  tool={block.tool}
-                  label={toolLabel(block.tool, block.input)}
-                  input={block.input}
-                  status={block.status}
-                />
-              );
+              // Tool calls are intentionally not shown — the generic "Working…"
+              // indicator below tells the user something is happening without
+              // exposing tool internals. Uncomment to restore the detail cards.
+              // return (
+              //   <ToolUseBlock
+              //     key={index}
+              //     tool={block.tool}
+              //     label={toolLabel(block.tool, block.input)}
+              //     input={block.input}
+              //     status={block.status}
+              //   />
+              // );
+              return null;
             case "plan":
               return <PlanBlock key={index} plan={block.plan} status={block.status} />;
             case "artifact":
@@ -216,6 +220,15 @@ export default memo(function ChatTurn({ turn, onOpenArtifact }) {
               return null;
           }
         })}
+        {showWorking ? (
+          <p
+            data-slot="chat-working"
+            className="flex items-center gap-1.5 text-sm text-muted-foreground"
+          >
+            <Loader2 className="size-3.5 animate-spin" aria-hidden />
+            Working…
+          </p>
+        ) : null}
         {showModifyHint ? (
           <p
             data-slot="chat-modify-hint"

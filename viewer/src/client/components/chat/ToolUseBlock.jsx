@@ -17,12 +17,12 @@ const STATUS_PILL = {
   running: {
     icon: <Loader2 className="size-3 animate-spin" aria-hidden />,
     label: "Running",
-    cls: "border-white/10 bg-white/5 text-zinc-400",
+    cls: "border-border bg-foreground/5 text-muted-foreground",
   },
   cancelled: {
     icon: <Ban className="size-3" aria-hidden />,
     label: "Cancelled",
-    cls: "border-white/10 bg-white/5 text-zinc-500",
+    cls: "border-border bg-foreground/5 text-muted-foreground",
   },
 };
 
@@ -61,24 +61,24 @@ export default function ToolUseBlock({ tool, label, input, status }) {
       data-tool={tool}
       data-status={status}
       className={cn(
-        "rounded-lg border border-white/10 bg-[#17181b] px-4 py-3 text-xs text-zinc-400 shadow-sm transition-colors",
+        "rounded-lg border border-border bg-muted px-4 py-3 text-xs text-muted-foreground shadow-sm transition-colors",
       )}
     >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-1.5 rounded-md text-left transition-colors hover:text-zinc-200"
+        className="flex w-full items-center gap-1.5 rounded-md text-left transition-colors hover:text-foreground"
         aria-expanded={open ? "true" : "false"}
       >
-        <Wrench className="size-3 shrink-0 text-zinc-500" aria-hidden />
-        <span className="truncate font-semibold text-zinc-100">{primary}</span>
-        {showRaw ? <span className="shrink-0 text-xs text-zinc-500">{tool}</span> : null}
+        <Wrench className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+        <span className="truncate font-semibold text-foreground">{primary}</span>
+        {showRaw ? <span className="shrink-0 text-xs text-muted-foreground">{tool}</span> : null}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           <StatusPill status={status} />
           {open ? (
-            <ChevronDown className="size-4 text-zinc-500" aria-hidden />
+            <ChevronDown className="size-4 text-muted-foreground" aria-hidden />
           ) : (
-            <ChevronRight className="size-4 text-zinc-500" aria-hidden />
+            <ChevronRight className="size-4 text-muted-foreground" aria-hidden />
           )}
         </span>
       </button>

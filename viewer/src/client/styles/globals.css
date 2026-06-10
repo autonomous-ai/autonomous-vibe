@@ -87,6 +87,17 @@
      match the CAD viewer's BASE_VIEWER_THEME sceneBackground (#09090b) and keep
      the model surfaces high-contrast. */
   --ui-viewer-bg: #09090b;
+  /* G-code viewer scene: theme-aware (light here, overridden in .dark). Unlike
+     the CAD/STL viewer (which keeps the fixed --ui-viewer-bg dark backdrop),
+     the gcode scene follows the app theme. Every value must be parseable by
+     THREE.Color (hex or CSS named) — they're read via getComputedStyle and
+     handed straight to WebGL, which does not understand oklch(). */
+  --gcode-viewer-bg: #eceff3;
+  --gcode-extrusion: #be185d;
+  --gcode-travel: #990000;
+  --gcode-axis-x: #dc2626;
+  --gcode-axis-y: #16a34a;
+  --gcode-axis-z: #2563eb;
   --ui-app-gradient: none;
   --ui-panel: var(--card);
   --ui-panel-strong: var(--muted);
@@ -127,6 +138,14 @@
   --ui-success-text: oklch(0.448 0.119 151.328);
   --ui-code-bg: var(--muted);
   --ui-code-text: var(--foreground);
+  /* Chat code block: dark-on-light syntax palette (overridden in .dark). */
+  --chat-code-bg: #f4f4f6;
+  --chat-code-text: #1f2937;
+  --chat-code-keyword: #b45309;
+  --chat-code-string: #047857;
+  --chat-code-number: #0369a1;
+  --chat-code-comment: #6b7280;
+  --chat-code-punctuation: #52525b;
   --ui-status-assembly-bg: var(--ui-warning-bg);
   --ui-status-assembly-text: var(--ui-warning-text);
   --ui-status-part-bg: var(--ui-success-bg);
@@ -175,6 +194,25 @@
   --ui-error-text: oklch(0.808 0.114 19.571);
   --ui-success-bg: oklch(0.262 0.051 172.552);
   --ui-success-text: oklch(0.871 0.15 154.449);
+
+  /* G-code viewer scene (dark): the original fixed backdrop + gcode-preview's
+     library-default toolpath colors (hotpink extrusion, #990000 travel), so
+     dark mode renders exactly as before. */
+  --gcode-viewer-bg: #09090b;
+  --gcode-extrusion: hotpink;
+  --gcode-travel: #990000;
+  --gcode-axis-x: #fa584f;
+  --gcode-axis-y: #5ce97b;
+  --gcode-axis-z: #5483ff;
+
+  /* Chat code block: light-on-dark syntax palette. */
+  --chat-code-bg: #2f2f2f;
+  --chat-code-text: #f4f4f5;
+  --chat-code-keyword: #f59e0b;
+  --chat-code-string: #34d399;
+  --chat-code-number: #7dd3fc;
+  --chat-code-comment: #a1a1aa;
+  --chat-code-punctuation: #d4d4d8;
 
   --ui-glass-surface: rgb(22 22 25 / 82%);
   --ui-glass-popover: rgb(24 24 27 / 86%);

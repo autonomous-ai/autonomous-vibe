@@ -13,6 +13,17 @@
 # This script starts Vite in the background, waits for it to listen, then runs
 # the app in the foreground. Quitting the app (or Ctrl-C) stops Vite too.
 #
+# Usage:
+#   scripts/dev.sh [--theme system|light|dark] [-- <extra cargo run args>]
+#
+# Flags:
+#   --theme <system|light|dark>   force the app's color scheme for this dev
+#                                  session (default: system — follow the OS).
+#                                  Exported to the viewer as VIEWER_COLOR_SCHEME
+#                                  and read in src/client/ui/colorScheme.js. It
+#                                  seeds the initial theme; in-app toggling still
+#                                  works for the session.
+#
 # Env overrides:
 #   VIEWER_PORT   force the Vite port (default: parsed from devUrl)
 #   PANDA_DEVTOOLS=1   dock the webview inspector (see CLAUDE.md)
@@ -21,6 +32,29 @@
 #                        `raw` for the full stream-json, or `0` to mute.
 
 set -euo pipefail
+
+# Parse our own flags out of the arg list; anything else is forwarded verbatim
+# to `cargo run` at the end. Default theme is "system" so a bare `dev.sh`
+# follows the OS appearance (the app's normal default).
+PANDA_THEME="system"
+CARGO_ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --theme) PANDA_THEME="${2:-}"; shift 2 ;;
+    --theme=*) PANDA_THEME="${1#--theme=}"; shift ;;
+    *) CARGO_ARGS+=("$1"); shift ;;
+  esac
+done
+
+case "$PANDA_THEME" in
+  system | light | dark) ;;
+  *)
+    echo "[panda dev] invalid --theme '${PANDA_THEME}' (use: system, light, dark)" >&2
+    exit 1
+    ;;
+esac
+# Vite's envPrefix is VIEWER_; export so the dev server forwards it to the client.
+export VIEWER_COLOR_SCHEME="$PANDA_THEME"
 
 # Stream the spawned `claude` subprocess into this dev console so you can watch
 # each turn as it runs — a compact, colorized line per event (▶ turn, ◆ init,
@@ -85,5 +119,7 @@ if [ "${PANDA_DEBUG_CLAUDE}" != "0" ] && [ -n "${PANDA_DEBUG_CLAUDE}" ]; then
     echo "[panda dev] streaming claude (pretty); PANDA_DEBUG_CLAUDE=raw for full JSON, =0 to mute"
   fi
 fi
-echo "[panda dev] launching app (cargo run)"
-cargo run --manifest-path "${REPO_ROOT}/desktop/src-tauri/Cargo.toml" "$@"
+echo "[panda dev] launching app (cargo run), theme=${PANDA_THEME}"
+# `${CARGO_ARGS[@]+...}` keeps `set -u` happy when no extra args were passed
+# (bash 3.2 errors on an empty array expanded under nounset).
+cargo run --manifest-path "${REPO_ROOT}/desktop/src-tauri/Cargo.toml" ${CARGO_ARGS[@]+"${CARGO_ARGS[@]}"}

@@ -10,7 +10,7 @@ import Markdown from "./Markdown";
 const STATUS_PILL = {
   proposed: { label: "Awaiting approval", cls: "border-amber-500/35 bg-amber-500/15 text-amber-400" },
   approved: { label: "Approved", cls: "border-emerald-500/40 bg-emerald-500/15 text-emerald-400" },
-  superseded: { label: "Superseded", cls: "border-white/10 bg-white/5 text-zinc-400" },
+  superseded: { label: "Superseded", cls: "border-border bg-foreground/5 text-muted-foreground" },
 };
 
 // Under autopilot the plan is informational only — the build starts on its own.
@@ -24,14 +24,14 @@ const AUTOPILOT_PILL = {
 // "Build steps"), inline `code` becomes the dimension chips, and the ordered
 // list is rendered as numbered badge steps via CSS counters.
 const PLAN_MD = cn(
-  "text-[13.5px] leading-relaxed text-zinc-300",
-  "[&_strong]:font-semibold [&_strong]:text-white",
-  "[&_h3]:mt-5 [&_h3]:mb-2.5 [&_h3]:text-[11px] [&_h3]:font-semibold [&_h3]:uppercase [&_h3]:tracking-[0.09em] [&_h3]:text-zinc-500 [&_h3:first-child]:mt-0",
-  "[&_p]:my-0 [&_p]:text-[13.5px] [&_p]:leading-relaxed [&_p]:text-zinc-300",
-  "[&_code]:rounded-md [&_code]:bg-white/[0.04] [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[12px] [&_code]:text-zinc-300",
+  "text-[13.5px] leading-relaxed text-muted-foreground",
+  "[&_strong]:font-semibold [&_strong]:text-foreground",
+  "[&_h3]:mt-5 [&_h3]:mb-2.5 [&_h3]:text-[11px] [&_h3]:font-semibold [&_h3]:uppercase [&_h3]:tracking-[0.09em] [&_h3]:text-muted-foreground [&_h3:first-child]:mt-0",
+  "[&_p]:my-0 [&_p]:text-[13.5px] [&_p]:leading-relaxed [&_p]:text-muted-foreground",
+  "[&_code]:rounded-md [&_code]:bg-foreground/[0.06] [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[12px] [&_code]:text-foreground",
   "[&_ol]:mt-2.5 [&_ol]:mb-0 [&_ol]:flex [&_ol]:list-none [&_ol]:flex-col [&_ol]:gap-2.5 [&_ol]:pl-0 [&_ol]:[counter-reset:step]",
   "[&_ol>li]:m-0 [&_ol>li]:flex [&_ol>li]:items-start [&_ol>li]:gap-3 [&_ol>li]:[counter-increment:step]",
-  "[&_ol>li]:before:[content:counter(step)] [&_ol>li]:before:mt-px [&_ol>li]:before:flex [&_ol>li]:before:size-5 [&_ol>li]:before:shrink-0 [&_ol>li]:before:items-center [&_ol>li]:before:justify-center [&_ol>li]:before:rounded-md [&_ol>li]:before:bg-white/[0.04] [&_ol>li]:before:text-[11px] [&_ol>li]:before:font-semibold [&_ol>li]:before:leading-none [&_ol>li]:before:text-zinc-400",
+  "[&_ol>li]:before:[content:counter(step)] [&_ol>li]:before:mt-px [&_ol>li]:before:flex [&_ol>li]:before:size-5 [&_ol>li]:before:shrink-0 [&_ol>li]:before:items-center [&_ol>li]:before:justify-center [&_ol>li]:before:rounded-md [&_ol>li]:before:bg-foreground/[0.06] [&_ol>li]:before:text-[11px] [&_ol>li]:before:font-semibold [&_ol>li]:before:leading-none [&_ol>li]:before:text-muted-foreground",
 );
 
 /**
@@ -73,14 +73,14 @@ export default function PlanBlock({ plan, status }) {
       data-slot="chat-plan"
       data-status={status}
       className={cn(
-        "overflow-hidden rounded-2xl border border-white/[0.08] bg-[#16181c] text-sm text-zinc-100",
+        "overflow-hidden rounded-2xl border border-border bg-muted text-sm text-foreground",
         "bg-[linear-gradient(to_bottom,rgba(52,211,153,0.1)_0,rgba(52,211,153,0.1)_46px,rgba(52,211,153,0)_64px)]",
         status === "superseded" && "opacity-60",
       )}
     >
       <header className="flex items-center gap-2.5 px-3.5 py-3.5">
-        <ClipboardList className="size-[18px] shrink-0 text-emerald-400" aria-hidden />
-        <span className="text-[15px] font-semibold text-white">Here&apos;s my plan</span>
+        <ClipboardList className="size-[18px] shrink-0 text-emerald-500 dark:text-emerald-400" aria-hidden />
+        <span className="text-[15px] font-semibold text-foreground">Here&apos;s my plan</span>
         <span className={cn("ml-auto rounded-full border px-2.5 py-1 text-[11px] font-semibold", pill.cls)}>
           {pill.label}
         </span>
@@ -92,7 +92,7 @@ export default function PlanBlock({ plan, status }) {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             rows={Math.min(20, Math.max(6, draft.split("\n").length + 1))}
-            className="scrollbar-thin border-white/10 bg-black/20 text-sm text-zinc-100"
+            className="scrollbar-thin border-border bg-foreground/[0.04] text-sm text-foreground"
             data-slot="chat-plan-editor"
           />
         ) : (
@@ -102,13 +102,13 @@ export default function PlanBlock({ plan, status }) {
 
       {isProposed ? (
         feedbackOpen ? (
-          <div className="flex flex-col gap-2 border-t border-white/[0.06] px-5 py-3.5">
+          <div className="flex flex-col gap-2 border-t border-border px-5 py-3.5">
             <Textarea
               value={feedback}
               onChange={(e) => setFeedback(e.target.value)}
               placeholder="What should change? e.g. add 4 screw bosses, make it 5 mm taller…"
               rows={2}
-              className="scrollbar-thin border-white/10 bg-black/20 text-sm text-zinc-100 placeholder:text-zinc-500"
+              className="scrollbar-thin border-border bg-foreground/[0.04] text-sm text-foreground placeholder:text-muted-foreground"
               data-slot="chat-plan-feedback"
             />
             <div className="flex justify-end gap-2">
@@ -117,7 +117,7 @@ export default function PlanBlock({ plan, status }) {
                 size="sm"
                 onClick={() => setFeedbackOpen(false)}
                 disabled={busy}
-                className="h-9 rounded-lg border-white/10 bg-white/[0.02] px-4 text-zinc-200 hover:bg-white/[0.07] hover:text-zinc-50"
+                className="h-9 rounded-lg border-border bg-foreground/[0.02] px-4 text-foreground hover:bg-foreground/[0.07]"
               >
                 Cancel
               </Button>
@@ -133,7 +133,7 @@ export default function PlanBlock({ plan, status }) {
             </div>
           </div>
         ) : (
-          <footer className="flex items-center justify-between gap-2 border-t border-white/[0.06] px-3.5 py-3.5">
+          <footer className="flex items-center justify-between gap-2 border-t border-border px-3.5 py-3.5">
             <div className="flex items-center gap-2">
               <Button
                 variant="outline"
@@ -141,7 +141,7 @@ export default function PlanBlock({ plan, status }) {
                 onClick={() => setEditing((v) => !v)}
                 disabled={busy}
                 data-slot="chat-plan-edit"
-                className="h-9 rounded-lg border-white/10 bg-white/[0.02] px-4 text-zinc-200 hover:bg-white/[0.07] hover:text-zinc-50"
+                className="h-9 rounded-lg border-border bg-foreground/[0.02] px-4 text-foreground hover:bg-foreground/[0.07]"
               >
                 {editing ? "Done editing" : "Edit"}
               </Button>
@@ -151,7 +151,7 @@ export default function PlanBlock({ plan, status }) {
                 onClick={() => setFeedbackOpen(true)}
                 disabled={busy}
                 data-slot="chat-plan-request-changes"
-                className="h-9 rounded-lg border-white/10 bg-white/[0.02] px-4 text-zinc-200 hover:bg-white/[0.07] hover:text-zinc-50"
+                className="h-9 rounded-lg border-border bg-foreground/[0.02] px-4 text-foreground hover:bg-foreground/[0.07]"
               >
                 Request changes
               </Button>

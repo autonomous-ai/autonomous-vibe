@@ -64,7 +64,23 @@ function browserLocalStorage() {
   }
 }
 
+// Dev-only color-scheme override. `scripts/dev.sh [--theme system|light|dark]`
+// forces the session's scheme via the VIEWER_COLOR_SCHEME env var (Vite's
+// VIEWER_ prefix). Unset in production builds, so this is a no-op there. It
+// seeds the initial preference only; in-app toggles still work for the session.
+function readDevColorSchemeOverride() {
+  const raw = import.meta.env?.VIEWER_COLOR_SCHEME;
+  if (raw == null || String(raw).trim() === "") {
+    return null;
+  }
+  return normalizeColorSchemeId(raw);
+}
+
 export function readColorSchemePreference(storage = browserLocalStorage()) {
+  const override = readDevColorSchemeOverride();
+  if (override) {
+    return override;
+  }
   if (!storage) {
     return DEFAULT_COLOR_SCHEME_ID;
   }

@@ -120,8 +120,6 @@ pub fn run() {
                 let _ = app.deep_link().register("myide");
                 app.deep_link().on_open_url(move |event| {
                     for url in event.urls() {
-                        #[cfg(debug_assertions)]
-                        eprintln!("[panda deeplink] on_open_url received: {}", url.as_str());
                         commands::app::handle_panda_deeplink(&handle, url.as_str());
                     }
                 });

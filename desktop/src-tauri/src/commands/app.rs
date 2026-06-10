@@ -1018,37 +1018,18 @@ fn parse_panda_callback(url: &str) -> Option<(String, String)> {
 pub fn handle_panda_deeplink(app: &tauri::AppHandle, url: &str) {
     use tauri::Manager as _;
     if !url.starts_with(PANDA_SCHEME) {
-        #[cfg(debug_assertions)]
-        eprintln!("[panda deeplink] ignoring non-myide url: {url}");
         return;
     }
     let Some(pending) = app.state::<AppState>().take_pending_panda_login() else {
-        #[cfg(debug_assertions)]
-        eprintln!("[panda deeplink] got {url} but NO pending login was armed — dropping");
         return;
     };
     let result = match parse_panda_callback(url) {
-        Some((code, state)) if state == pending.state => {
-            #[cfg(debug_assertions)]
-            eprintln!("[panda deeplink] state matched; delivering code (len {})", code.len());
-            Ok(code)
-        }
-        Some((_, state)) => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[panda deeplink] STATE MISMATCH: callback state={state:?} expected={:?}",
-                pending.state
-            );
-            Err(
-                "Sign-in response didn't match this request (state mismatch). Please try again."
-                    .to_string(),
-            )
-        }
-        None => {
-            #[cfg(debug_assertions)]
-            eprintln!("[panda deeplink] callback missing code/state: {url}");
-            Err("Sign-in response was missing its authorization code.".to_string())
-        }
+        Some((code, state)) if state == pending.state => Ok(code),
+        Some(_) => Err(
+            "Sign-in response didn't match this request (state mismatch). Please try again."
+                .to_string(),
+        ),
+        None => Err("Sign-in response was missing its authorization code.".to_string()),
     };
     let _ = pending.tx.send(result);
 }
@@ -1240,8 +1221,6 @@ pub async fn app_panda_login(
 
     // 3. Open the hosted login page in the system browser.
     let url = build_login_url(&challenge, &csrf_state);
-    #[cfg(debug_assertions)]
-    eprintln!("[panda login] armed state={csrf_state:?}\n[panda login] opening: {url}");
     if let Err(e) = open::that_detached(&url) {
         state.take_pending_panda_login();
         return Err(fail(
@@ -1253,14 +1232,8 @@ pub async fn app_panda_login(
     emit(PandaLoginProgress::AwaitingBrowser { url });
 
     // 4. Wait for the deep-link handler to deliver the one-time code.
-    #[cfg(debug_assertions)]
-    eprintln!("[panda login] waiting for myide://auth/callback deep link …");
     let code = match tokio::time::timeout(LOGIN_TIMEOUT, rx).await {
-        Ok(Ok(Ok(code))) => {
-            #[cfg(debug_assertions)]
-            eprintln!("[panda login] received code via deep link; exchanging …");
-            code
-        }
+        Ok(Ok(Ok(code))) => code,
         Ok(Ok(Err(msg))) => return Err(fail(&emit, "PANDA_LOGIN_FAILED", msg)),
         Ok(Err(_recv)) => {
             return Err(fail(

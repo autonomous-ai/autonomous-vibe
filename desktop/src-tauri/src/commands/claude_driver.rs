@@ -150,6 +150,19 @@ pub const PLAN_SYSTEM_PROMPT: &str = concat!(
     "wall thickness, hardware tables, part decomposition, print orientation, ",
     "assembly base+lid) — and write a precise, physically-correct plan the ",
     "user approves before anything is built.\n\n",
+    "AESTHETIC BAR. A Panda part should look like a premium consumer product ",
+    "(anchored on Apple / Jony Ive, but a broad high-end range — tasteful ",
+    "texture, contrast, and ergonomic sculpting are allowed), not a blocky CAD ",
+    "default. Read the `cadcode` skill's `references/industrial-design.md` and ",
+    "design to it: a single unified corner/edge radius language (not a scatter ",
+    "of raw 90-degree arrises), cohesive proportions, calm uninterrupted primary ",
+    "surfaces, blended transitions, and hidden or minimized fasteners. In the ",
+    "Parts section, give each user-facing part a one-line `Form` clause naming ",
+    "its radius language and primary surface treatment. This is SECONDARY to ",
+    "function and printability: never trade away strength, wall thickness, ",
+    "tolerance, clearance, or print orientation for looks — if an aesthetic ",
+    "choice would compromise the part, say so and pick function. Trivial edits ",
+    "skip the `Form` clause.\n\n",
     "SCALE THE PLAN TO THE REQUEST. For a trivial edit (e.g. \"make the wall ",
     "2 mm thicker\", \"move the holes 5 mm apart\"), state the exact ",
     "dimension(s) changing, their before→after values with units, and any ",
@@ -186,18 +199,23 @@ pub const PLAN_SYSTEM_PROMPT: &str = concat!(
     "printed. Confirm the part fits the build volume (Bambu ≈ 256 mm cube). End ",
     "with an explicit one-line verdict that it is stable / load-safe / printable ",
     "under the stated assumptions, or what would make it fail.\n\n",
-    "When there is a genuine preference fork (e.g. material, mounting style, ",
-    "connector, size), ask the user by emitting a fenced code block tagged ",
-    "`panda-questions` whose body is JSON of the ",
-    "form {\"questions\":[{\"question\":\"...\",\"header\":\"<=12 chars\",",
-    "\"multiSelect\":false,\"options\":[{\"label\":\"...\",\"description\":",
-    "\"...\"}]}]}, then STOP — do not call ExitPlanMode in the same turn. ",
-    "When the design is settled, finish by calling the ExitPlanMode tool ",
-    "with the COMPLETE plan markdown in its `plan` field — restate the entire ",
-    "plan in that call even if you already wrote it earlier in the ",
-    "conversation, and even when resuming a prior session. NEVER call ",
-    "ExitPlanMode with an empty or partial `plan`: the user sees only what is ",
-    "in that field, so an empty `plan` shows them a blank approval card.",
+    "PREFERENCES FIRST. For a NEW product (not a trivial edit), open the turn by ",
+    "asking the user a short round of 2-4 preference questions — the choices that ",
+    "are genuinely theirs (e.g. target device/model, material, size/footprint, ",
+    "style, mounting or cable routing). Ask them by CALLING THE `AskUserQuestion` ",
+    "tool — do NOT write the questions as plain text or a JSON / code block; only ",
+    "the tool call renders the multiple-choice UI. Give EVERY question a first ",
+    "option labelled \"Let Panda choose\" (description: \"Recommended — we pick the ",
+    "best for you\"); when the user picks it, or answers \"you decide\" / \"build ",
+    "the best\" for everything, use your best default for that choice and proceed ",
+    "without re-asking. The tool call ends the turn — do not call ExitPlanMode in ",
+    "the same turn. A trivial edit needs no questions.\n\n",
+    "After the preferences are settled, design the part and finish by calling the ",
+    "ExitPlanMode tool with the COMPLETE plan markdown in its `plan` field — ",
+    "restate the entire plan in that call even if you already wrote it earlier in ",
+    "the conversation, and even when resuming a prior session. NEVER call ",
+    "ExitPlanMode with an empty or partial `plan`. (Autopilot then builds it ",
+    "automatically; the user does not separately approve.)",
 );
 
 /// Implementation-phase system prompt. The plan is approved; the model
@@ -208,29 +226,72 @@ pub const IMPLEMENT_SYSTEM_PROMPT: &str = concat!(
     "`cadcode` skill: write the Python source, generate every part, and ",
     "produce the STL/STEP artifacts for each part described in the ",
     "plan. Follow the cadcode protocol. Do not re-plan or ask further ",
-    "questions unless a blocking ambiguity remains.",
+    "questions unless a blocking ambiguity remains.\n\n",
+    "Make it actually ASSEMBLE and WORK, not just be a valid solid — apply ",
+    "`references/component-integration.md`: model the whole real component incl. ",
+    "any captive cable / connector collar, give captive cables an OPEN route ",
+    "sized for the connector (`cadlib.cutouts.add_open_cable_channel`), and keep ",
+    "insertion paths reachable. Enforce it: hard `validate()` asserts for ",
+    "impossible fits, and soft `functional` warnings returned from `gen_step()` ",
+    "(`return {\"shape\": shape, \"warnings\": functional_checks(p)}`) for assembly ",
+    "feasibility. Function wins every conflict.\n\n",
+    "Hit the premium-product look the plan committed to — apply the cadcode ",
+    "skill's `references/industrial-design.md` and its `cadlib.styling` helpers ",
+    "(`design_radius_for`, `soften_edges`, `break_edges`): a consistent radius ",
+    "language on visible convex edges, blended transitions, calm primary ",
+    "surfaces, minimized fasteners. Function and printability win every ",
+    "conflict: never thin a wall below the plan's minimum, remove material a ",
+    "load path needs, round a functional/mating edge, or add a fillet that ",
+    "creates an unprintable overhang or a sliver.\n\n",
+    "Before you finish, do a render-and-self-critique pass: run ",
+    "`python ~/.claude/skills/cadcode/scripts/review <project_dir>` to render the ",
+    "assembled model and every named part, `Read` each PNG, and judge it against ",
+    "the industrial-design rubric (the `.step.json` `sharp_edges` advisory counts ",
+    "un-softened convex arrises). Refine the source and regenerate for any part ",
+    "that reads cheap, blocky, or unresolved — within printability limits — then ",
+    "stop.",
 );
 
-/// Review-phase system prompt. Runs automatically after a build when the
-/// deterministic geometry check flagged problems. The model fixes them
-/// silently — it must not chat, ask questions, or re-plan; it just renders,
-/// inspects, and corrects the source until the geometry is clean.
+/// Review-phase system prompt. Runs automatically after a build. It covers three
+/// modes — the per-round message says which: blocking GEOMETRY fixes, blocking
+/// FUNCTIONAL (assembly/usability) fixes, and, once both are clean, an AESTHETIC
+/// polish pass against the premium-product rubric. The model works silently — it
+/// must not chat, ask questions, or re-plan; it renders, inspects, and corrects
+/// the source.
 pub const REVIEW_SYSTEM_PROMPT: &str = concat!(
-    "You are running inside Panda, the consumer 3D printing desktop app. The ",
-    "parts you just built FAILED an automatic geometry check — the issues are ",
-    "listed in this message. Fix them now, working SILENTLY: do not greet, ",
-    "explain, summarize, ask questions, or re-plan. Just repair the geometry ",
-    "and regenerate.\n\n",
-    "Use the `cadcode` skill. For the project, run ",
-    "`python ~/.claude/skills/cadcode/scripts/review <project_dir>` to render ",
-    "the assembled model AND every named part to per-part PNGs, then `Read` ",
-    "each PNG and look. A `disconnected_bodies` warning means a feature is ",
-    "floating — placed outside the body's footprint or never fused to it; ",
-    "anchor it (see `references/patterns/anchor-to-body.md`). Also fix any part ",
-    "a render shows poking through a plate, malformed, or serving no purpose. ",
+    "You are running inside Panda, the consumer 3D printing desktop app. An ",
+    "automatic post-build review of the parts you just built is running. Work ",
+    "SILENTLY: do not greet, explain, summarize, ask questions, or re-plan. Just ",
+    "improve the parts and regenerate.\n\n",
+    "Use the `cadcode` skill. Run ",
+    "`python ~/.claude/skills/cadcode/scripts/review <project_dir>` to render the ",
+    "assembled model AND every named part to per-part PNGs, then `Read` each PNG ",
+    "and look.\n\n",
+    "GEOMETRY issues (when this message lists them) are blocking and come first. ",
+    "A `disconnected_bodies` warning means a feature is floating — placed outside ",
+    "the body's footprint or never fused to it; anchor it (see ",
+    "`references/patterns/anchor-to-body.md`). Also fix any part a render shows ",
+    "poking through a plate, malformed, or serving no purpose.\n\n",
+    "FUNCTIONAL issues (when this message lists `functional` problems) are also ",
+    "blocking: the part is a valid solid but won't assemble or work as intended ",
+    "(e.g. a captive cable's connector collar can't pass the opening). For each, ",
+    "physically reason about the assembly step against ",
+    "`references/component-integration.md` — model the whole component incl. its ",
+    "cable/connector, make the route open and sized for the connector, keep the ",
+    "insertion path reachable — then fix the geometry/params AND tighten the ",
+    "`validate()`/`functional_checks()` so it stays enforced. Regenerate until no ",
+    "`functional` warning remains.\n\n",
+    "AESTHETIC polish (when this message asks for it): judge each render against ",
+    "the premium-product rubric in `references/industrial-design.md` — a unified ",
+    "radius language on visible convex edges, blended transitions, calm primary ",
+    "surfaces, minimized fasteners — using the `cadlib.styling` helpers. Refine ",
+    "ONLY within printability and strength limits: never thin a wall below its ",
+    "minimum, remove load-bearing material, round a functional/mating edge, or ",
+    "add an unprintable overhang or a sliver for looks. If a part already reads ",
+    "clean and premium, change nothing.\n\n",
     "Edit the Python source (never the STEP/STL), re-run ",
-    "`scripts/cad <project_dir>`, and repeat until its `warnings` array is ",
-    "empty and every part render looks right. Then stop.",
+    "`scripts/cad <project_dir>`, and stop as soon as the parts are clean and ",
+    "look right.",
 );
 
 /// Retained for back-compat / reference; superseded by the phase-specific
@@ -1416,11 +1477,11 @@ where
         on_event(ev);
     }
 
-    // Automatic post-build geometry review (silent auto-fix). While cadpy's
-    // deterministic check still reports warnings in the `.step.json` sidecars,
-    // resume the same session and let the model render-inspect-fix. Runs inside
-    // this build turn (no separate user-visible turn). Best-effort: it never
-    // fails the turn.
+    // Automatic post-build review (silent), run inside this build turn: first
+    // geometry auto-fix while cadpy still reports blocking warnings in the
+    // `.step.json` sidecars, then one aesthetic-polish pass against the
+    // premium-product rubric (gated on the `sharp_edges` advisory). No separate
+    // user-visible turn. Best-effort: it never fails the turn.
     if matches!(phase, TurnPhase::Implement) && !cancelled && saw_output && artifacts_changed {
         run_review_fix_loop(
             &claude_path,
@@ -1462,6 +1523,38 @@ where
 /// turn, so this is also the cost ceiling: two rounds catch the common case
 /// (fix, then verify) without risking a long unattended loop.
 pub const MAX_REVIEW_ROUNDS: usize = 2;
+
+/// Max automatic aesthetic-polish rounds, run after geometry is clean. Polish is
+/// subjective and prone to cosmetic churn, so it is capped tighter than the
+/// geometry loop: a single render-critique-refine pass on top of the model's own
+/// in-build pass. The loop also breaks early the instant a round changes nothing.
+pub const MAX_POLISH_ROUNDS: usize = 1;
+
+/// Max automatic functional/assembly-fix rounds, run after geometry is clean and
+/// before aesthetic polish. A `functional` warning means the part can't be
+/// assembled/used (e.g. a connector that won't fit its opening), so — like
+/// geometry — the loop runs until they're gone, with a generous cap (the user's
+/// "guarantee it works"). Re-collects each round and stops the instant they clear.
+pub const MAX_FUNCTIONAL_ROUNDS: usize = 3;
+
+/// Whether a warning is advisory rather than a blocking geometry defect.
+/// Advisory warnings never gate the geometry-fix loop and never produce the
+/// end-of-loop "unresolved issues" note — they only seed the aesthetic-polish
+/// pass (e.g. the `sharp_edges` hint). Keyed off `severity == "info"`, not a
+/// `kind` allowlist, so any future info-level advisory is classified correctly
+/// without touching this code (and can't leak into the geometry gate).
+fn is_advisory(w: &GeometryWarning) -> bool {
+    w.severity == "info"
+}
+
+/// Whether a warning is a project-declared functional/assembly check (the part
+/// is a valid solid but can't be assembled/used as intended). These drive the
+/// dedicated functional-review phase — they must NOT be lumped into the geometry
+/// gate (their severity is `"warning"`, like geometry defects), so the loop
+/// classifies them by `kind` and excludes them from the geometry filter.
+fn is_functional(w: &GeometryWarning) -> bool {
+    w.kind == "functional"
+}
 
 /// A deterministic geometry problem cadpy recorded under `validation.warnings`
 /// in a `.step.json` sidecar.
@@ -1528,10 +1621,147 @@ pub fn build_review_prompt(warnings: &[GeometryWarning]) -> Option<String> {
     Some(body)
 }
 
-/// After a build, while the deterministic geometry check still reports warnings
-/// in the sidecars, resume the same session in [`TurnPhase::Review`] and let the
-/// model render-inspect-fix silently. Best-effort throughout — any failure here
-/// must never fail the build turn. Returns whether any artifacts changed.
+/// Build the silent functional-review prompt from the outstanding `functional`
+/// warnings. Returns `None` when there are none (the phase then ends). Frames
+/// them as assembly/installation failures — render, physically reason about each
+/// step against `references/component-integration.md`, fix the geometry/params,
+/// regenerate until the functional check is clean.
+pub fn build_functional_prompt(warnings: &[GeometryWarning]) -> Option<String> {
+    if warnings.is_empty() {
+        return None;
+    }
+    let mut body = String::from(
+        "An automatic FUNCTIONAL check found these assembly/usability problems in \
+         the parts you just built — the geometry is valid but the product won't \
+         work as intended. Render with `scripts/review`, then for each one \
+         physically reason about the assembly step against \
+         `references/component-integration.md` (can the component AND its captive \
+         cable / connector collar actually get into place — open route, opening \
+         sized for the connector, reachable path?). Fix the geometry/params, \
+         update the `validate()`/`functional_checks()` so it's enforced, and \
+         regenerate until every functional check is clean:\n\n",
+    );
+    for w in warnings {
+        body.push_str(&format!("- [{}] {}: {}\n", w.part, w.kind, w.detail));
+    }
+    Some(body)
+}
+
+/// Build the silent aesthetic-polish prompt. Unlike [`build_review_prompt`] this
+/// is not gated on warnings — it always asks for one critique-and-refine pass.
+/// The optional `soft_edge_hint` (the `sharp_edges` advisories) seeds the model
+/// with concrete candidates so the critique has somewhere to start; an empty
+/// slice yields a purely visual prompt.
+pub fn build_polish_prompt(soft_edge_hint: &[GeometryWarning]) -> String {
+    let mut body = String::from(
+        "The geometry is clean. Do ONE aesthetic polish pass now: render the model \
+         with `scripts/review`, `Read` every PNG, and judge each part against the \
+         premium-product rubric in `references/industrial-design.md` (unified \
+         radius language, blended transitions, calm primary surfaces, minimized \
+         fasteners). Refine the source ONLY within printability and strength \
+         limits — soften un-softened convex edges, clean up primary surfaces — and \
+         leave functional/mating arrises sharp. If a part already reads clean and \
+         premium, change nothing. Then stop.\n",
+    );
+    if !soft_edge_hint.is_empty() {
+        body.push_str(
+            "\nThe deterministic edge check flagged these candidates (verify \
+             visually before acting — some arrises are intentional):\n",
+        );
+        for w in soft_edge_hint {
+            body.push_str(&format!("- [{}] {}: {}\n", w.part, w.kind, w.detail));
+        }
+    }
+    body
+}
+
+/// Run one silent [`TurnPhase::Review`] round with `prompt`: spawn the child,
+/// snapshot/diff the workspace, and surface any changed artifacts. Returns true
+/// if this round changed files. Shared by the geometry-fix and aesthetic-polish
+/// phases of [`run_review_fix_loop`].
+async fn run_review_round<F>(
+    claude_path: &Path,
+    workspace_dir: &Path,
+    session_id: uuid::Uuid,
+    turn_id: &str,
+    prompt: String,
+    on_event: &F,
+    cancel: &CancellationToken,
+) -> bool
+where
+    F: Fn(ChatEvent),
+{
+    let cfg = ClaudeRunConfig {
+        prompt,
+        workspace: workspace_dir.to_path_buf(),
+        claude_session_id: Some(session_id.to_string()),
+        model: Some("opus".into()),
+        use_panda_cloud: false,
+        panda_token: None,
+        panda_base_url: None,
+        phase: TurnPhase::Review,
+    };
+
+    let pre = snapshot_workspace(workspace_dir);
+    drain_review_child(claude_path, workspace_dir, &cfg, cancel).await;
+    let post = snapshot_workspace(workspace_dir);
+    let diff = diff_snapshots(&pre, &post, turn_id);
+    let changed = !diff.is_empty();
+    for ev in diff {
+        on_event(ev); // surface fixed/refined parts as they land
+    }
+    changed
+}
+
+/// Emit the one-line "unresolved issues" note when a review phase couldn't
+/// converge. `review_label` names the phase (e.g. "geometry", "functional") so
+/// geometry and functional bails surface identically-shaped notes.
+fn emit_unresolved_note<F>(
+    turn_id: &str,
+    review_label: &str,
+    remaining: &[GeometryWarning],
+    on_event: &F,
+) where
+    F: Fn(ChatEvent),
+{
+    let mut parts: Vec<String> = remaining
+        .iter()
+        .map(|w| w.part.clone())
+        .filter(|p| !p.is_empty())
+        .collect();
+    parts.sort();
+    parts.dedup();
+    on_event(ChatEvent::TextDelta {
+        turn_id: turn_id.to_string(),
+        text: format!(
+            "\n\n_Note: automatic {review_label} review left {} issue(s) \
+             unresolved (parts: {}). You may want to inspect those parts._",
+            remaining.len(),
+            if parts.is_empty() {
+                "model".to_string()
+            } else {
+                parts.join(", ")
+            },
+        ),
+    });
+}
+
+/// Automatic post-build review, run silently inside the build turn. Three phases,
+/// in priority order — geometry → functional → aesthetic:
+///
+/// 1. **Geometry fix** — while the deterministic check still reports blocking
+///    geometry warnings, resume in [`TurnPhase::Review`] and render-inspect-fix
+///    (up to [`MAX_REVIEW_ROUNDS`]). If it can't converge, note + stop.
+/// 2. **Functional fix** — while any project-declared `functional` warning
+///    remains (the part is a valid solid but won't assemble/work), fix it (up to
+///    [`MAX_FUNCTIONAL_ROUNDS`]). If it can't converge, surface a user-visible
+///    note (the part won't work) + stop — don't polish a non-working part.
+/// 3. **Aesthetic polish** — once geometry + function are clean, up to
+///    [`MAX_POLISH_ROUNDS`] passes against the premium rubric. Gated on a
+///    `sharp_edges` advisory; breaks early the instant a round changes nothing.
+///
+/// Best-effort throughout — any failure here must never fail the build turn.
+/// Returns whether any artifacts changed.
 async fn run_review_fix_loop<F>(
     claude_path: &Path,
     workspace_dir: &Path,
@@ -1544,63 +1774,132 @@ where
     F: Fn(ChatEvent),
 {
     let mut changed = false;
+
+    // Phase 1 — geometry fix (gated on deterministic blocking geometry warnings).
     for _ in 0..MAX_REVIEW_ROUNDS {
         if cancel.is_cancelled() {
             return changed;
         }
-        let warnings = collect_workspace_warnings(workspace_dir);
-        let Some(prompt) = build_review_prompt(&warnings) else {
-            return changed; // sidecars are clean
+        // Only BLOCKING geometry defects gate this loop. Advisory aesthetic
+        // signals (`sharp_edges`, info) and project `functional` warnings are
+        // filtered out so they never trigger the geometry-fix prompt — they have
+        // their own phases below, function-first.
+        let blocking: Vec<GeometryWarning> = collect_workspace_warnings(workspace_dir)
+            .into_iter()
+            .filter(|w| !is_advisory(w) && !is_functional(w))
+            .collect();
+        let Some(prompt) = build_review_prompt(&blocking) else {
+            break; // no blocking geometry defects; move on to functional
         };
-
-        let cfg = ClaudeRunConfig {
+        changed |= run_review_round(
+            claude_path,
+            workspace_dir,
+            session_id,
+            turn_id,
             prompt,
-            workspace: workspace_dir.to_path_buf(),
-            claude_session_id: Some(session_id.to_string()),
-            model: Some("opus".into()),
-            use_panda_cloud: false,
-            panda_token: None,
-            panda_base_url: None,
-            phase: TurnPhase::Review,
-        };
+            on_event,
+            cancel,
+        )
+        .await;
+    }
 
-        let pre = snapshot_workspace(workspace_dir);
-        drain_review_child(claude_path, workspace_dir, &cfg, cancel).await;
-        let post = snapshot_workspace(workspace_dir);
-        let diff = diff_snapshots(&pre, &post, turn_id);
-        if !diff.is_empty() {
-            changed = true;
-            for ev in diff {
-                on_event(ev); // surface fixed parts as they land
-            }
+    if cancel.is_cancelled() {
+        return changed;
+    }
+
+    // If geometry never converged, leave the note and stop — fixing function or
+    // polishing a part that's still geometrically broken is wasted budget.
+    let geometry_remaining: Vec<GeometryWarning> = collect_workspace_warnings(workspace_dir)
+        .into_iter()
+        .filter(|w| !is_advisory(w) && !is_functional(w))
+        .collect();
+    if !geometry_remaining.is_empty() {
+        emit_unresolved_note(turn_id, "geometry", &geometry_remaining, on_event);
+        return changed;
+    }
+
+    // Phase 2 — functional fix. Loop until the project's `functional` warnings
+    // clear (the user's "guarantee it works"), re-collecting each round.
+    for _ in 0..MAX_FUNCTIONAL_ROUNDS {
+        if cancel.is_cancelled() {
+            return changed;
+        }
+        let functional: Vec<GeometryWarning> = collect_workspace_warnings(workspace_dir)
+            .into_iter()
+            .filter(is_functional)
+            .collect();
+        let Some(prompt) = build_functional_prompt(&functional) else {
+            break; // no functional issues; move on to polish
+        };
+        changed |= run_review_round(
+            claude_path,
+            workspace_dir,
+            session_id,
+            turn_id,
+            prompt,
+            on_event,
+            cancel,
+        )
+        .await;
+    }
+
+    if cancel.is_cancelled() {
+        return changed;
+    }
+
+    // If function never converged, surface it (the part won't work as intended)
+    // and stop — don't polish a non-working part.
+    let functional_remaining: Vec<GeometryWarning> = collect_workspace_warnings(workspace_dir)
+        .into_iter()
+        .filter(is_functional)
+        .collect();
+    if !functional_remaining.is_empty() {
+        emit_unresolved_note(turn_id, "functional", &functional_remaining, on_event);
+        return changed;
+    }
+
+    // Phase 3 — aesthetic polish. Skip entirely when nothing deterministic
+    // suggests it's needed, so an already-clean build pays no extra round. (The
+    // model's own in-build render-critique pass still covers ungated builds.)
+    let mut candidates: Vec<GeometryWarning> = collect_workspace_warnings(workspace_dir)
+        .into_iter()
+        .filter(|w| is_advisory(w))
+        .collect();
+    if candidates.is_empty() {
+        return changed;
+    }
+    for round in 0..MAX_POLISH_ROUNDS {
+        if cancel.is_cancelled() {
+            return changed;
+        }
+        let prompt = build_polish_prompt(&candidates);
+        let round_changed = run_review_round(
+            claude_path,
+            workspace_dir,
+            session_id,
+            turn_id,
+            prompt,
+            on_event,
+            cancel,
+        )
+        .await;
+        changed |= round_changed;
+        // Cosmetic-churn guard: a round that changed nothing means the model
+        // judged the parts good enough — stop rather than re-prompting.
+        if !round_changed {
+            break;
+        }
+        // Re-read so the NEXT round's hint reflects the freshly refined geometry.
+        // Skip on the final round — the result would never be read (avoids a
+        // wasted workspace walk).
+        if round + 1 < MAX_POLISH_ROUNDS {
+            candidates = collect_workspace_warnings(workspace_dir)
+                .into_iter()
+                .filter(|w| is_advisory(w))
+                .collect();
         }
     }
 
-    // Couldn't converge within the cap. The user opted into silent auto-fix, so
-    // stay quiet unless something is still wrong — then leave one concise note.
-    let remaining = collect_workspace_warnings(workspace_dir);
-    if !remaining.is_empty() {
-        let mut parts: Vec<String> = remaining
-            .iter()
-            .map(|w| w.part.clone())
-            .filter(|p| !p.is_empty())
-            .collect();
-        parts.sort();
-        parts.dedup();
-        on_event(ChatEvent::TextDelta {
-            turn_id: turn_id.to_string(),
-            text: format!(
-                "\n\n_Note: automatic geometry review left {} issue(s) unresolved \
-                 (parts: {}). You may want to inspect those parts._",
-                remaining.len(),
-                if parts.is_empty() {
-                    "model".to_string()
-                } else {
-                    parts.join(", ")
-                },
-            ),
-        });
-    }
     changed
 }
 
@@ -1712,7 +2011,14 @@ mod tests {
         assert_eq!(TurnPhase::Review.permission_mode(), "bypassPermissions");
         assert_eq!(TurnPhase::Review.tag(), TurnPhaseTag::Implement);
         assert_eq!(TurnPhase::Review.system_prompt(), REVIEW_SYSTEM_PROMPT);
-        assert!(TurnPhase::Review.system_prompt().contains("scripts/review"));
+        let prompt = TurnPhase::Review.system_prompt();
+        assert!(prompt.contains("scripts/review"));
+        // Generalized to cover geometry repair, functional fixes, and polish.
+        assert!(prompt.contains("industrial-design"));
+        assert!(prompt.contains("component-integration"));
+        assert!(prompt.contains("GEOMETRY"));
+        assert!(prompt.contains("FUNCTIONAL"));
+        assert!(prompt.contains("AESTHETIC"));
     }
 
     #[test]
@@ -1763,6 +2069,133 @@ mod tests {
         assert!(prompt.contains("chassis"));
         assert!(prompt.contains("disconnected_bodies"));
         assert!(prompt.contains("part is 3 separate solids"));
+    }
+
+    #[test]
+    fn geometry_gate_ignores_aesthetic_only_warnings() {
+        // The Phase-1 geometry loop filters aesthetic kinds before
+        // build_review_prompt, so a part whose only warning is the advisory
+        // `sharp_edges` is geometry-clean → no geometry-fix prompt (it goes to
+        // the polish phase instead). Regression for sharp_edges leaking into the
+        // "regenerate until the check is clean" geometry framing.
+        let warnings = vec![
+            GeometryWarning {
+                part: "stand".into(),
+                kind: "sharp_edges".into(),
+                detail: "27 un-softened convex arris(es)".into(),
+                severity: "info".into(),
+            },
+        ];
+        let blocking: Vec<GeometryWarning> = warnings
+            .into_iter()
+            .filter(|w| !is_advisory(w))
+            .collect();
+        assert!(blocking.is_empty());
+        assert!(build_review_prompt(&blocking).is_none());
+    }
+
+    #[test]
+    fn geometry_gate_excludes_functional_warnings() {
+        // A `functional` warning is severity:"warning" (like geometry defects),
+        // so it must be excluded from the geometry gate by KIND — otherwise it
+        // would be "fixed" with the geometry prompt instead of the functional
+        // one. The functional phase gates on it instead.
+        let w = |kind: &str, sev: &str| GeometryWarning {
+            part: "stand".into(),
+            kind: kind.into(),
+            detail: "x".into(),
+            severity: sev.into(),
+        };
+        let functional = w("functional", "warning");
+        assert!(is_functional(&functional));
+        assert!(!is_advisory(&functional)); // not info → would hit geometry gate
+        // Geometry gate (used by Phase 1) excludes both advisory and functional.
+        let warnings = vec![functional.clone(), w("sharp_edges", "info")];
+        let geometry: Vec<GeometryWarning> = warnings
+            .iter()
+            .filter(|x| !is_advisory(x) && !is_functional(x))
+            .cloned()
+            .collect();
+        assert!(geometry.is_empty());
+        assert!(build_review_prompt(&geometry).is_none());
+        // The functional phase picks it up.
+        let fns: Vec<GeometryWarning> =
+            warnings.into_iter().filter(is_functional).collect();
+        assert_eq!(fns.len(), 1);
+    }
+
+    #[test]
+    fn build_functional_prompt_gates_and_lists() {
+        assert!(build_functional_prompt(&[]).is_none());
+        let warnings = vec![GeometryWarning {
+            part: "stand".into(),
+            kind: "functional".into(),
+            detail: "puck connector won't fit the opening".into(),
+            severity: "warning".into(),
+        }];
+        let prompt = build_functional_prompt(&warnings).expect("warnings -> prompt");
+        assert!(prompt.contains("FUNCTIONAL"));
+        assert!(prompt.contains("component-integration"));
+        assert!(prompt.contains("stand"));
+        assert!(prompt.contains("puck connector won't fit the opening"));
+    }
+
+    #[test]
+    fn is_advisory_keys_off_info_severity() {
+        let w = |kind: &str, sev: &str| GeometryWarning {
+            part: "m".into(),
+            kind: kind.into(),
+            detail: String::new(),
+            severity: sev.into(),
+        };
+        assert!(is_advisory(&w("sharp_edges", "info")));
+        assert!(!is_advisory(&w("disconnected_bodies", "error")));
+        assert!(!is_advisory(&w("sliver", "warning")));
+        assert!(!is_advisory(&w("invalid_brep", "warning")));
+        // A future info-level advisory of a different kind is classified
+        // correctly with no allowlist edit — the whole point of keying on
+        // severity rather than the `kind` string.
+        assert!(is_advisory(&w("thin_wall", "info")));
+    }
+
+    #[test]
+    fn build_polish_prompt_is_unconditional_and_seeds_hint() {
+        // No hint → still a full polish prompt (not gated on warnings).
+        let bare = build_polish_prompt(&[]);
+        assert!(bare.contains("aesthetic polish"));
+        assert!(bare.contains("industrial-design"));
+        assert!(!bare.contains("candidates"));
+
+        // With a sharp_edges hint → the candidate is listed.
+        let hint = vec![GeometryWarning {
+            part: "lid".into(),
+            kind: "sharp_edges".into(),
+            detail: "7 un-softened convex arris(es)".into(),
+            severity: "info".into(),
+        }];
+        let seeded = build_polish_prompt(&hint);
+        assert!(seeded.contains("candidates"));
+        assert!(seeded.contains("lid"));
+        assert!(seeded.contains("sharp_edges"));
+    }
+
+    #[test]
+    fn collect_workspace_warnings_reads_sharp_edges_advisory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(
+            root.join("tray.step.json"),
+            r#"{"validation":{"warnings":[
+                {"part":"tray","kind":"sharp_edges","detail":"12 arrises","severity":"info"}
+            ]}}"#,
+        )
+        .unwrap();
+        let warnings = collect_workspace_warnings(root);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].kind, "sharp_edges");
+        assert_eq!(warnings[0].severity, "info");
+        // It must not be treated as a blocking geometry defect.
+        assert!(is_advisory(&warnings[0]));
     }
 
     #[test]
@@ -1960,6 +2393,10 @@ mod tests {
         let sp = cmd.iter().position(|a| a == "--append-system-prompt").unwrap();
         assert_eq!(cmd[sp + 1], PLAN_SYSTEM_PROMPT);
         assert!(cmd[sp + 1].contains("PLANNING mode"));
+        // The plan must carry the premium-design bar and a per-part Form clause.
+        assert!(cmd[sp + 1].contains("AESTHETIC BAR"));
+        assert!(cmd[sp + 1].contains("industrial-design"));
+        assert!(cmd[sp + 1].contains("Form"));
     }
 
     #[test]
@@ -1982,6 +2419,11 @@ mod tests {
         let sp = cmd.iter().position(|a| a == "--append-system-prompt").unwrap();
         assert_eq!(cmd[sp + 1], IMPLEMENT_SYSTEM_PROMPT);
         assert!(cmd[sp + 1].contains("APPROVED"));
+        // Build must hit the premium look and run a render-and-self-critique pass.
+        assert!(cmd[sp + 1].contains("industrial-design"));
+        assert!(cmd[sp + 1].contains("scripts/review"));
+        // ...and make it assemble/work (component-integration discipline).
+        assert!(cmd[sp + 1].contains("component-integration"));
     }
 
     #[test]

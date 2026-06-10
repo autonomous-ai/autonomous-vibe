@@ -4,12 +4,19 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/ui/utils";
 import { approvePlan, requestPlanChanges, useChatStore } from "@/store/chat";
+import { useAutopilot } from "@/lib/autopilot";
 import Markdown from "./Markdown";
 
 const STATUS_PILL = {
   proposed: { label: "Awaiting approval", cls: "border-amber-500/35 bg-amber-500/15 text-amber-400" },
   approved: { label: "Approved", cls: "border-emerald-500/40 bg-emerald-500/15 text-emerald-400" },
   superseded: { label: "Superseded", cls: "border-white/10 bg-white/5 text-zinc-400" },
+};
+
+// Under autopilot the plan is informational only — the build starts on its own.
+const AUTOPILOT_PILL = {
+  label: "Building automatically",
+  cls: "border-emerald-500/40 bg-emerald-500/15 text-emerald-400",
 };
 
 // Plan-body markdown styling. The plan content drives the layout: `###`
@@ -36,13 +43,19 @@ const PLAN_MD = cn(
  */
 export default function PlanBlock({ plan, status }) {
   const turnInProgress = useChatStore((s) => s.turnInProgress);
+  const autopilot = useAutopilot();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(plan);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedback, setFeedback] = useState("");
 
-  const pill = STATUS_PILL[status] || STATUS_PILL.proposed;
-  const isProposed = status === "proposed";
+  // Autopilot: the plan is read-only (the build chains automatically); show a
+  // "Building automatically" pill and no approve/edit/feedback footer.
+  const pill =
+    autopilot && status === "proposed"
+      ? AUTOPILOT_PILL
+      : STATUS_PILL[status] || STATUS_PILL.proposed;
+  const isProposed = status === "proposed" && !autopilot;
   const busy = turnInProgress;
 
   const handleApprove = () => {

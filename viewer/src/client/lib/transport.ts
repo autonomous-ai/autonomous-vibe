@@ -342,6 +342,11 @@ export interface AppSettings {
   // Update behavior. false (default) = prompt before downloading; true =
   // silently download in the background and notify when a restart will apply.
   autoUpdate: boolean;
+  // Autopilot. true (default) = no plan-approval gate: after the model asks its
+  // preference questions it builds + reviews unattended and delivers product +
+  // parts. false = manual plan → Approve & build. Mirrors
+  // ipc/types.rs::AppSettings.auto_build.
+  autoBuild?: boolean;
 }
 
 // Auto-update ----------------------------------------------------------------
@@ -716,6 +721,7 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
         usePandaCloud: false,
         hasOnboarded: true,
         autoUpdate: false,
+        autoBuild: true,
       } as unknown as T;
     case "app_settings_write":
       return undefined as unknown as T;

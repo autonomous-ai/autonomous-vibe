@@ -763,7 +763,7 @@ def _normalize_step_payload(
     """
     # 1. dict envelope.
     if isinstance(result, dict):
-        allowed_fields = {"shape", "instances", "children", "step_output", "stl", "3mf", "mesh_tolerance", "mesh_angular_tolerance"}
+        allowed_fields = {"shape", "instances", "children", "step_output", "stl", "3mf", "mesh_tolerance", "mesh_angular_tolerance", "warnings"}
         extra_fields = sorted(str(key) for key in result if key not in allowed_fields)
         if extra_fields:
             joined = ", ".join(extra_fields)
@@ -783,7 +783,7 @@ def _normalize_step_payload(
         # :func:`generate_step` wrapper reads the optional keys.
         return {
             content_fields[0]: result[content_fields[0]],
-            **{key: result[key] for key in ("stl", "3mf", "mesh_tolerance", "mesh_angular_tolerance", "step_output") if key in result},
+            **{key: result[key] for key in ("stl", "3mf", "mesh_tolerance", "mesh_angular_tolerance", "step_output", "warnings") if key in result},
         }
     # 2. list → assembly children.
     if isinstance(result, list):
@@ -2530,6 +2530,15 @@ def _resolve_envelope_for_project(
             raise
         except GenerationError:
             raise
+        except AssertionError as exc:
+            # A project's validate_params()/functional asserts use `assert` to
+            # hard-block impossible fits. Surface the assert message cleanly as a
+            # validation failure (ProjectShapeError → code VALIDATION_FAILED) so
+            # the build turn sees "back wall 1.2 mm < 2.0 mm", not a buried
+            # AssertionError traceback.
+            raise ProjectShapeError(
+                f"design validation failed: {exc}" if str(exc) else "design validation failed"
+            ) from exc
         except Exception as exc:
             raise GeneratorRuntimeError(
                 f"gen_step() raised {type(exc).__name__}: {exc}"
@@ -2779,6 +2788,44 @@ def _write_shape_step_payload_with_source(
     return scene
 
 
+def _coerce_project_warnings(raw: object) -> list[dict[str, str]]:
+    """Normalize a project-declared envelope ``warnings`` list into the
+    ``validation.warnings`` entry shape, dropping malformed items.
+
+    A project's ``gen_step()`` may return ``{"shape": ..., "warnings": [...]}``
+    to declare its own (typically ``kind:"functional"``) checks alongside the
+    deterministic geometry checks. Each entry must be a mapping with non-empty
+    string ``kind`` and ``detail``; ``part`` defaults to ``"model"`` and
+    ``severity`` to ``"warning"`` (blocking). Never raises — a malformed
+    declaration must not break generation.
+    """
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("kind")
+        detail = item.get("detail")
+        if not isinstance(kind, str) or not kind.strip():
+            continue
+        if not isinstance(detail, str) or not detail.strip():
+            continue
+        part = item.get("part")
+        severity = item.get("severity")
+        out.append(
+            {
+                "part": part if isinstance(part, str) and part else "model",
+                "kind": kind,
+                "detail": detail,
+                "severity": severity
+                if isinstance(severity, str) and severity
+                else "warning",
+            }
+        )
+    return out
+
+
 def generate_step(
     project_dir: Path | str,
     output_path: Path | str,
@@ -2813,6 +2860,11 @@ def generate_step(
 
     script_path = project_dir_p / "main.py"
     envelope = _resolve_envelope_for_project(project_dir_p, script_path=script_path)
+
+    # Project-declared warnings (e.g. functional/assembly checks) ride on the
+    # envelope; pop them out before the spec/shape writers see the envelope, and
+    # merge them with the deterministic geometry warnings below.
+    project_warnings = _coerce_project_warnings(envelope.pop("warnings", None))
 
     spec = _build_synthetic_spec_for_wrapper(
         script_path=script_path,
@@ -2933,6 +2985,10 @@ def generate_step(
         warnings = collect_scene_warnings(export_shape, scene)
     except Exception:
         warnings = []
+
+    # Merge the project's own declared warnings (functional/assembly checks)
+    # after the deterministic geometry checks, so both reach validation.warnings.
+    warnings = list(warnings) + project_warnings
 
     try:
         _write_metadata_sidecar(

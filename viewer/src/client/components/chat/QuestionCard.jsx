@@ -52,6 +52,16 @@ export default function QuestionCard({ questions }) {
     if (res) setSubmitted(true);
   };
 
+  // One-click delegate: skip every preference and let Panda pick the best.
+  const handleDelegate = async () => {
+    if (turnInProgress || submitted) return;
+    const res = await startTurn(
+      "Build the best version — you decide every preference above. Pick the best " +
+        "option for each and proceed without asking again.",
+    );
+    if (res) setSubmitted(true);
+  };
+
   if (!list.length) return null;
 
   return (
@@ -95,7 +105,18 @@ export default function QuestionCard({ questions }) {
           );
         })}
       </div>
-      <div className="mt-4 flex justify-end">
+      <div className="mt-4 flex items-center justify-between gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={handleDelegate}
+          disabled={turnInProgress || submitted}
+          data-slot="chat-questions-delegate"
+          className="h-9 rounded-lg border-white/10 bg-white/[0.02] px-4 text-zinc-300 hover:bg-white/[0.07] hover:text-zinc-50 disabled:opacity-55"
+        >
+          Build the best (you decide)
+        </Button>
         <Button
           type="button"
           size="sm"

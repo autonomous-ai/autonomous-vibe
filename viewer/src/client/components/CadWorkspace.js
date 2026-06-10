@@ -186,6 +186,7 @@ import {
 } from "@/workbench/sidebar";
 import { isPrintableModelEntry } from "@/workbench/isPrintableModelEntry";
 import { getTransport, isTauriRuntime } from "@/lib/transport";
+import { describeSlicerInstallProgress } from "./onboarding/onboardingHelpers.js";
 import { buildCadRefToken } from "cadjs/lib/cadRefs";
 import { loadRenderSelectorBundle } from "cadjs/lib/renderAssetClient";
 import {
@@ -295,6 +296,13 @@ function describeSliceError(err) {
   switch (code) {
     case "SLICER_NOT_FOUND":
       return "OrcaSlicer not found. Install it, or set its path in Settings, then try again.";
+    case "INSTALL_FAILED":
+    case "INSTALLER_FETCH_FAILED":
+    case "INSTALLER_CLIENT_ERROR":
+    case "INSTALL_VERIFIED_MISSING":
+      // First-slice on-demand OrcaSlicer install failed (download/extract/verify).
+      // The slice button itself is the retry — re-clicking re-runs the install.
+      return `Couldn't set up OrcaSlicer: ${raw || "the install failed"}. Check your connection and click Slice to try again.`;
     case "NO_ACTIVE_PROJECT":
       return "Open a project before slicing.";
     case "SLICE_FAILED":
@@ -399,7 +407,15 @@ const SLICE_STAGE_LABELS = {
   writing: "Writing…"
 };
 
-function sliceProgressLabel(progress) {
+function sliceProgressLabel(progress, install) {
+  // During a first-run on-demand slicer install the backend only tags the
+  // coarse `installing_slicer` stage on `slice_progress`; the per-stage detail
+  // (and download %) rides on `slicer_install_progress`, passed in as `install`.
+  // Without it the button would sit on a frozen "Installing slicer…" for the
+  // whole multi-minute ~150 MB download.
+  if (progress?.stage === "installing_slicer" && install) {
+    return describeSlicerInstallProgress(install);
+  }
   return SLICE_STAGE_LABELS[progress?.stage] || "Slicing…";
 }
 
@@ -664,6 +680,14 @@ export default function CadWorkspace({
   const [sliceStatusSeverity, setSliceStatusSeverity] = useState("");
   // Live in-flight stage from `slice_progress`, drives the button label.
   const [sliceProgress, setSliceProgress] = useState(null);
+  // Detailed on-demand-install progress from `slicer_install_progress`, streamed
+  // only when the first slice has to install OrcaSlicer (~150 MB). Drives the
+  // button's "Downloading OrcaSlicer… N%" label instead of a silent hang.
+  const [slicerInstall, setSlicerInstall] = useState(null);
+  // Tri-state slicer presence (null = unknown, true, false) from a mount-time
+  // prereq check, so the idle Slice button can warn that the first slice runs a
+  // one-time setup download. Stays null (plain label) until proven missing.
+  const [slicerReady, setSlicerReady] = useState(null);
   const [addPrinterOpen, setAddPrinterOpen] = useState(false);
   // When Print is triggered with no printer, we open the pairing dialog and
   // remember to resume the print once a printer is actually added (armed on
@@ -5869,6 +5893,48 @@ export default function CadWorkspace({
     });
   }, []);
 
+  // Mirror the on-demand slicer-install detail (download %, extract, verify)
+  // from `slicer_install_progress` so the slice button shows real progress
+  // during a first-run install instead of a frozen "Installing slicer…". The
+  // terminal `done` clears it and marks the slicer ready, so the idle button
+  // label drops its one-time-setup warning.
+  useEffect(() => {
+    const transport = getTransport();
+    if (!transport?.events?.subscribe) {
+      return undefined;
+    }
+    return transport.events.subscribe("slicer_install_progress", (event) => {
+      if (!event) return;
+      if (String(event.stage || "") === "done") {
+        setSlicerInstall(null);
+        setSlicerReady(true);
+        return;
+      }
+      setSlicerInstall(event);
+    });
+  }, []);
+
+  // One-time slicer-presence probe so the idle Slice button can flag that the
+  // first slice runs a one-off OrcaSlicer setup (~150 MB) — a no-op where the
+  // slicer ships bundled or is already installed. Best-effort: any failure
+  // leaves `slicerReady` null and the label unchanged.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const check = await getTransport().app_prereq_check();
+        if (!cancelled) {
+          setSlicerReady(Boolean(check?.slicer?.found));
+        }
+      } catch {
+        // Leave unknown; the slice path still installs on demand with progress.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     if (!autoSelectStem) return;
     const match = catalogEntries.find(
@@ -6264,6 +6330,7 @@ export default function CadWorkspace({
     setSliceStatus("");
     setSliceStatusSeverity("");
     setSliceProgress(null);
+    setSlicerInstall(null);
     setCopyStatus("");
     try {
       const transport = getTransport();
@@ -6272,6 +6339,9 @@ export default function CadWorkspace({
         printerId: "",
         filament: "PLA"
       });
+      // A completed slice proves the slicer is present, so drop the idle
+      // button's one-time-setup warning for the rest of the session.
+      setSlicerReady(true);
       // Surface the result so the chat Print button lights up (the toolbar
       // slice has no chat turn, so it never streams an `artifact_changed`),
       // and refresh the catalog so the new gcode appears in the Models rail.
@@ -6321,6 +6391,7 @@ export default function CadWorkspace({
     } finally {
       setSlicing(false);
       setSliceProgress(null);
+      setSlicerInstall(null);
     }
   }, [selectedEntry]);
 
@@ -6931,7 +7002,13 @@ export default function CadWorkspace({
                 handleScreenshotDownload={handleScreenshotDownload}
                 canSlice={selectedEntrySourceFormat === RENDER_FORMAT.STL}
                 slicing={slicing}
-                sliceLabel={slicing ? sliceProgressLabel(sliceProgress) : "Slice plate"}
+                sliceLabel={
+                  slicing
+                    ? sliceProgressLabel(sliceProgress, slicerInstall)
+                    : slicerReady === false
+                      ? "Set up & slice"
+                      : "Slice plate"
+                }
                 sliceError={sliceError}
                 handleSlicePlate={handleSlicePlate}
                 canPrint={selectedEntrySourceFormat === RENDER_FORMAT.GCODE}

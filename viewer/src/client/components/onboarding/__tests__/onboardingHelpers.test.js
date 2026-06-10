@@ -227,3 +227,29 @@ test("describeSlicerInstallProgress labels each stage", () => {
   );
   assert.equal(describeSlicerInstallProgress(undefined), "Working…");
 });
+
+test("describeSlicerInstallProgress shows a download percent when bytes are known", () => {
+  assert.equal(
+    describeSlicerInstallProgress({
+      stage: "downloading",
+      receivedBytes: 75,
+      totalBytes: 150,
+    }),
+    "Downloading OrcaSlicer… 50%",
+  );
+  // Clamp below 100% even when the byte stream reports complete — extract/verify
+  // still follow before the install is usable.
+  assert.equal(
+    describeSlicerInstallProgress({
+      stage: "downloading",
+      receivedBytes: 150,
+      totalBytes: 150,
+    }),
+    "Downloading OrcaSlicer… 99%",
+  );
+  // No total → no percent (unchanged from the bare-stage label).
+  assert.equal(
+    describeSlicerInstallProgress({ stage: "downloading", receivedBytes: 10 }),
+    "Downloading OrcaSlicer…",
+  );
+});

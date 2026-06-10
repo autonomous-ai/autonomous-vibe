@@ -260,8 +260,17 @@ export function describeSlicerInstallProgress(event) {
     return "Working…";
   }
   switch (event.stage) {
-    case "downloading":
+    case "downloading": {
+      const total = Number(event.totalBytes) || 0;
+      const received = Number(event.receivedBytes) || 0;
+      if (total > 0) {
+        // Clamp to 99%: the byte stream finishes slightly before the install is
+        // actually usable (extract/verify still follow), so never show "100%".
+        const pct = Math.max(0, Math.min(99, Math.round((received / total) * 100)));
+        return `Downloading OrcaSlicer… ${pct}%`;
+      }
       return "Downloading OrcaSlicer…";
+    }
     case "extracting":
       return "Preparing installer…";
     case "installing":

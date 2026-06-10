@@ -717,13 +717,27 @@ pub(crate) fn resolve_slicer_binary(configured: &str) -> Result<PathBuf, IpcErro
     let trimmed = configured.trim();
     if !trimmed.is_empty() {
         let p = PathBuf::from(trimmed);
-        if p.exists() {
-            return Ok(p);
+        if !p.exists() {
+            return Err(IpcError::new(
+                "SLICER_NOT_FOUND",
+                format!("configured slicer_binary_path does not exist: {trimmed}"),
+            ));
         }
-        return Err(IpcError::new(
-            "SLICER_NOT_FOUND",
-            format!("configured slicer_binary_path does not exist: {trimmed}"),
-        ));
+        // Apply the same executable gate the bundled/well-known branches use, so
+        // a user who points Settings at a non-binary (a `.lnk`/`.bat` shim, a
+        // directory, or the 4-byte placeholder stub) fails here with a clear
+        // message instead of later in `spawn_slicer` as the opaque Windows OS
+        // error 216 (ERROR_EXE_MACHINE_TYPE_MISMATCH). On non-Windows this is the
+        // non-empty-file check, which a real slicer binary always passes.
+        if !file_is_executable(&p) {
+            return Err(IpcError::new(
+                "SLICER_NOT_FOUND",
+                format!(
+                    "configured slicer_binary_path is not a runnable slicer binary: {trimmed}"
+                ),
+            ));
+        }
+        return Ok(p);
     }
     for bundled in bundled_slicer_candidates() {
         if bundled.exists() && file_is_executable(&bundled) {
@@ -1162,10 +1176,23 @@ async fn spawn_slicer(bin: &Path, args: &[String]) -> Result<SlicerOutcome, IpcE
             .join(" ")
     );
 
-    let mut cmd = tokio::process::Command::new(bin);
-    cmd.args(args);
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
+    // Build via std::process::Command so the Windows creation flag can be set,
+    // then convert to a tokio command for the async wait + kill_on_drop.
+    let mut std_cmd = std::process::Command::new(bin);
+    std_cmd.args(args);
+    std_cmd.stdout(Stdio::piped());
+    std_cmd.stderr(Stdio::piped());
+    // On Windows, suppress the console window that would otherwise flash when
+    // this GUI app spawns the slicer subprocess (same fix the installers in
+    // commands::app already apply to their PowerShell spawns). Harmless to
+    // OrcaSlicer's headless `--slice` run.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std_cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut cmd = tokio::process::Command::from(std_cmd);
     // Reap the child if this future is dropped (caller cancelled / panicked)
     // so a half-run slice can't outlive the request as an orphan process.
     cmd.kill_on_drop(true);

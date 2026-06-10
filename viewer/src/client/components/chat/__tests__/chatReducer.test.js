@@ -51,6 +51,31 @@ test("queue_user_message appends a user turn and marks turnInProgress", () => {
   assert.equal(next.history[0].userText, "make a 10mm cube");
 });
 
+test("note_revert appends a linear revert marker turn without disturbing history", () => {
+  const base = {
+    ...INITIAL_CHAT_STATE,
+    currentProjectId: "proj-1",
+    history: [
+      { id: "u-1", role: "user", blocks: [], status: "complete", startedAt: 0 },
+    ],
+  };
+  const next = chatReducer(
+    base,
+    { type: "note_revert", label: "Version 2", id: "revert-1", at: FIXED_NOW },
+    FIXED_NOW,
+  );
+  // The prior turn is untouched; the marker is appended at the end.
+  assert.equal(next.history.length, 2);
+  assert.equal(next.history[0].id, "u-1");
+  const marker = next.history[1];
+  assert.equal(marker.role, "assistant");
+  assert.equal(marker.status, "complete");
+  assert.deepEqual(marker.blocks, [{ kind: "revert", label: "Version 2" }]);
+  // It does not start a turn or flip turnInProgress (model files only).
+  assert.equal(next.turnInProgress, false);
+  assert.equal(next.currentTurnId, "");
+});
+
 test("queue_user_message slots the user turn before an already-arrived assistant turn", () => {
   // Race: the backend's `turn_start` lands before `chat_start_turn` resolves
   // and queues the user message. The user prompt must still render above

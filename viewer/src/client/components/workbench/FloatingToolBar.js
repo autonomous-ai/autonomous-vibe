@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  Box,
   Crosshair,
   Layers,
   MousePointer2,
@@ -66,6 +67,9 @@ function DesktopFloatingToolBar({
   printing = false,
   printLabel = "Print",
   handlePrint,
+  canViewSourceModel = false,
+  viewSourceModelLabel = "View model",
+  handleViewSourceModel,
   canOpenInStudio = false,
   openingInStudio = false,
   openInStudioLabel = "Open in Bambu Studio",
@@ -152,6 +156,22 @@ function DesktopFloatingToolBar({
             >
               <Layers className="size-4" strokeWidth={2} aria-hidden="true" />
               {sliceLabel}
+            </ToolbarButton>
+          ) : null}
+
+          {/* Sliced-gcode escape hatch: a `.gcode` view has no model to
+              manipulate, so offer a one-click return to the source STL the
+              toolpath was sliced from (resolved in CadWorkspace). */}
+          {canViewSourceModel ? (
+            <ToolbarButton
+              label={viewSourceModelLabel}
+              onClick={() => {
+                handleViewSourceModel?.();
+              }}
+              className="h-9 w-auto gap-1.5 px-3 text-sm font-medium"
+            >
+              <Box className="size-4" strokeWidth={2} aria-hidden="true" />
+              {viewSourceModelLabel}
             </ToolbarButton>
           ) : null}
 

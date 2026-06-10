@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/ui/utils";
 import ToolUseBlock from "./ToolUseBlock";
@@ -7,7 +8,18 @@ import Markdown from "./Markdown";
 import ChatCopyButton from "./ChatCopyButton";
 import { phaseLabel, toolLabel } from "./activityLabels";
 
-function TextBlock({ text }) {
+function TextBlock({ text, streaming }) {
+  if (streaming) {
+    // Plain text while a turn is streaming — avoids re-parsing markdown on every delta.
+    return (
+      <div
+        data-slot="chat-text"
+        className="chat-prose whitespace-pre-wrap text-sm text-foreground/90"
+      >
+        {text}
+      </div>
+    );
+  }
   return (
     <div data-slot="chat-text">
       <Markdown source={text} />
@@ -101,7 +113,7 @@ function StatusLine({ turn }) {
   return null;
 }
 
-export default function ChatTurn({ turn, onOpenArtifact }) {
+export default memo(function ChatTurn({ turn, onOpenArtifact }) {
   const isUser = turn.role === "user";
   const showModifyHint =
     !isUser &&
@@ -167,7 +179,13 @@ export default function ChatTurn({ turn, onOpenArtifact }) {
         {turn.blocks.map((block, index) => {
           switch (block.kind) {
             case "text":
-              return <TextBlock key={index} text={block.text} />;
+              return (
+                <TextBlock
+                  key={index}
+                  text={block.text}
+                  streaming={turn.status === "running" && index === turn.blocks.length - 1}
+                />
+              );
             case "thinking":
               return <ThinkingBlock key={index} text={block.text} />;
             case "tool_use":
@@ -217,4 +235,4 @@ export default function ChatTurn({ turn, onOpenArtifact }) {
       ) : null}
     </article>
   );
-}
+}, (prev, next) => prev.turn === next.turn && prev.onOpenArtifact === next.onOpenArtifact);

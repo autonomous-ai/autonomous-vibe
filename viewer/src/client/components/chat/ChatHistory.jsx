@@ -1,21 +1,15 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown } from "lucide-react";
 import { cn } from "@/ui/utils";
 import ChatTurn from "./ChatTurn";
+import { groupTurns } from "./chatHistoryModel";
 
-// Group each user prompt with the assistant turns that answer it so related
-// messages keep their spacing as a unit in the history.
-function groupTurns(history) {
-  const groups = [];
-  for (const turn of history) {
-    if (turn.role === "user" || groups.length === 0) {
-      groups.push([turn]);
-    } else {
-      groups[groups.length - 1].push(turn);
-    }
-  }
-  return groups;
-}
+const GROUP_GAP = 12;
+const GROUP_ESTIMATE_HEIGHT = 220;
+const BACK_TO_BOTTOM_THRESHOLD = 120;
+
+export { groupTurns } from "./chatHistoryModel";
 
 export default function ChatHistory({
   history,
@@ -23,16 +17,40 @@ export default function ChatHistory({
   onRequestInputFocus,
   className,
 }) {
-  const ref = useRef(null);
+  const scrollRef = useRef(null);
   const seenUserTurnIdsRef = useRef(new Set());
   const [showBackToBottom, setShowBackToBottom] = useState(false);
 
+  const groups = useMemo(() => groupTurns(history), [history]);
+
+  const virtualizer = useVirtualizer({
+    count: groups.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => GROUP_ESTIMATE_HEIGHT,
+    overscan: 4,
+    gap: GROUP_GAP,
+    getItemKey: (index) => groups[index]?.[0]?.id ?? index,
+  });
+  const virtualizerRef = useRef(virtualizer);
+  virtualizerRef.current = virtualizer;
+  const groupCountRef = useRef(groups.length);
+  groupCountRef.current = groups.length;
+
   const updateBackToBottomVisibility = useCallback(() => {
-    const node = ref.current;
+    const node = scrollRef.current;
     if (!node) return;
     const hasLongHistory = node.scrollHeight > node.clientHeight + 48;
     const distanceFromBottom = node.scrollHeight - node.clientHeight - node.scrollTop;
-    setShowBackToBottom(hasLongHistory && distanceFromBottom > 120);
+    setShowBackToBottom(hasLongHistory && distanceFromBottom > BACK_TO_BOTTOM_THRESHOLD);
+  }, []);
+
+  const scrollToBottom = useCallback((behavior = "auto") => {
+    const count = groupCountRef.current;
+    if (count === 0) return;
+    virtualizerRef.current.scrollToIndex(count - 1, {
+      align: "end",
+      behavior,
+    });
   }, []);
 
   // Scroll to bottom when the user sends (or plan feedback arrives), not on stream deltas.
@@ -44,28 +62,25 @@ export default function ChatHistory({
       shouldScroll = true;
     }
     if (shouldScroll) {
-      const node = ref.current;
-      if (node) node.scrollTop = node.scrollHeight;
+      scrollToBottom("auto");
     }
-  }, [history]);
+  }, [history, scrollToBottom]);
 
-  // Refresh the back-to-bottom affordance when content grows; never auto-scroll.
+  // Keep the back-to-bottom affordance in sync as virtual row heights change.
   useEffect(() => {
     updateBackToBottomVisibility();
-  }, [history, updateBackToBottomVisibility]);
+  }, [history, virtualizer.range, updateBackToBottomVisibility]);
 
   const handleScroll = useCallback(() => {
     updateBackToBottomVisibility();
   }, [updateBackToBottomVisibility]);
 
   const handleBackToBottom = useCallback(() => {
-    const node = ref.current;
-    if (!node) return;
-    node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
+    scrollToBottom("smooth");
     onRequestInputFocus?.();
-  }, [onRequestInputFocus]);
+  }, [onRequestInputFocus, scrollToBottom]);
 
-  const groups = groupTurns(history);
+  const virtualItems = virtualizer.getVirtualItems();
 
   if (!history.length) {
     return (
@@ -86,26 +101,37 @@ export default function ChatHistory({
   return (
     <div className={cn("relative h-full", className)}>
       <div
-        ref={ref}
+        ref={scrollRef}
         data-slot="chat-history"
         onScroll={handleScroll}
-        className="scrollbar-thin flex h-full min-w-0 flex-col gap-3 overflow-y-auto px-3.5 py-3"
+        className="scrollbar-thin h-full min-w-0 overflow-y-auto px-3.5 py-3"
       >
-        {groups.map((group) => (
-          <div
-            key={group[0].id}
-            data-slot="chat-turn-group"
-            className="flex min-w-0 shrink-0 flex-col gap-3"
-          >
-            {group.map((turn) => (
-              <ChatTurn
-                key={turn.id}
-                turn={turn}
-                onOpenArtifact={onOpenArtifact}
-              />
-            ))}
-          </div>
-        ))}
+        <div
+          className="relative w-full"
+          style={{ height: virtualizer.getTotalSize() }}
+        >
+          {virtualItems.map((virtualItem) => {
+            const group = groups[virtualItem.index];
+            return (
+              <div
+                key={virtualItem.key}
+                data-index={virtualItem.index}
+                ref={virtualizer.measureElement}
+                data-slot="chat-turn-group"
+                className="absolute top-0 left-0 flex w-full min-w-0 flex-col gap-3"
+                style={{ transform: `translateY(${virtualItem.start}px)` }}
+              >
+                {group.map((turn) => (
+                  <ChatTurn
+                    key={turn.id}
+                    turn={turn}
+                    onOpenArtifact={onOpenArtifact}
+                  />
+                ))}
+              </div>
+            );
+          })}
+        </div>
       </div>
       {showBackToBottom ? (
         <button

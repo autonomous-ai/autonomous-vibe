@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CheckCircle2, ExternalLink, Loader2, Sparkles } from "lucide-react";
+import { CheckCircle2, ExternalLink, KeyRound, Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { transport } from "@/lib/transport.ts";
 import {
   buildClaudeInstallFlow,
@@ -16,15 +17,15 @@ import {
 } from "./onboardingHelpers.js";
 
 /**
- * Single-screen onboarding for non-technical users. The only user-facing path is
- * "Sign in with Panda" — a proxy login to Panda's hosted Claude server. The
- * `claude` binary is still the runtime, so a missing CLI is installed first;
- * then `app_panda_login` issues a token and we complete with `usePandaCloud:
- * true`.
+ * Single-screen onboarding. The primary, recommended path is "Sign in with
+ * Panda" — a proxy login to Panda's hosted AI. The `claude` binary is still the
+ * runtime today, so a missing CLI is installed first; then `app_panda_login`
+ * issues a token and we complete with `usePandaCloud: true`.
  *
- * The bring-your-own-Claude path is intentionally NOT surfaced here — regular
- * users don't configure Claude Code. Experienced users reach local Claude via
- * the hidden developer gesture in the chat header (see AuthModeControl).
+ * Bring-your-own Claude Code is offered too, but deliberately understated — a
+ * quiet row, enabled only when the CLI is installed AND signed in — so Panda
+ * stays the obvious choice while people already running Claude Code can connect
+ * their own (see also the matching chooser in AuthModeControl).
  *
  * Everything else (slicer / printer / filament) moved out of onboarding into the
  * in-app "Add Printer" flow.
@@ -39,6 +40,11 @@ export default function WelcomeScreen({ onComplete }) {
   const [pandaProgress, setPandaProgress] = useState(null);
   const [pandaError, setPandaError] = useState("");
   const [finishing, setFinishing] = useState(false);
+  // Deep-link-independent fallback: paste the authorized token from the hosted
+  // sign-in page when the OS can't deliver the `myide://` callback.
+  const [tokenEntryOpen, setTokenEntryOpen] = useState(false);
+  const [tokenInput, setTokenInput] = useState("");
+  const [submittingToken, setSubmittingToken] = useState(false);
 
   const welcomeRef = useRef(null);
   const activeFlowRef = useRef(null);
@@ -217,8 +223,53 @@ export default function WelcomeScreen({ onComplete }) {
     await finish({ usePandaCloud: true });
   }, [busy, finish, runInstallStep, runPandaLoginStep]);
 
+  // Deep-link-independent completion: paste the authorized token from the hosted
+  // sign-in page. Persists the session Rust-side, releases any in-flight browser
+  // sign-in (so its awaiting promise resolves quietly), then finishes onboarding.
+  const finishWithPastedToken = useCallback(async () => {
+    const token = tokenInput.trim();
+    if (!token || submittingToken) return;
+    setSubmittingToken(true);
+    setPandaError("");
+    try {
+      await transport.app_submit_panda_token(token);
+      // Quietly unwind the still-awaiting app_panda_login (if any): cancelledRef
+      // suppresses its "interrupted" error; app_cancel_panda_login frees the Rust
+      // receiver so it doesn't sit out the 10-min timeout.
+      cancelledRef.current = true;
+      if (activeFlowRef.current) activeFlowRef.current.cancel();
+      void transport.app_cancel_panda_login().catch(() => {});
+      // finish() re-reads settings (now carrying the token) and flips hasOnboarded.
+      await finish({ usePandaCloud: true });
+    } catch (err) {
+      setPandaError(
+        err && typeof err === "object" && "message" in err
+          ? String(err.message || "Couldn’t sign in with that token")
+          : String(err || "Couldn’t sign in with that token"),
+      );
+      setSubmittingToken(false);
+    }
+  }, [tokenInput, submittingToken, finish]);
+
+  // Bring-your-own Claude Code: complete onboarding on the local auth path.
+  // Enabled only when the CLI is installed AND signed in — otherwise a chat turn
+  // would dead-end — which also naturally keeps it an option for people already
+  // set up with Claude Code rather than a prompt for everyone.
+  const useOwnClaude = useCallback(() => {
+    if (busy || !welcomeRef.current?.canUseOwn) return;
+    void finish({ usePandaCloud: false });
+  }, [busy, finish]);
+
   const cliFound = welcome?.cliFound ?? false;
   const authed = welcome?.authed ?? false;
+  const canUseOwn = welcome?.canUseOwn ?? false;
+  const ownBlockedReason = welcome?.ownBlockedReason ?? "";
+  const ownBlockedCopy =
+    ownBlockedReason === "not_installed"
+      ? "Claude Code isn’t installed yet."
+      : ownBlockedReason === "not_signed_in"
+        ? "Claude Code is installed, but not signed in yet."
+        : "";
 
   const progressLabel = pandaProgress
     ? pandaState === "installing"
@@ -237,7 +288,7 @@ export default function WelcomeScreen({ onComplete }) {
           <h1 className="text-2xl font-semibold">Welcome to Panda</h1>
           <p className="text-sm text-muted-foreground">
             Panda turns a chat into a printable model. Sign in to get started —
-            no account or Claude subscription needed.
+            no account or subscription needed.
           </p>
         </header>
 
@@ -248,6 +299,7 @@ export default function WelcomeScreen({ onComplete }) {
               <Loader2 className="size-4 animate-spin" /> Getting things ready…
             </span>
           ) : cliFound && authed ? (
+          
             <span className="flex items-center gap-2">
               <CheckCircle2 className="size-4 text-emerald-600" /> Ready to go
             </span>
@@ -276,10 +328,8 @@ export default function WelcomeScreen({ onComplete }) {
                 </span>
               </p>
               <p className="text-sm text-muted-foreground">
-                Use Panda’s Claude — no Claude subscription needed.
-                {!cliFound
-                  ? " We’ll install the Claude Code runtime first."
-                  : ""}
+                Use Panda’s built-in AI — no subscription needed.
+                {!cliFound ? " We’ll finish a quick setup first." : ""}
               </p>
             </div>
           </div>
@@ -306,6 +356,62 @@ export default function WelcomeScreen({ onComplete }) {
                   <ExternalLink className="size-3.5" /> Didn’t open? Open the
                   sign-in page
                 </a>
+              ) : null}
+              {pandaProgress?.stage === "awaiting_browser" ? (
+                <div className="flex flex-col gap-2 border-t border-border/60 pt-2">
+                  {tokenEntryOpen ? (
+                    <>
+                      <label
+                        htmlFor="panda-token-input"
+                        className="text-xs text-muted-foreground"
+                      >
+                        Approved already? Paste the sign-in token from that page
+                        to finish.
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          id="panda-token-input"
+                          value={tokenInput}
+                          onChange={(e) => setTokenInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              void finishWithPastedToken();
+                            }
+                          }}
+                          placeholder="ccr-…"
+                          autoComplete="off"
+                          spellCheck={false}
+                          disabled={submittingToken}
+                          data-testid="panda-token-input"
+                          className="h-8 text-sm"
+                        />
+                        <Button
+                          size="sm"
+                          onClick={() => void finishWithPastedToken()}
+                          disabled={submittingToken || !tokenInput.trim()}
+                          data-testid="panda-token-submit"
+                        >
+                          {submittingToken ? (
+                            <Loader2 className="size-4 animate-spin" />
+                          ) : (
+                            "Finish"
+                          )}
+                        </Button>
+                      </div>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setTokenEntryOpen(true)}
+                      className="inline-flex items-center gap-1 self-start text-primary underline-offset-2 hover:underline"
+                      data-testid="panda-token-disclosure"
+                    >
+                      <KeyRound className="size-3.5" /> Stuck? Paste a sign-in
+                      token instead
+                    </button>
+                  )}
+                </div>
               ) : null}
             </div>
           ) : null}
@@ -356,9 +462,33 @@ export default function WelcomeScreen({ onComplete }) {
           </div>
         </div>
 
-        {/* Re-check. The bring-your-own-Claude path is intentionally absent —
-            experienced users reach it via the hidden developer gesture in the
-            chat header (see AuthModeControl). */}
+        {/* Secondary: bring your own Claude Code. Deliberately understated — a
+            quiet row, not a second call-to-action — so Panda stays the obvious
+            path for most, while anyone already running Claude Code can spot it
+            and connect their own. Enabled only when the CLI is installed and
+            signed in (otherwise a chat turn would dead-end). */}
+        <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-2.5">
+          <div className="space-y-0.5">
+            <p className="text-sm font-medium text-muted-foreground">
+              Use your own Claude Code
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {canUseOwn
+                ? "Detected and signed in — connect it instead of Panda."
+                : `Available once Claude Code is installed and signed in. ${ownBlockedCopy}`}
+            </p>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => useOwnClaude()}
+            disabled={busy || checking || !canUseOwn}
+            data-testid="use-own-claude"
+          >
+            {finishing ? "Finishing…" : "Connect"}
+          </Button>
+        </div>
+
         <div className="mt-3 flex items-center justify-end text-sm">
           <Button
             variant="ghost"

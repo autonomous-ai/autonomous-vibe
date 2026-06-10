@@ -763,6 +763,17 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
     case "app_cancel_panda_login":
       // No-op in browser dev (no in-flight Tauri sign-in to cancel).
       return undefined as unknown as T;
+    case "app_submit_panda_token":
+      // Echo a signed-in settings snapshot so the paste-token fallback completes
+      // onboarding in browser dev without a real Tauri backend.
+      return {
+        defaultFilament: "PLA",
+        slicerBinaryPath: "",
+        usePandaCloud: true,
+        pandaToken: String(args.token ?? ""),
+        hasOnboarded: true,
+        autoUpdate: false,
+      } as unknown as T;
     case "app_panda_login":
       // Proxy sign-in talks to Panda's backend — Tauri only. Surface the same
       // "not available yet" shape the placeholder command returns so the
@@ -933,6 +944,12 @@ const transportBase = {
   // path); the awaiting app_panda_login returns immediately instead of waiting
   // out the 10-min timeout.
   app_cancel_panda_login: () => invoke<void>("app_cancel_panda_login"),
+  // Deep-link-independent sign-in fallback: paste the authorized `ccr-…` token
+  // shown on the hosted sign-in page when the OS can't deliver the `myide://`
+  // callback (macOS dev builds, or a browser that blocks the custom scheme).
+  // Persists the session like the deep-link path and returns updated settings.
+  app_submit_panda_token: (token: string) =>
+    invoke<AppSettings>("app_submit_panda_token", { token }),
   // Switch the active Claude access mode (proxy ↔ own local Claude) without
   // re-onboarding. Enabling the proxy requires a prior Panda sign-in (errors
   // PANDA_NOT_SIGNED_IN otherwise). Returns the updated settings.

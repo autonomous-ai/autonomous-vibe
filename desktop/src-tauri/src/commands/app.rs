@@ -1169,6 +1169,44 @@ pub async fn app_panda_logout() -> IpcResult<AppSettings> {
     Ok(settings)
 }
 
+/// Validate a pasted Panda proxy token. The hosted sign-in page exposes the
+/// issued `ccr-…` key for copy/paste as a fallback when the OS can't deliver the
+/// `myide://` deep link (notably macOS dev builds, or a browser that blocks the
+/// custom scheme). Trims surrounding whitespace and rejects values that aren't
+/// shaped like a single `ccr-…` token — the usual paste mistake is grabbing the
+/// whole "key: …" line or a URL.
+fn validate_panda_token(raw: &str) -> Result<String, IpcError> {
+    let token = raw.trim();
+    if token.is_empty() {
+        return Err(IpcError::new(
+            "PANDA_TOKEN_INVALID",
+            "Paste your sign-in token to continue.".to_string(),
+        ));
+    }
+    if token.split_whitespace().count() != 1 || !token.starts_with("ccr-") {
+        return Err(IpcError::new(
+            "PANDA_TOKEN_INVALID",
+            "That doesn't look like a Panda sign-in token. Copy the token shown on the sign-in page."
+                .to_string(),
+        ));
+    }
+    Ok(token.to_string())
+}
+
+/// Complete a Panda sign-in by pasting the authorized proxy token directly,
+/// bypassing the browser deep-link round-trip. Persists the session exactly like
+/// the deep-link path — same [`store_panda_session`] write, base URL defaulting
+/// to the compiled-in proxy — and returns the updated settings so the UI can
+/// finish onboarding. Independent of any in-flight [`app_panda_login`]: it does
+/// not need the PKCE verifier, so it works even when the deep link never arrives.
+#[tauri::command]
+pub async fn app_submit_panda_token(token: String) -> IpcResult<AppSettings> {
+    let token = validate_panda_token(&token)?;
+    store_panda_session(&token, PANDA_PROXY_URL).await?;
+    let settings = load_settings().await.unwrap_or_default();
+    Ok(settings)
+}
+
 /// Drive the Panda proxy sign-in (PKCE + deep-link OAuth). Opens the browser,
 /// waits for the `myide://auth/callback` deep link, exchanges the code,
 /// and persists the session. Progress streams via `panda_login_progress`. In
@@ -2266,6 +2304,22 @@ mod tests {
         assert!(url.contains("redirect_uri=myide%3A%2F%2Fauth%2Fcallback"));
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains("state=state%2Dabc"));
+    }
+
+    #[test]
+    fn validate_panda_token_accepts_a_trimmed_ccr_key() {
+        assert_eq!(
+            validate_panda_token("  ccr-abc123_DEF  ").expect("valid token"),
+            "ccr-abc123_DEF"
+        );
+    }
+
+    #[test]
+    fn validate_panda_token_rejects_empty_blank_and_malformed() {
+        for bad in ["", "   ", "sk-ant-not-a-ccr-key", "ccr-one ccr-two", "https://x"] {
+            let err = validate_panda_token(bad).expect_err("should reject");
+            assert_eq!(err.code, "PANDA_TOKEN_INVALID");
+        }
     }
 
     #[test]

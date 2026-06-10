@@ -86,11 +86,27 @@ pub fn session_id_for_project(project_id: &str) -> Uuid {
     Uuid::new_v5(&CLAUDE_SESSION_NS, project_id.as_bytes())
 }
 
+/// The synthetic message that kicks off the build phase from an (approved or
+/// auto-approved) plan. Begins with [`APPROVE_PLAN_PREAMBLE`] so rehydration
+/// drops it from history.
+fn approved_plan_message(plan_text: &str) -> String {
+    format!(
+        "The plan below is approved. Implement it now, generating all parts \
+         and STL/STEP artifacts as described.\n\n{plan_text}"
+    )
+}
+
 /// Spawn one chat turn in the given phase and return its turn_id. Shared
 /// by `chat_start_turn` (plan), `chat_approve_plan` (implement), and
 /// `chat_request_plan_changes` (plan). The session id is deterministic per
 /// project, so every phase resumes the same Claude session — planning
 /// context (and the prior plan) carries into the build phase for free.
+///
+/// **Autopilot:** when `auto_build` is set (the default), a PLAN turn that
+/// produces a plan (i.e. the model called ExitPlanMode — *not* a turn that
+/// stopped to ask preference questions) chains straight into a build turn here,
+/// with no `chat_approve_plan` round-trip. The manual approve path still exists
+/// for `auto_build = false`.
 fn spawn_chat_turn(app: AppHandle, project_id: &str, message: String, phase: TurnPhase) -> String {
     let turn_id = Uuid::new_v4().to_string();
     let workspace = project_workspace(project_id);
@@ -100,11 +116,18 @@ fn spawn_chat_turn(app: AppHandle, project_id: &str, message: String, phase: Tur
 
     let app_clone = app.clone();
     let turn_id_for_task = turn_id.clone();
+    let cancel_for_task = cancel.clone();
 
     tauri::async_runtime::spawn(async move {
         let emitter = app_clone.clone();
         let event_turn_id = turn_id_for_task.clone();
+        // Capture the plan the model proposes so autopilot can build from it.
+        let captured_plan = std::sync::Arc::new(Mutex::new(String::new()));
+        let plan_sink = captured_plan.clone();
         let on_event = move |event: ChatEvent| {
+            if let ChatEvent::PlanProposed { ref plan, .. } = event {
+                *plan_sink.lock() = plan.clone();
+            }
             // Best-effort emit. If the React side has unmounted (window
             // closed), emit fails — there's nothing useful to do here.
             let _ = emitter.emit(CHAT_EVENT, &event);
@@ -116,13 +139,58 @@ fn spawn_chat_turn(app: AppHandle, project_id: &str, message: String, phase: Tur
             &event_turn_id,
             phase,
             on_event,
-            cancel,
+            cancel_for_task.clone(),
         )
         .await;
         deregister_turn(&turn_id_for_task);
+
+        // Autopilot: after a plan turn that produced a plan, build it now.
+        if matches!(phase, TurnPhase::Plan) && !cancel_for_task.is_cancelled() {
+            let plan = captured_plan.lock().clone();
+            if !plan.trim().is_empty() {
+                let auto_build = crate::commands::app::load_settings()
+                    .await
+                    .map(|s| s.auto_build)
+                    .unwrap_or(true);
+                if auto_build {
+                    run_auto_build_turn(app_clone, workspace, session_id, plan).await;
+                }
+            }
+        }
     });
 
     turn_id
+}
+
+/// Run a build (Implement) turn to completion from an auto-approved plan. Used
+/// only by autopilot in [`spawn_chat_turn`]; registers its own turn so it can be
+/// cancelled, and emits events the React side renders exactly like a manual
+/// build. The driver's post-build review loop (geometry → functional →
+/// aesthetic) runs inside this turn.
+async fn run_auto_build_turn(
+    app: AppHandle,
+    workspace: PathBuf,
+    session_id: Uuid,
+    plan: String,
+) {
+    let turn_id = Uuid::new_v4().to_string();
+    let cancel = CancellationToken::new();
+    register_turn(&turn_id, cancel.clone());
+    let emitter = app.clone();
+    let on_event = move |event: ChatEvent| {
+        let _ = emitter.emit(CHAT_EVENT, &event);
+    };
+    let _ = claude_driver::spawn_turn(
+        &workspace,
+        session_id,
+        &approved_plan_message(&plan),
+        &turn_id,
+        TurnPhase::Implement,
+        on_event,
+        cancel,
+    )
+    .await;
+    deregister_turn(&turn_id);
 }
 
 /// Decode and persist the user's reference images into `<workspace>/inputs/`,
@@ -220,12 +288,9 @@ pub async fn chat_approve_plan(
 ) -> IpcResult<StartTurnResponse> {
     // Resume the same session in acceptEdits mode and instruct the model to
     // implement the approved (possibly user-edited) plan. Echoing the plan
-    // text back honors any edits without diffing.
-    let message = format!(
-        "The plan below is approved. Implement it now, generating all parts \
-         and STL/STEP artifacts as described.\n\n{}",
-        req.plan_text
-    );
+    // text back honors any edits without diffing. (Manual path — autopilot
+    // chains the build automatically in spawn_chat_turn.)
+    let message = approved_plan_message(&req.plan_text);
     let turn_id = spawn_chat_turn(app, &req.project_id, message, TurnPhase::Implement);
     Ok(StartTurnResponse { turn_id })
 }
@@ -395,6 +460,39 @@ mod tests {
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["kind"], "artifact_changed");
         assert_eq!(json["reason"], "new");
+    }
+
+    #[test]
+    fn approved_plan_message_carries_preamble_and_plan() {
+        let msg = approved_plan_message("Make a 120mm phone stand.");
+        assert!(msg.starts_with(APPROVE_PLAN_PREAMBLE));
+        assert!(msg.contains("Make a 120mm phone stand."));
+        // The build phase's synthetic prompt must be droppable from history.
+        assert!(parse_session_history(
+            &serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": msg},
+                "timestamp": "2026-06-10T00:00:00.000Z"
+            })
+            .to_string()
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn auto_build_defaults_true_even_for_legacy_settings() {
+        use crate::ipc::types::AppSettings;
+        // Default impl is autopilot-on.
+        assert!(AppSettings::default().auto_build);
+        // A settings file written before the field existed → still autopilot.
+        let legacy = r#"{"defaultFilament":"PLA","slicerBinaryPath":"","slicerSettingsProfile":"","slicerFilamentProfile":"","defaultPrinterId":"","usePandaCloud":false,"hasOnboarded":true,"autoUpdate":false}"#;
+        let parsed: AppSettings = serde_json::from_str(legacy).unwrap();
+        assert!(parsed.auto_build, "missing auto_build must default to true");
+        // Explicit false is honored (manual approve flow).
+        let manual: AppSettings =
+            serde_json::from_str(r#"{"defaultFilament":"PLA","slicerBinaryPath":"","slicerSettingsProfile":"","slicerFilamentProfile":"","defaultPrinterId":"","usePandaCloud":false,"hasOnboarded":true,"autoUpdate":false,"autoBuild":false}"#)
+                .unwrap();
+        assert!(!manual.auto_build);
     }
 
     #[test]

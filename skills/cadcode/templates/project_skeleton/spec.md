@@ -18,6 +18,23 @@ Human-readable design intent. The agent reads this before touching code.
 - `<name>`: <one-line role>
 - `<name>`: <one-line role>
 
+## Assembly & setup
+
+Ordered steps to assemble + set up the finished print, and the clearance each
+needs. Model the WHOLE component (captive cables, connector collars, plugs) — see
+`references/component-integration.md` + `references/hobbyist-defaults.md`.
+
+1. <install component X: how it goes in, what its cable/connector needs>
+2. <place the device / route the cable / fasten>
+
+## Functional checks
+
+What it must do, each tied to a dimension and an enforcement. Hard fits →
+`validate_params` asserts; assembly feasibility → `functional_warnings`.
+
+- <e.g. captive cable + connector collar passes the OPEN route → functional warning>
+- <e.g. device rests / charges / holds → assert or warning>
+
 ## Manufacturing
 
 - FDM 3D printing, 0.4mm nozzle, PLA/PETG.

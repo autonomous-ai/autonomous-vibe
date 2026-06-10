@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { X } from "lucide-react";
 import { cn } from "@/ui/utils";
 import {
   AccordionContent,
@@ -530,6 +531,20 @@ export default function FileSheet({
           <span className="my-2 w-px rounded-full bg-transparent transition-colors group-hover/file-sheet-resize:bg-sidebar-border group-focus-visible/file-sheet-resize:bg-ring" />
         </button>
       ) : null}
+      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-sidebar-border/60 px-3 py-2">
+        <span className="min-w-0 truncate text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+          {title}
+        </span>
+        <button
+          type="button"
+          onClick={() => onOpenChange?.(false)}
+          aria-label={`Close ${title} sidebar`}
+          title="Close sidebar"
+          className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+        >
+          <X className="size-3.5" strokeWidth={2} aria-hidden="true" />
+        </button>
+      </header>
       {sheetBody}
     </aside>
   );

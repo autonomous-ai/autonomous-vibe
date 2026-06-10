@@ -40,11 +40,11 @@ export VIEWER_PORT
 
 echo "[panda dev] using port ${VIEWER_PORT} (from devUrl in tauri.conf.json)"
 
-# Install viewer deps on first run.
-if [ ! -d "${REPO_ROOT}/viewer/node_modules" ]; then
-  echo "[panda dev] viewer/node_modules missing — installing"
-  npm --prefix "${REPO_ROOT}/viewer" install
-fi
+# Install viewer deps. npm install is idempotent (no-ops when the lockfile is
+# already satisfied) and picks up package.json changes between runs, so run it
+# every time rather than only when node_modules is missing.
+echo "[panda dev] installing viewer deps (npm install)"
+npm --prefix "${REPO_ROOT}/viewer" install
 
 # Vendor cadpy into the skill runtimes so the cadcode generator has a working
 # pipeline. The dev install (cargo run) falls back to the repo `skills/` tree;

@@ -55,17 +55,6 @@ function PhaseBadge({ phase, running }) {
   );
 }
 
-function ThinkingBlock({ text }) {
-  return (
-    <p
-      data-slot="chat-thinking"
-      className="whitespace-pre-wrap rounded-md border border-dashed border-border/60 bg-muted/20 px-2 py-1 text-xs italic text-muted-foreground"
-    >
-      {text}
-    </p>
-  );
-}
-
 function ErrorBlock({ message }) {
   return (
     <p data-slot="chat-error" className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive">
@@ -122,15 +111,18 @@ export default memo(function ChatTurn({ turn, onOpenArtifact }) {
     turn.blocks.some((block) => block.kind === "artifact");
   const copyText = turnCopyText(turn);
   const showCopyButton = turnShowsCopyButton(turn);
-  // Tool calls are intentionally not rendered (see the tool_use case below).
+  // Tool calls and thinking are intentionally not rendered (see cases below).
   // While the turn is running and there's no streaming text to show — either
-  // nothing has arrived yet, or a hidden tool call is the latest activity —
-  // surface one generic "Working…" line so the user knows something is happening.
+  // nothing has arrived yet, or a hidden tool/thinking block is the latest
+  // activity — surface one generic "Working…" line so the user knows something
+  // is happening.
   const lastBlock = turn.blocks[turn.blocks.length - 1];
   const showWorking =
     !isUser &&
     turn.status === "running" &&
-    (turn.blocks.length === 0 || lastBlock?.kind === "tool_use");
+    (turn.blocks.length === 0 ||
+      lastBlock?.kind === "tool_use" ||
+      lastBlock?.kind === "thinking");
   return (
     <article
       data-slot="chat-turn"
@@ -187,7 +179,9 @@ export default memo(function ChatTurn({ turn, onOpenArtifact }) {
                 />
               );
             case "thinking":
-              return <ThinkingBlock key={index} text={block.text} />;
+              // Thinking is intentionally not shown — the generic "Working…"
+              // indicator below covers it (see showWorking).
+              return null;
             case "tool_use":
               // Tool calls are intentionally not shown — the generic "Working…"
               // indicator below tells the user something is happening without

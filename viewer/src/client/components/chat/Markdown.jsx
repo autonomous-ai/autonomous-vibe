@@ -126,7 +126,11 @@ const COMPONENTS = {
     if (lang || flattenText(children).includes("\n")) {
       return <ChatCodeBlock lang={lang} code={flattenText(children)} />;
     }
-    return <code className="rounded bg-muted/60 px-1 py-0.5 text-[12px] font-mono">{children}</code>;
+    return (
+      <code className="wrap-break-word rounded bg-muted/60 px-1 py-0.5 text-[12px] font-mono">
+        {children}
+      </code>
+    );
   },
 };
 

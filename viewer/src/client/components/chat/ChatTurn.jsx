@@ -122,7 +122,7 @@ export default function ChatTurn({ turn, onOpenArtifact }) {
           : undefined
       }
       className={cn(
-        "group/turn relative rounded-xl px-3.5 py-2.5 shadow-(--ui-shadow-soft) transition-colors",
+        "group/turn relative min-w-0 wrap-break-word rounded-xl px-3.5 py-2.5 shadow-(--ui-shadow-soft) transition-colors",
         isUser
           ? "ml-auto mb-7 w-fit max-w-[85%] rounded-2xl"
           : "bg-card/65",

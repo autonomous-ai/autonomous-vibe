@@ -9,6 +9,7 @@
   --prose-check: #2cad7e; /* filled-accent "done" state */
   font-size: 0.8125rem;
   line-height: 1.65;
+  overflow-wrap: break-word;
 }
 
 .chat-prose > :first-child {

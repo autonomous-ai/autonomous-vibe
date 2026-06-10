@@ -76,13 +76,13 @@ export default function ChatHistory({
         ref={ref}
         data-slot="chat-history"
         onScroll={handleScroll}
-        className="scrollbar-thin flex h-full flex-col gap-3 overflow-y-auto px-3.5 py-3"
+        className="scrollbar-thin flex h-full min-w-0 flex-col gap-3 overflow-y-auto px-3.5 py-3"
       >
         {groups.map((group) => (
           <div
             key={group[0].id}
             data-slot="chat-turn-group"
-            className="flex shrink-0 flex-col gap-3"
+            className="flex min-w-0 shrink-0 flex-col gap-3"
           >
             {group.map((turn) => (
               <ChatTurn

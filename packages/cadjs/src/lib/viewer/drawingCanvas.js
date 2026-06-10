@@ -1,4 +1,4 @@
-import { DRAWING_TOOL } from "./drawingTools.js";
+import { DRAWING_TOOL, isRegionStroke, regionStrokes } from "./drawingTools.js";
 import {
   drawingPointToPixels,
   getDrawingStrokePoints,
@@ -27,6 +27,10 @@ export const DRAWING_FILL_RAY_COUNT = 72;
 export const DRAWING_FILL_MIN_REGION_PIXELS = 56;
 export const DRAWING_FILL_MAX_REGION_RATIO = 0.92;
 export const SURFACE_LINE_COLOR = "#ef4444";
+// Numbered badge for a labelled region. Sized off the stroke width so it tracks
+// the same backing-store scale as the strokes themselves (the canvas is sized at
+// device-pixel resolution, so a fixed px radius would shrink on HiDPI displays).
+export const REGION_BADGE_RADIUS = DRAWING_STROKE_WIDTH * 2.75;
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -90,6 +94,55 @@ export function getDrawingBoundaryPixelPoints(stroke, width, height) {
     return buildCirclePixelPolygon(pixelPoints[0], pixelPoints[pixelPoints.length - 1]);
   }
   return pixelPoints;
+}
+
+// Pixel position of a region's numbered badge: the top-right corner of its
+// bounding box, clamped so the badge stays on-canvas. `width`/`height` are
+// whatever pixel space the caller works in (canvas backing store for baking, or
+// the element's client rect for placing the React note popover), so the same
+// math anchors the badge and its editor consistently.
+export function regionBadgePixelAnchor(stroke, width, height) {
+  const points = getDrawingBoundaryPixelPoints(stroke, width, height);
+  if (!points.length) {
+    return null;
+  }
+  let minY = Infinity;
+  let maxX = -Infinity;
+  for (const [x, y] of points) {
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+  }
+  const pad = REGION_BADGE_RADIUS * 0.4;
+  return [clamp(maxX - pad, 0, width), clamp(minY + pad, 0, height)];
+}
+
+function drawRegionBadge(context, anchor, label) {
+  if (!anchor) {
+    return;
+  }
+  const [x, y] = anchor;
+  const radius = REGION_BADGE_RADIUS;
+  context.save();
+  context.beginPath();
+  context.arc(x, y, radius + 1.5, 0, Math.PI * 2);
+  context.fillStyle = DRAWING_STROKE_HALO;
+  context.fill();
+  context.beginPath();
+  context.arc(x, y, radius, 0, Math.PI * 2);
+  context.fillStyle = DRAWING_STROKE_COLOR;
+  context.fill();
+  context.fillStyle = "#ffffff";
+  context.font = `bold ${Math.round(radius * 1.25)}px ui-sans-serif, system-ui, sans-serif`;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText(String(label), x, y + radius * 0.06);
+  context.restore();
+}
+
+function drawRegionBadges(context, strokes, width, height) {
+  regionStrokes(strokes).forEach((stroke, index) => {
+    drawRegionBadge(context, regionBadgePixelAnchor(stroke, width, height), index + 1);
+  });
 }
 
 function drawArrowHead(context, start, end, lineWidth) {
@@ -785,6 +838,10 @@ export function redrawDrawingCanvas(canvas, strokes, draftStroke = null) {
       lineWidth: DRAWING_STROKE_WIDTH
     });
   }
+
+  // Numbered badges for committed regions sit on top of the strokes (and bake
+  // into the "Send to AI" screenshot). The draft stroke isn't a region yet.
+  drawRegionBadges(context, allStrokes, width, height);
 
   if (draftStroke) {
     drawLineStroke(context, draftStroke, width, height, {

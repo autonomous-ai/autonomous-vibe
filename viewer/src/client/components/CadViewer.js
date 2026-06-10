@@ -1671,8 +1671,13 @@ const CadViewer = forwardRef(function CadViewer({
       }
 
       renderDrawingOverlay();
+      // "blob" returns the composited PNG (render + annotation overlay) to the
+      // caller instead of downloading/copying it — used to attach the
+      // highlighted view to the chat. It wants an opaque background for the same
+      // reason clipboard does: a bare alpha PNG reads badly once embedded.
+      const wantsBackground = mode === "clipboard" || mode === "blob";
       const blobPromise = buildCompositeScreenshotBlob(runtime, drawingCanvasRef.current, {
-        backgroundColor: mode === "clipboard"
+        backgroundColor: wantsBackground
           ? resolveElementBackgroundColor(runtime.renderer.domElement)
           : "",
         crop: getViewportFrameCrop(runtime, viewportFrameInsetsRef.current)
@@ -1680,6 +1685,9 @@ const CadViewer = forwardRef(function CadViewer({
 
       if (mode === "clipboard") {
         return await copyImageBlobToClipboard(blobPromise);
+      }
+      if (mode === "blob") {
+        return await blobPromise;
       }
 
       const blob = await blobPromise;
@@ -1699,6 +1707,11 @@ const CadViewer = forwardRef(function CadViewer({
     },
     focusViewPreset(faceId) {
       return activateViewPlaneFace(faceId);
+    },
+    // Viewport-relative rect of the 2D drawing overlay, so the chat layer can
+    // anchor a per-region note popover in screen space. Null until mounted.
+    getDrawingCanvasRect() {
+      return drawingCanvasRef.current?.getBoundingClientRect() || null;
     }
   }), [modelKey, normalizedSceneScaleMode]);
 

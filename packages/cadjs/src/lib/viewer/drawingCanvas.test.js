@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { DRAWING_TOOL } from "./drawingTools.js";
+import { DRAWING_TOOL, isRegionStroke, regionStrokes } from "./drawingTools.js";
 import {
   buildCirclePixelPolygon,
   buildGuessedFillPolygon,
@@ -13,6 +13,8 @@ import {
   maxDrawingStrokeOrdinal,
   normalizePolygonPoints,
   pairNearbyBoundaryEndpoints,
+  REGION_BADGE_RADIUS,
+  regionBadgePixelAnchor,
   traceMaskLoops
 } from "./drawingCanvas.js";
 
@@ -116,4 +118,33 @@ test("guessed fill polygon uses radial boundary hits when exact fill is unavaila
     { x: 0, y: 0 },
     { x: 0.5, y: 1 }
   ]);
+});
+
+test("region helpers identify closed shapes and number them in order", () => {
+  const strokes = [
+    { id: "stroke-1", tool: DRAWING_TOOL.CIRCLE },
+    { id: "stroke-2", tool: DRAWING_TOOL.FREEHAND },
+    { id: "stroke-3", tool: DRAWING_TOOL.RECTANGLE }
+  ];
+  assert.equal(isRegionStroke(strokes[0]), true);
+  assert.equal(isRegionStroke(strokes[1]), false);
+  assert.equal(isRegionStroke({ tool: DRAWING_TOOL.ARROW }), false);
+  assert.deepEqual(
+    regionStrokes(strokes).map((stroke) => stroke.id),
+    ["stroke-1", "stroke-3"]
+  );
+});
+
+test("regionBadgePixelAnchor sits at the top-right of the bounding box", () => {
+  // Rectangle 0.1,0.2 → 0.3,0.4 over a 100x100 canvas: bbox maxX=30, minY=20.
+  const pad = REGION_BADGE_RADIUS * 0.4;
+  assert.deepEqual(
+    regionBadgePixelAnchor(
+      { tool: DRAWING_TOOL.RECTANGLE, points: [{ x: 0.1, y: 0.2 }, { x: 0.3, y: 0.4 }] },
+      100,
+      100
+    ),
+    [30 - pad, 20 + pad]
+  );
+  assert.equal(regionBadgePixelAnchor({ tool: DRAWING_TOOL.CIRCLE, points: [] }, 100, 100), null);
 });

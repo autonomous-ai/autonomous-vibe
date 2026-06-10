@@ -366,7 +366,11 @@ function cloneDrawingStroke(stroke) {
     points: Array.isArray(stroke?.points) ? stroke.points.map(cloneDrawingPoint) : [],
     fillPoints: Array.isArray(stroke?.fillPoints) ? stroke.fillPoints.map(cloneDrawingPoint) : [],
     guessed: stroke?.guessed === true,
-    surfaceLine: cloneSurfaceLineData(stroke?.surfaceLine)
+    surfaceLine: cloneSurfaceLineData(stroke?.surfaceLine),
+    // Per-region note from the "Send to AI" popover. Preserved here so it
+    // survives clones (every commit re-clones existing strokes) and persists
+    // with the tab session; "" when unset.
+    note: typeof stroke?.note === "string" ? stroke.note : ""
   };
 }
 
@@ -386,6 +390,7 @@ export function drawingStrokesEqual(a, b) {
       a[index]?.id !== b[index]?.id ||
       a[index]?.tool !== b[index]?.tool ||
       a[index]?.guessed !== b[index]?.guessed ||
+      (a[index]?.note || "") !== (b[index]?.note || "") ||
       !surfaceLineEqual(a[index]?.surfaceLine, b[index]?.surfaceLine) ||
       !drawingPointsEqual(a[index]?.points, b[index]?.points) ||
       !drawingPointsEqual(a[index]?.fillPoints, b[index]?.fillPoints)

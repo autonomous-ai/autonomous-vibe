@@ -16,6 +16,9 @@ import ViewerAlertDialog from "./workbench/ViewerAlertDialog";
 import ViewerLoadingOverlay from "./workbench/ViewerLoadingOverlay";
 import FloatingToolBar from "./workbench/FloatingToolBar";
 import SavedStates from "./workbench/SavedStates";
+import RegionNotePopover from "./workbench/RegionNotePopover";
+import { isRegionStroke, regionStrokes } from "cadjs/lib/viewer/drawingTools";
+import { regionBadgePixelAnchor } from "cadjs/lib/viewer/drawingCanvas";
 import { useCadAssets } from "./workbench/hooks/useCadAssets";
 import {
   resolveDesktopPanelWidths,
@@ -65,6 +68,7 @@ import {
 import {
   entrySourceFormat,
   fileSheetKindForEntry,
+  isMeshRenderFormat,
   isRobotRenderFormat
 } from "cadjs/lib/fileFormats";
 import {
@@ -268,10 +272,12 @@ import {
 import { emitCadRefSelection } from "@/components/chat/cadRefEvents";
 import { basename, pickPrinterForSlice, PRINT_CONFIG_CHANGED_EVENT } from "@/components/chat/actionButtonsHelpers";
 import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
-import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, selectSliceTargetStl, getChatState, useChatStore } from "@/store/chat";
+import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, selectSliceTargetStl, getChatState, addPendingAttachment, setPendingViewContext, useChatStore } from "@/store/chat";
 import { useProjectsStore } from "@/store/projects.ts";
 import { sortProjects } from "@/components/library/projectListHelpers.js";
-import { PLACEHOLDER_PROJECT_NAME } from "@/components/chat/chatInputHelpers";
+import { PLACEHOLDER_PROJECT_NAME, FOCUS_CHAT_INPUT_EVENT, PREFILL_CHAT_INPUT_EVENT } from "@/components/chat/chatInputHelpers";
+import { blobToAttachment, MAX_ATTACHMENTS } from "@/components/chat/attachments";
+import { buildHighlightContextNote, buildDrawingSuggestionText } from "@/components/chat/highlightContext";
 import { useProjectsFileTree } from "./workbench/hooks/useProjectsFileTree";
 import DeleteConfirmDialog from "@/components/library/DeleteConfirmDialog.jsx";
 
@@ -781,6 +787,9 @@ export default function CadWorkspace({
   const [viewerPerspective, setViewerPerspective] = useState(null);
   const [tabToolMode, setTabToolMode] = useState(TAB_TOOL_MODE.REFERENCES);
   const [drawingStrokes, setDrawingStrokes] = useState([]);
+  // Inline note editor target: the region whose badge a popover is anchored to.
+  // { strokeId, number, initialNote, anchor: {left, top} } | null.
+  const [activeRegionNote, setActiveRegionNote] = useState(null);
   const [drawingUndoStack, setDrawingUndoStack] = useState([]);
   const [drawingRedoStack, setDrawingRedoStack] = useState([]);
   const [rulerTool, setRulerTool] = useState(RULER_TOOL.FEATURES);
@@ -2116,7 +2125,14 @@ export default function CadWorkspace({
     isAssemblyView &&
     String(assemblyCurrentNode?.nodeType || "assembly").trim() === "assembly";
   const viewerMode = viewerInAssemblyMode ? "assembly" : "part";
-  const drawModeActive = selectedEntrySourceFormat === RENDER_FORMAT.STEP && tabToolMode === TAB_TOOL_MODE.DRAW;
+  // Drawing is a 2D screen-space overlay, so it works on any rendered solid —
+  // STEP parts and raw meshes (STL/OBJ/GLB) alike. Off for DXF (2D), G-code
+  // (toolpath) and robot views. Mesh views lack topology, so picking/references
+  // stay gated elsewhere; only the overlay is shared.
+  const drawModeActive =
+    (selectedEntrySourceFormat === RENDER_FORMAT.STEP ||
+      isMeshRenderFormat(selectedEntrySourceFormat)) &&
+    tabToolMode === TAB_TOOL_MODE.DRAW;
   const rulerModeActive = tabToolMode === TAB_TOOL_MODE.RULER && !!selectedMeshData && !isUrdfView && !isGcodeView;
   const selectionCountBase = selectedPartIds.length + selectedReferenceIds.length;
 
@@ -6111,6 +6127,17 @@ export default function CadWorkspace({
     if (normalizedMode === TAB_TOOL_MODE.DRAW && drawingTool === DRAWING_TOOL.SURFACE_LINE) {
       setDrawingTool(DRAWING_TOOL.FREEHAND);
     }
+    // Deselecting the draw tool wipes the marks (and their history + any open
+    // popover) so the viewer is clean. Only the explicit deselect actions (Draw
+    // toggle, Esc, Select) reach here; part/tab switches use setTabToolMode
+    // directly and keep their saved strokes.
+    if (normalizedMode === TAB_TOOL_MODE.REFERENCES && drawingStrokesRef.current.length) {
+      drawingStrokesRef.current = [];
+      setDrawingStrokes([]);
+      setDrawingUndoStack([]);
+      setDrawingRedoStack([]);
+      setActiveRegionNote(null);
+    }
   }, [drawingTool]);
 
   const handleEnableSelectableTopology = useCallback(() => {
@@ -6250,6 +6277,42 @@ export default function CadWorkspace({
     }
   }, [fileRevealAvailable]);
 
+  // Open the inline note editor anchored to a region's badge. Best-effort: it
+  // needs the live overlay rect (so it lines up with the baked badge); if the
+  // viewer isn't mounted yet we just skip the popover, the region is still sent.
+  const openRegionNotePopover = useCallback((stroke, strokes) => {
+    const rect = viewerRef.current?.getDrawingCanvasRect?.();
+    if (!rect) {
+      return;
+    }
+    const anchorPx = regionBadgePixelAnchor(stroke, rect.width, rect.height);
+    if (!anchorPx) {
+      return;
+    }
+    const number = regionStrokes(strokes).findIndex((entry) => entry.id === stroke.id) + 1;
+    // Pre-fill with a shape-aware suggestion ("Improve the detail inside the
+    // circle."), unless the region already carries a note the user typed.
+    const existingNote = typeof stroke.note === "string" ? stroke.note.trim() : "";
+    setActiveRegionNote({
+      strokeId: stroke.id,
+      number,
+      initialNote: existingNote || buildDrawingSuggestionText([stroke]),
+      anchor: { left: rect.left + anchorPx[0], top: rect.top + anchorPx[1] },
+    });
+  }, []);
+
+  const handleSetRegionNote = useCallback((strokeId, text) => {
+    // A note is metadata, not a shape edit — write it straight onto the stroke
+    // (no undo entry) and keep the ref in sync for the overlay/capture path.
+    const next = drawingStrokesRef.current.map((stroke) =>
+      stroke.id === strokeId ? { ...stroke, note: String(text || "") } : stroke,
+    );
+    drawingStrokesRef.current = next;
+    setDrawingStrokes(next);
+  }, []);
+
+  const handleCloseRegionNote = useCallback(() => setActiveRegionNote(null), []);
+
   const handleDrawingStrokesChange = useCallback((nextStrokes) => {
     const normalized = cloneDrawingStrokes(nextStrokes);
     const current = drawingStrokesRef.current;
@@ -6259,7 +6322,55 @@ export default function CadWorkspace({
     setDrawingUndoStack((history) => [...history, cloneDrawingStrokes(current)]);
     setDrawingRedoStack([]);
     setDrawingStrokes(normalized);
-  }, []);
+    // A freshly drawn highlight (circle, rectangle, or freehand loop) opens the
+    // suggestion popover. Guard on an absent note so undo→redo of an already-sent
+    // highlight doesn't reopen. Circles/rectangles are numbered regions; freehand
+    // gets the popover too but no baked badge number.
+    const previousIds = new Set(current.map((stroke) => stroke.id));
+    const addedHighlight = normalized.find(
+      (stroke) =>
+        (isRegionStroke(stroke) || stroke.tool === DRAWING_TOOL.FREEHAND) &&
+        !previousIds.has(stroke.id) &&
+        !stroke.note,
+    );
+    if (addedHighlight) {
+      openRegionNotePopover(addedHighlight, normalized);
+    }
+  }, [openRegionNotePopover]);
+
+  // Dismiss the note popover if its region is gone — erased, undone, cleared, or
+  // wiped because the camera moved (strokes are screen-space, so an orbit clears
+  // them). Keeps a stale editor from floating over an empty viewport.
+  useEffect(() => {
+    if (activeRegionNote && !drawingStrokes.some((stroke) => stroke.id === activeRegionNote.strokeId)) {
+      setActiveRegionNote(null);
+    }
+  }, [drawingStrokes, activeRegionNote]);
+
+  // Esc leaves draw mode — but if the suggestion popover is open, the first Esc
+  // just closes it (its own handler marks the event handled, so we skip). Also
+  // skips while typing in a field so it never interrupts the chat composer.
+  useEffect(() => {
+    if (!drawModeActive) {
+      return undefined;
+    }
+    const handleEscape = (event) => {
+      if (event.key !== "Escape" || event.defaultPrevented) {
+        return;
+      }
+      if (activeRegionNote) {
+        setActiveRegionNote(null);
+        return;
+      }
+      const tag = String(event.target?.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || event.target?.isContentEditable) {
+        return;
+      }
+      handleSelectTabToolMode("references");
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [drawModeActive, activeRegionNote, handleSelectTabToolMode]);
 
   const handleSelectDrawingTool = useCallback((tool) => {
     setTabToolMode(TAB_TOOL_MODE.DRAW);
@@ -6448,6 +6559,71 @@ export default function CadWorkspace({
       setScreenshotStatus(captureError instanceof Error ? captureError.message : "Clipboard copy failed");
     }
   }, [selectedEntry]);
+
+  // Bridge the annotated viewport into the chat composer: capture the same
+  // composite the screenshot tools produce (render + drawing overlay), wrap it
+  // as a chat image attachment, and queue it. The chip then shows in the
+  // always-visible chat sidebar; we focus the composer so the user can type the
+  // instruction for the highlighted area ("improve this", "add vents", …).
+  const handleSendDrawingToChat = useCallback(async (textOverride) => {
+    if (!selectedEntry) {
+      return;
+    }
+    if (!viewerRef.current?.captureScreenshot) {
+      setScreenshotStatus("CAD Viewer not ready");
+      return;
+    }
+    const pending = getChatState().pendingAttachments?.length || 0;
+    if (pending >= MAX_ATTACHMENTS) {
+      setCopyStatus("");
+      setScreenshotStatus(`Up to ${MAX_ATTACHMENTS} images per message`);
+      return;
+    }
+    try {
+      const blob = await viewerRef.current.captureScreenshot({ mode: "blob" });
+      const name = `highlight-${fileKey(selectedEntry).replace(/[^a-zA-Z0-9._-]+/g, "-")}.png`;
+      const file = typeof File === "function"
+        ? new File([blob], name, { type: blob.type || "image/png" })
+        : blob;
+      addPendingAttachment(await blobToAttachment(file, { name }));
+      // Tell the model *where* the highlight is (frame region + camera), to ride
+      // alongside the image. Best-effort: a missing perspective just omits it.
+      const perspective = viewerRef.current.getPerspective?.() || null;
+      const contextNote = buildHighlightContextNote({
+        strokes: drawingStrokesRef.current,
+        perspective,
+      });
+      setPendingViewContext(contextNote);
+      // Pre-fill the composer: the popover passes its edited text; the toolbar
+      // button passes its click event (ignored), so we fall back to a shape-aware
+      // suggestion. The prefill event focuses too, so the bare focus is just the
+      // fallback when there's nothing to suggest.
+      const override = typeof textOverride === "string" ? textOverride.trim() : "";
+      const suggestion = override || buildDrawingSuggestionText(drawingStrokesRef.current);
+      if (suggestion) {
+        window.dispatchEvent(new CustomEvent(PREFILL_CHAT_INPUT_EVENT, { detail: { text: suggestion } }));
+      } else {
+        window.dispatchEvent(new Event(FOCUS_CHAT_INPUT_EVENT));
+      }
+      // The marks are now baked into the attached screenshot — clear them so the
+      // canvas is fresh for the next highlight (undoable if they want them back).
+      handleClearDrawings();
+      setCopyStatus("");
+      setScreenshotStatus("Attached highlighted view to chat");
+    } catch (captureError) {
+      setCopyStatus("");
+      setScreenshotStatus(captureError instanceof Error ? captureError.message : "Could not attach view to chat");
+    }
+  }, [selectedEntry, handleClearDrawings]);
+
+  // "Send to AI" from the region popover: persist the edited text as the region
+  // note (so it also rides in the model-facing context), close the popover, then
+  // attach the annotated view + that text to the composer.
+  const handleSendRegionToChat = useCallback((strokeId, text) => {
+    handleSetRegionNote(strokeId, text);
+    setActiveRegionNote(null);
+    void handleSendDrawingToChat(text);
+  }, [handleSetRegionNote, handleSendDrawingToChat]);
 
   const handleSlicePlate = useCallback(async () => {
     // Slice the STL the user is currently viewing. Non-STL selections don't
@@ -7154,6 +7330,7 @@ export default function CadWorkspace({
                 handleUndoDrawing={handleUndoDrawing}
                 handleRedoDrawing={handleRedoDrawing}
                 handleClearDrawings={handleClearDrawings}
+                handleSendDrawingToChat={handleSendDrawingToChat}
                 canUndoDrawing={canUndoDrawing}
                 canRedoDrawing={canRedoDrawing}
                 drawingStrokes={drawingStrokes}
@@ -7194,6 +7371,18 @@ export default function CadWorkspace({
                 openInStudioLabel={openingInStudio ? "Opening…" : `Open in ${openTargetAppLabel(openTarget)}`}
                 handleOpenInStudio={handleOpenInStudio}
               />
+
+              {drawToolActive && activeRegionNote ? (
+                <RegionNotePopover
+                  key={activeRegionNote.strokeId}
+                  number={activeRegionNote.number}
+                  initialNote={activeRegionNote.initialNote}
+                  anchor={activeRegionNote.anchor}
+                  onSave={(text) => handleSetRegionNote(activeRegionNote.strokeId, text)}
+                  onSend={(text) => handleSendRegionToChat(activeRegionNote.strokeId, text)}
+                  onClose={handleCloseRegionNote}
+                />
+              ) : null}
 
               <ViewerLoadingOverlay
                 viewerLoading={effectiveViewerLoading}

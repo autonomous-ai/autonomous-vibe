@@ -64,6 +64,7 @@ import { __setTransportForTesting, getTransport } from "../lib/transport.ts";
  * @property {ChatTurn[]} history
  * @property {string[]} pendingTokens
  * @property {{id:string,name:string,mediaType:string,dataBase64:string,objectUrl:string}[]} pendingAttachments
+ * @property {string} pendingViewContext
  * @property {string} lastError
  * @property {string} selectedMeshFile
  * @property {boolean} awaitingApproval
@@ -81,6 +82,11 @@ export const INITIAL_CHAT_STATE = Object.freeze({
   // Parallel to pendingTokens; consumed at send. Each carries base64 data (for
   // transport) plus a local objectUrl (for an instant composer thumbnail).
   pendingAttachments: [],
+  // A model-facing note describing WHERE the user highlighted (camera + region),
+  // set by the viewer's "Send to AI" action alongside the annotated screenshot.
+  // Appended to the next turn's userMessage (not shown in the echoed bubble) and
+  // consumed at send; cleared if the highlight attachment is removed first.
+  pendingViewContext: "",
   lastError: "",
   // Set when a turn fails because the Panda proxy rejected auth (revoked/expired
   // key → BE 401, surfaced as an `auth_expired` chat event). Drives the
@@ -125,6 +131,16 @@ export const INITIAL_CHAT_STATE = Object.freeze({
 // `auth_expired` event). Shown in the chat error block and the re-auth banner.
 export const PANDA_REAUTH_MESSAGE =
   "Your Panda sign-in expired or was revoked. Sign in again to keep chatting.";
+
+// Injected (model-facing only) when the user sends a highlighted view with no
+// instruction of their own. Steers the plan phase toward proposing options for
+// the marked region(s) instead of guessing at an edit. Pairs with the
+// `pendingViewContext` note, which names where the badges are.
+export const HIGHLIGHT_SUGGESTION_DIRECTIVE =
+  "The user highlighted the numbered region(s) on the attached view but did not say what to change. " +
+  "Before editing anything, view the image, then propose 3–5 specific, concrete improvement options for " +
+  "the highlighted region(s) and ask the user which to apply (offer them via a panda-questions block). " +
+  "Do not modify the model until they choose.";
 
 // ---------------------------------------------------------------------------
 // Reducer — pure; the only place state evolves
@@ -589,14 +605,21 @@ export function chatReducer(state, action, now = Date.now()) {
       if (state.pendingAttachments.some((a) => a.id === att.id)) return state;
       return { ...state, pendingAttachments: [...state.pendingAttachments, att] };
     }
-    case "remove_pending_attachment":
-      return {
-        ...state,
-        pendingAttachments: state.pendingAttachments.filter((a) => a.id !== action.id),
-      };
+    case "remove_pending_attachment": {
+      const pendingAttachments = state.pendingAttachments.filter((a) => a.id !== action.id);
+      // The view-context note describes a highlight that was attached; once the
+      // user has cleared every attachment, that note is stale — drop it too.
+      const pendingViewContext = pendingAttachments.length ? state.pendingViewContext : "";
+      return { ...state, pendingAttachments, pendingViewContext };
+    }
     case "consume_pending_attachments":
       if (!state.pendingAttachments.length) return state;
       return { ...state, pendingAttachments: [] };
+    case "set_pending_view_context":
+      return { ...state, pendingViewContext: String(action.note || "") };
+    case "consume_pending_view_context":
+      if (!state.pendingViewContext) return state;
+      return { ...state, pendingViewContext: "" };
     case "mark_plan": {
       // Flip a proposed plan block's status (approved | superseded) and,
       // once it's acted on, clear the awaiting-approval gate.
@@ -803,9 +826,19 @@ export async function startTurn(userMessage, { attachments = [] } = {}, transpor
     return null;
   }
   try {
+    // The highlight context (if any) goes to the model only — append it to the
+    // message the backend sees, but keep `text` clean for the echoed bubble.
+    // When a highlight is sent with no instruction, prepend a directive asking
+    // the model to suggest options rather than guess at an edit.
+    const viewContext = String(state.pendingViewContext || "").trim();
+    const parts = [];
+    if (text) parts.push(text);
+    if (viewContext && !text) parts.push(HIGHLIGHT_SUGGESTION_DIRECTIVE);
+    if (viewContext) parts.push(viewContext);
+    const sentMessage = parts.join("\n\n");
     // Keep the request shape identical to the text-only case unless images are
     // actually attached (additive `images` field; see transport + chat.rs).
-    const request = { projectId: state.currentProjectId, userMessage: text };
+    const request = { projectId: state.currentProjectId, userMessage: sentMessage };
     if (images.length) {
       request.images = images.map(({ name, mediaType, dataBase64 }) => ({
         name,
@@ -825,6 +858,7 @@ export async function startTurn(userMessage, { attachments = [] } = {}, transpor
     });
     dispatch({ type: "consume_pending_tokens" });
     dispatch({ type: "consume_pending_attachments" });
+    dispatch({ type: "consume_pending_view_context" });
     return response;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -990,6 +1024,11 @@ export function removePendingAttachment(id) {
 
 export function consumePendingAttachments() {
   dispatch({ type: "consume_pending_attachments" });
+}
+
+/** Set the model-facing "where did the user highlight" note for the next turn. */
+export function setPendingViewContext(note) {
+  dispatch({ type: "set_pending_view_context", note });
 }
 
 /** Clear the "Sign in again" banner after a successful Panda re-login. */

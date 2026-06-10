@@ -153,7 +153,10 @@ export default function CadRenderPane({
     left: `calc(${Math.max(Number(viewportFrameInsets?.left) || 0, 0)}px + 0.75rem)`,
     top: `calc(${Math.max(Number(viewportFrameInsets?.top) || 0, 0)}px + 0.75rem)`
   };
-  const ctaMode = !dxfMode && !pathPreviewMode && drawToolActive
+  // Drawing works on meshes too (it's a 2D overlay); only topology-bound
+  // features stay gated by pathPreviewMode. G-code/DXF never draw.
+  const drawingFormatActive = !dxfMode && !gcodeMode && drawToolActive;
+  const ctaMode = drawingFormatActive
     ? "screenshot"
     : selectionCount > 0
       ? "selection"
@@ -290,9 +293,9 @@ export default function CadRenderPane({
           pickableEdges={dxfMode || pathPreviewMode ? [] : pickableEdges}
           pickableVertices={dxfMode || pathPreviewMode ? [] : pickableVertices}
           focusedPartId={dxfMode || pathPreviewMode ? "" : focusedPartIds}
-          drawingEnabled={!dxfMode && !pathPreviewMode && drawToolActive}
+          drawingEnabled={drawingFormatActive}
           drawingTool={drawingTool}
-          drawingStrokes={dxfMode || pathPreviewMode ? [] : drawingStrokes}
+          drawingStrokes={dxfMode || gcodeMode ? [] : drawingStrokes}
           onDrawingStrokesChange={handleDrawingStrokesChange}
           rulerEnabled={rulerActive}
           rulerTool={rulerTool}

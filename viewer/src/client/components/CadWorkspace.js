@@ -49,8 +49,11 @@ import {
   DRAWING_TOOL,
   RENDER_FORMAT,
   REFERENCE_STATUS,
+  RULER_TOOL,
+  RULER_UNIT,
   TAB_TOOL_MODE
 } from "@/workbench/constants";
+import { formatAngle, formatLength } from "cadjs/lib/viewer/rulerGeometry";
 import {
   FILE_SHEET_SECTION_IDS,
   defaultOpenFileSheetSectionIds,
@@ -106,10 +109,12 @@ import {
   cadWorkspaceDefaultFileSheetWidthForViewport,
   createWorkspaceSessionThemeSlice,
   cloneDrawingStrokes,
+  cloneRulerMeasurements,
   cloneTabSnapshot,
   createTabRecord,
   deleteCustomThemePreset,
   drawingStrokesEqual,
+  rulerMeasurementsEqual,
   getAvailableThemePresetIdForSettings,
   readCadWorkspaceSessionState,
   readCustomThemePresets,
@@ -777,6 +782,10 @@ export default function CadWorkspace({
   const [drawingStrokes, setDrawingStrokes] = useState([]);
   const [drawingUndoStack, setDrawingUndoStack] = useState([]);
   const [drawingRedoStack, setDrawingRedoStack] = useState([]);
+  const [rulerTool, setRulerTool] = useState(RULER_TOOL.FEATURES);
+  const [rulerUnit, setRulerUnit] = useState(RULER_UNIT.MM);
+  const [rulerMeasurements, setRulerMeasurements] = useState([]);
+  const [rulerVisible, setRulerVisible] = useState(true);
   const [jointValuesByFileRef, setJointValuesByFileRef] = useState({});
   const [urdfMotionStateByFileRef, setUrdfMotionStateByFileRef] = useState({});
   const [stepModuleLoadState, setStepModuleLoadState] = useState({
@@ -2107,6 +2116,7 @@ export default function CadWorkspace({
     String(assemblyCurrentNode?.nodeType || "assembly").trim() === "assembly";
   const viewerMode = viewerInAssemblyMode ? "assembly" : "part";
   const drawModeActive = selectedEntrySourceFormat === RENDER_FORMAT.STEP && tabToolMode === TAB_TOOL_MODE.DRAW;
+  const rulerModeActive = tabToolMode === TAB_TOOL_MODE.RULER && !!selectedMeshData && !isUrdfView && !isGcodeView;
   const selectionCountBase = selectedPartIds.length + selectedReferenceIds.length;
 
   const selectedReferenceIdsRef = useRef(selectedReferenceIds);
@@ -2118,6 +2128,7 @@ export default function CadWorkspace({
   const drawingStrokesRef = useRef(drawingStrokes);
   const drawingUndoStackRef = useRef(drawingUndoStack);
   const drawingRedoStackRef = useRef(drawingRedoStack);
+  const rulerMeasurementsRef = useRef(rulerMeasurements);
   const viewerRef = useRef(null);
   const previewUiStateRef = useRef(null);
   const panelResizeStateRef = useRef(null);
@@ -2689,7 +2700,11 @@ export default function CadWorkspace({
       tabToolMode,
       drawingStrokes,
       drawingUndoStack,
-      drawingRedoStack
+      drawingRedoStack,
+      rulerTool,
+      rulerUnit,
+      rulerMeasurements,
+      rulerVisible
     });
   }, [
     dxfThicknessMm,
@@ -2703,6 +2718,10 @@ export default function CadWorkspace({
     expandedStepTreeNodeIds,
     hiddenPartIds,
     referenceQuery,
+    rulerMeasurements,
+    rulerTool,
+    rulerUnit,
+    rulerVisible,
     selectedPartIds,
     selectedReferenceIds,
     stepTreeRootShowMore,
@@ -2936,6 +2955,10 @@ export default function CadWorkspace({
     setDrawingStrokes(nextTab.drawingStrokes);
     setDrawingUndoStack(nextTab.drawingUndoStack);
     setDrawingRedoStack(nextTab.drawingRedoStack);
+    setRulerTool(nextTab.rulerTool);
+    setRulerUnit(nextTab.rulerUnit);
+    setRulerMeasurements(nextTab.rulerMeasurements);
+    setRulerVisible(nextTab.rulerVisible);
     setSelectedKey(nextTab.key);
   }, [fileSheetSelectionKeyForTab]);
 
@@ -2970,6 +2993,10 @@ export default function CadWorkspace({
     setDrawingStrokes([]);
     setDrawingUndoStack([]);
     setDrawingRedoStack([]);
+    setRulerTool(RULER_TOOL.FEATURES);
+    setRulerUnit(RULER_UNIT.MM);
+    setRulerMeasurements([]);
+    setRulerVisible(true);
     setSelectedKey("");
   }, [setTabToolsOpen]);
 
@@ -3265,6 +3292,18 @@ export default function CadWorkspace({
   useEffect(() => {
     drawingStrokesRef.current = drawingStrokes;
   }, [drawingStrokes]);
+
+  useEffect(() => {
+    rulerMeasurementsRef.current = rulerMeasurements;
+  }, [rulerMeasurements]);
+
+  // Feature mode needs B-rep topology (STEP only); fall back to free-point
+  // distance when the active model has none, so the ruler stays usable.
+  useEffect(() => {
+    if (!isStepView && rulerTool === RULER_TOOL.FEATURES) {
+      setRulerTool(RULER_TOOL.DISTANCE);
+    }
+  }, [isStepView, rulerTool]);
 
   useEffect(() => {
     drawingUndoStackRef.current = drawingUndoStack;
@@ -6036,8 +6075,18 @@ export default function CadWorkspace({
 
   const handleSelectTabToolMode = useCallback((mode) => {
     setViewerAlertOpen(false);
-    const normalizedMode = mode === TAB_TOOL_MODE.DRAW ? TAB_TOOL_MODE.DRAW : TAB_TOOL_MODE.REFERENCES;
-    setTabToolMode(normalizedMode);
+    const normalizedMode = mode === TAB_TOOL_MODE.DRAW
+      ? TAB_TOOL_MODE.DRAW
+      : mode === TAB_TOOL_MODE.RULER
+        ? TAB_TOOL_MODE.RULER
+        : TAB_TOOL_MODE.REFERENCES;
+    // The ruler has no Select button on mesh-only views, so clicking the active
+    // Measure button must turn it back off — otherwise there is no way out.
+    setTabToolMode((current) =>
+      normalizedMode === TAB_TOOL_MODE.RULER && current === TAB_TOOL_MODE.RULER
+        ? TAB_TOOL_MODE.REFERENCES
+        : normalizedMode
+    );
     if (normalizedMode === TAB_TOOL_MODE.DRAW && drawingTool === DRAWING_TOOL.SURFACE_LINE) {
       setDrawingTool(DRAWING_TOOL.FREEHAND);
     }
@@ -6228,6 +6277,72 @@ export default function CadWorkspace({
     setDrawingRedoStack([]);
     setDrawingStrokes([]);
   }, []);
+
+  const handleSelectRulerTool = useCallback((tool) => {
+    setTabToolMode(TAB_TOOL_MODE.RULER);
+    setRulerTool(tool);
+  }, []);
+
+  const handleSelectRulerUnit = useCallback((unit) => {
+    setRulerUnit(unit);
+  }, []);
+
+  const handleToggleRulerVisible = useCallback(() => {
+    setRulerVisible((visible) => !visible);
+  }, []);
+
+  const handleDeactivateRulerTool = useCallback(() => {
+    setTabToolMode(TAB_TOOL_MODE.REFERENCES);
+  }, []);
+
+  const handleRulerMeasurementsChange = useCallback((nextMeasurements) => {
+    const normalized = cloneRulerMeasurements(nextMeasurements);
+    if (rulerMeasurementsEqual(rulerMeasurementsRef.current, normalized)) {
+      return;
+    }
+    setRulerMeasurements(normalized);
+  }, []);
+
+  const handleClearRulerMeasurements = useCallback(() => {
+    if (!rulerMeasurementsRef.current.length) {
+      return;
+    }
+    setRulerMeasurements([]);
+  }, []);
+
+  const handleRemoveRulerMeasurement = useCallback((id) => {
+    const targetId = String(id || "");
+    setRulerMeasurements((current) => current.filter((measurement) => measurement.id !== targetId));
+  }, []);
+
+  const handleCopyRulerMeasurement = useCallback((measurement) => {
+    if (!measurement || typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+      return;
+    }
+    const components = Array.isArray(measurement.components) ? measurement.components : [];
+    let text;
+    switch (measurement.tool) {
+      case RULER_TOOL.ANGLE:
+        text = `Angle: ${formatAngle(measurement.value)}`;
+        break;
+      case RULER_TOOL.DIAMETER:
+        text = `Diameter: ${formatLength(measurement.value, rulerUnit)} (radius ${formatLength(components[0] || measurement.value / 2, rulerUnit)})`;
+        break;
+      case RULER_TOOL.WALL_THICKNESS:
+        text = `Wall thickness: ${formatLength(measurement.value, rulerUnit)}`;
+        break;
+      case RULER_TOOL.BOUNDING_BOX:
+        text = `Bounding box: ${formatLength(components[0] || 0, rulerUnit)} × ${formatLength(components[1] || 0, rulerUnit)} × ${formatLength(components[2] || 0, rulerUnit)}`;
+        break;
+      default:
+        text = `Distance: ${formatLength(measurement.value, rulerUnit)}\nΔX: ${formatLength(components[0] || 0, rulerUnit)}  ΔY: ${formatLength(components[1] || 0, rulerUnit)}  ΔZ: ${formatLength(components[2] || 0, rulerUnit)}`;
+        break;
+    }
+    navigator.clipboard.writeText(text).then(
+      () => setCopyStatus("Copied measurement"),
+      () => setCopyStatus("Clipboard write failed")
+    );
+  }, [rulerUnit]);
 
   const handlePerspectiveChange = useCallback((nextPerspective) => {
     const normalizedPerspective = clonePerspectiveSnapshot(nextPerspective);
@@ -6719,6 +6834,7 @@ export default function CadWorkspace({
   });
   const selectionToolActive = effectiveRenderFormat === RENDER_FORMAT.STEP && tabToolMode === TAB_TOOL_MODE.REFERENCES;
   const drawToolActive = drawModeActive;
+  const rulerToolActive = rulerModeActive;
   const selectionCount = selectionCountBase;
   const activeReferenceTreeNodeId = useMemo(() => {
     const activeReferenceId = String(selectedReferenceIds[selectedReferenceIds.length - 1] || "").trim();
@@ -6819,6 +6935,13 @@ export default function CadWorkspace({
     { id: DRAWING_TOOL.FILL, label: "Fill", Icon: PaintBucket },
     { id: DRAWING_TOOL.ERASE, label: "Erase", Icon: Eraser }
   ];
+  const rulerToolOptions = [
+    { id: RULER_TOOL.FEATURES, label: "Features", stepOnly: true },
+    { id: RULER_TOOL.DISTANCE, label: "Distance" },
+    { id: RULER_TOOL.ANGLE, label: "Angle" },
+    { id: RULER_TOOL.WALL_THICKNESS, label: "Wall thickness" },
+    { id: RULER_TOOL.BOUNDING_BOX, label: "Bounding box" }
+  ];
   const renderDisplaySettings = isStepView ? displaySettings : null;
   const selectedStepEdgeAvailability =
     selectedDisplayEdgeRuntime?.edgeRendering ||
@@ -6895,6 +7018,13 @@ export default function CadWorkspace({
           drawingTool={drawingTool}
           drawingStrokes={drawingStrokes}
           handleDrawingStrokesChange={handleDrawingStrokesChange}
+          rulerToolActive={rulerToolActive}
+          rulerTool={rulerTool}
+          rulerUnit={rulerUnit}
+          rulerMeasurements={rulerMeasurements}
+          rulerVisible={rulerVisible}
+          handleRulerMeasurementsChange={handleRulerMeasurementsChange}
+          handleDeactivateRulerTool={handleDeactivateRulerTool}
           handlePerspectiveChange={handlePerspectiveChange}
           handleModelHoverChange={handleModelHoverChange}
           handleModelReferenceActivate={handleModelReferenceActivate}
@@ -6997,6 +7127,18 @@ export default function CadWorkspace({
                 canUndoDrawing={canUndoDrawing}
                 canRedoDrawing={canRedoDrawing}
                 drawingStrokes={drawingStrokes}
+                rulerToolActive={rulerToolActive}
+                rulerToolOptions={rulerToolOptions}
+                rulerTool={rulerTool}
+                rulerUnit={rulerUnit}
+                rulerMeasurements={rulerMeasurements}
+                rulerVisible={rulerVisible}
+                handleSelectRulerTool={handleSelectRulerTool}
+                handleSelectRulerUnit={handleSelectRulerUnit}
+                handleToggleRulerVisible={handleToggleRulerVisible}
+                handleClearRulerMeasurements={handleClearRulerMeasurements}
+                handleRemoveRulerMeasurement={handleRemoveRulerMeasurement}
+                handleCopyRulerMeasurement={handleCopyRulerMeasurement}
                 handleEnterPreviewMode={handleEnterPreviewMode}
                 handleScreenshotCopy={handleScreenshotCopy}
                 handleScreenshotDownload={handleScreenshotDownload}

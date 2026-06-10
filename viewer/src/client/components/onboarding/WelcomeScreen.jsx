@@ -299,14 +299,14 @@ export default function WelcomeScreen({ onComplete }) {
               <Loader2 className="size-4 animate-spin" /> Getting things ready…
             </span>
           ) : cliFound && authed ? (
-          
             <span className="flex items-center gap-2">
-              <CheckCircle2 className="size-4 text-emerald-600" /> Ready to go
+              <CheckCircle2 className="size-4 text-emerald-600" /> You’re all set
+              — sign in to start creating
             </span>
           ) : (
             <span className="flex items-center gap-2 text-muted-foreground">
-              <CheckCircle2 className="size-4 text-muted-foreground/40" /> We’ll
-              finish setting up when you sign in.
+              <CheckCircle2 className="size-4 text-muted-foreground/40" /> Sign in
+              below and Panda sets everything up for you.
             </span>
           )}
           {checkError ? (
@@ -329,7 +329,7 @@ export default function WelcomeScreen({ onComplete }) {
               </p>
               <p className="text-sm text-muted-foreground">
                 Use Panda’s built-in AI — no subscription needed.
-                {!cliFound ? " We’ll finish a quick setup first." : ""}
+                {!cliFound ? " We’ll get everything ready automatically." : ""}
               </p>
             </div>
           </div>

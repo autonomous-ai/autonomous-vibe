@@ -10,6 +10,7 @@ import {
 import {
   resolveInteractionPixelRatioCap
 } from "cadjs/lib/viewer/renderQuality";
+import { applyFreeTumbleRotation } from "../freeTumble.js";
 
 function createWebGlRenderer(THREE) {
   return createCadWebGlRenderer(THREE, {
@@ -148,6 +149,11 @@ export function useViewerRuntime({
       if ("zoomToCursor" in controls) {
         controls.zoomToCursor = true;
       }
+      // OrbitControls clamps the polar angle to [0, π] and can never rotate over
+      // the poles. Disable its rotate and drive rotation ourselves with an
+      // unconstrained trackball (see the free-tumble pointer handlers below).
+      // Pan (right-drag) and zoom (wheel / middle-drag) stay with OrbitControls.
+      controls.enableRotate = false;
 
       const hemisphereLight = new THREE.HemisphereLight(
         getViewerThemeValue(viewerTheme, "hemisphereSky", DEFAULT_LIGHTING.hemisphereSky),
@@ -427,9 +433,93 @@ export function useViewerRuntime({
       };
       const wheelListenerOptions = { passive: true, capture: true };
 
+      // Free-tumble rotation. OrbitControls' own rotate is disabled (see
+      // controls.enableRotate = false above); we handle left-drag ourselves so the
+      // camera can rotate through any angle, including over the poles. We reuse
+      // OrbitControls' start/change/end events so all the existing LOD, render-
+      // quality and render-on-demand wiring fires exactly as before. OrbitControls
+      // still captures the pointer and its update() round-trips our externally-set
+      // camera position unchanged, so the two cooperate.
+      const freeRotate = {
+        active: false,
+        pointerId: null,
+        lastX: 0,
+        lastY: 0,
+        restoreAutoRotate: false
+      };
+      function onFreeRotatePointerMove(event) {
+        if (!freeRotate.active || event.pointerId !== freeRotate.pointerId) {
+          return;
+        }
+        const deltaX = event.clientX - freeRotate.lastX;
+        const deltaY = event.clientY - freeRotate.lastY;
+        freeRotate.lastX = event.clientX;
+        freeRotate.lastY = event.clientY;
+        if (deltaX === 0 && deltaY === 0) {
+          return;
+        }
+        const moved = applyFreeTumbleRotation({
+          THREE,
+          camera,
+          target: controls.target,
+          deltaX,
+          deltaY,
+          viewportHeight: renderer.domElement.clientHeight || renderer.domElement.height || 1,
+          rotateSpeed: controls.rotateSpeed
+        });
+        if (moved) {
+          controls.dispatchEvent({ type: "change" });
+        }
+      }
+      function endFreeRotate(event) {
+        if (freeRotate.active && event && event.pointerId !== freeRotate.pointerId) {
+          return;
+        }
+        if (!freeRotate.active) {
+          return;
+        }
+        freeRotate.active = false;
+        freeRotate.pointerId = null;
+        if (freeRotate.restoreAutoRotate) {
+          controls.autoRotate = true;
+          freeRotate.restoreAutoRotate = false;
+        }
+        window.removeEventListener("pointermove", onFreeRotatePointerMove);
+        window.removeEventListener("pointerup", endFreeRotate);
+        window.removeEventListener("pointercancel", endFreeRotate);
+        controls.dispatchEvent({ type: "end" });
+      }
+      const onFreeRotatePointerDown = (event) => {
+        if (controls.enabled === false) {
+          return;
+        }
+        // Mouse left-button only. Touch and modifier+left stay with OrbitControls
+        // (two-finger pan/zoom, shift/ctrl-pan), matching the prior gesture map.
+        if (event.button !== 0 || event.pointerType === "touch") {
+          return;
+        }
+        if (event.ctrlKey || event.metaKey || event.shiftKey) {
+          return;
+        }
+        freeRotate.active = true;
+        freeRotate.pointerId = event.pointerId;
+        freeRotate.lastX = event.clientX;
+        freeRotate.lastY = event.clientY;
+        // Pause OrbitControls auto-rotate (preview spin) while the user drags.
+        freeRotate.restoreAutoRotate = controls.autoRotate === true;
+        if (freeRotate.restoreAutoRotate) {
+          controls.autoRotate = false;
+        }
+        controls.dispatchEvent({ type: "start" });
+        window.addEventListener("pointermove", onFreeRotatePointerMove);
+        window.addEventListener("pointerup", endFreeRotate);
+        window.addEventListener("pointercancel", endFreeRotate);
+      };
+
       controls.addEventListener("start", handleControlsStart);
       controls.addEventListener("change", handleControlsChange);
       controls.addEventListener("end", handleControlsEnd);
+      renderer.domElement.addEventListener("pointerdown", onFreeRotatePointerDown);
       renderer.domElement.addEventListener("wheel", handleWheel, wheelListenerOptions);
       renderer.domElement.addEventListener("webglcontextlost", handleContextLost, false);
       renderer.domElement.addEventListener("webglcontextrestored", handleContextRestored, false);
@@ -594,6 +684,10 @@ export function useViewerRuntime({
         runtime.controls.removeEventListener("start", handleControlsStart);
         runtime.controls.removeEventListener("change", handleControlsChange);
         runtime.controls.removeEventListener("end", handleControlsEnd);
+        runtime.renderer.domElement.removeEventListener("pointerdown", onFreeRotatePointerDown);
+        window.removeEventListener("pointermove", onFreeRotatePointerMove);
+        window.removeEventListener("pointerup", endFreeRotate);
+        window.removeEventListener("pointercancel", endFreeRotate);
         runtime.renderer.domElement.removeEventListener("wheel", handleWheel, wheelListenerOptions);
         runtime.renderer.domElement.removeEventListener("webglcontextlost", handleContextLost, false);
         runtime.renderer.domElement.removeEventListener("webglcontextrestored", handleContextRestored, false);

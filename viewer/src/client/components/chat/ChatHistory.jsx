@@ -19,6 +19,9 @@ export default function ChatHistory({
 }) {
   const scrollRef = useRef(null);
   const seenUserTurnIdsRef = useRef(new Set());
+  const pinnedToBottomRef = useRef(false);
+  const userDetachedRef = useRef(false);
+  const programmaticScrollRef = useRef(false);
   const [showBackToBottom, setShowBackToBottom] = useState(false);
 
   const groups = useMemo(() => groupTurns(history), [history]);
@@ -36,35 +39,99 @@ export default function ChatHistory({
   const groupCountRef = useRef(groups.length);
   groupCountRef.current = groups.length;
 
-  const updateBackToBottomVisibility = useCallback(() => {
+  const readScrollPin = useCallback(() => {
     const node = scrollRef.current;
-    if (!node) return;
+    if (!node) return { pinned: false, showBackToBottom: false };
     const hasLongHistory = node.scrollHeight > node.clientHeight + 48;
     const distanceFromBottom = node.scrollHeight - node.clientHeight - node.scrollTop;
-    setShowBackToBottom(hasLongHistory && distanceFromBottom > BACK_TO_BOTTOM_THRESHOLD);
+    const pinned = !hasLongHistory || distanceFromBottom <= BACK_TO_BOTTOM_THRESHOLD;
+    return {
+      pinned,
+      showBackToBottom: hasLongHistory && distanceFromBottom > BACK_TO_BOTTOM_THRESHOLD,
+    };
   }, []);
 
-  const scrollToBottom = useCallback((behavior = "auto") => {
+  const applyScrollPin = useCallback((pinned) => {
+    pinnedToBottomRef.current = pinned;
+    if (!pinned) {
+      userDetachedRef.current = true;
+    }
+  }, []);
+
+  const resumeAutoFollow = useCallback(() => {
+    userDetachedRef.current = false;
+    pinnedToBottomRef.current = true;
+  }, []);
+
+  const updateBackToBottomVisibility = useCallback(() => {
+    const { pinned, showBackToBottom: show } = readScrollPin();
+    if (programmaticScrollRef.current) {
+      programmaticScrollRef.current = false;
+      pinnedToBottomRef.current = pinned;
+      if (pinned) {
+        userDetachedRef.current = false;
+      }
+      setShowBackToBottom(show);
+      return;
+    }
+
+    pinnedToBottomRef.current = pinned;
+    if (!pinned) {
+      userDetachedRef.current = true;
+    } else {
+      userDetachedRef.current = false;
+    }
+    setShowBackToBottom(show);
+  }, [readScrollPin]);
+
+  const scrollToBottom = useCallback((behavior = "auto", { force = false } = {}) => {
+    if (!force) {
+      if (userDetachedRef.current) return;
+      const { pinned } = readScrollPin();
+      if (!pinned) return;
+    }
     const count = groupCountRef.current;
     if (count === 0) return;
+    programmaticScrollRef.current = true;
     virtualizerRef.current.scrollToIndex(count - 1, {
       align: "end",
       behavior,
     });
-  }, []);
+  }, [readScrollPin]);
 
-  // Scroll to bottom when the user sends (or plan feedback arrives), not on stream deltas.
+  const totalSize = virtualizer.getTotalSize();
+
+  // Scroll to bottom when the user sends (or plan feedback arrives). During
+  // streaming, follow new content only while the viewport is already pinned
+  // to the bottom — never yank the user down if they've scrolled up.
   useLayoutEffect(() => {
-    let shouldScroll = false;
+    let shouldScrollForUserTurn = false;
     for (const turn of history) {
       if (turn.role !== "user" || seenUserTurnIdsRef.current.has(turn.id)) continue;
       seenUserTurnIdsRef.current.add(turn.id);
-      shouldScroll = true;
+      shouldScrollForUserTurn = true;
     }
-    if (shouldScroll) {
-      scrollToBottom("auto");
+    if (shouldScrollForUserTurn) {
+      resumeAutoFollow();
+      scrollToBottom("auto", { force: true });
+      return;
     }
-  }, [history, scrollToBottom]);
+    if (userDetachedRef.current) return;
+    const { pinned } = readScrollPin();
+    if (!pinned) {
+      applyScrollPin(false);
+      return;
+    }
+    scrollToBottom("auto");
+  }, [
+    applyScrollPin,
+    history,
+    readScrollPin,
+    resumeAutoFollow,
+    scrollToBottom,
+    totalSize,
+    virtualizer.range,
+  ]);
 
   // Keep the back-to-bottom affordance in sync as virtual row heights change.
   useEffect(() => {
@@ -76,9 +143,44 @@ export default function ChatHistory({
   }, [updateBackToBottomVisibility]);
 
   const handleBackToBottom = useCallback(() => {
-    scrollToBottom("smooth");
+    resumeAutoFollow();
+    scrollToBottom("smooth", { force: true });
     onRequestInputFocus?.();
-  }, [onRequestInputFocus, scrollToBottom]);
+  }, [onRequestInputFocus, resumeAutoFollow, scrollToBottom]);
+
+  // Detach before the scroll position updates so a concurrent stream delta
+  // cannot win the layout-effect race and flash the viewport back down.
+  useEffect(() => {
+    const node = scrollRef.current;
+    if (!node) return;
+
+    const detachAutoFollow = () => {
+      userDetachedRef.current = true;
+      pinnedToBottomRef.current = false;
+    };
+
+    const onWheel = (event) => {
+      if (event.deltaY < 0) detachAutoFollow();
+    };
+
+    let touchStartY = 0;
+    const onTouchStart = (event) => {
+      touchStartY = event.touches[0]?.clientY ?? 0;
+    };
+    const onTouchMove = (event) => {
+      const clientY = event.touches[0]?.clientY ?? touchStartY;
+      if (clientY > touchStartY + 2) detachAutoFollow();
+    };
+
+    node.addEventListener("wheel", onWheel, { passive: true });
+    node.addEventListener("touchstart", onTouchStart, { passive: true });
+    node.addEventListener("touchmove", onTouchMove, { passive: true });
+    return () => {
+      node.removeEventListener("wheel", onWheel);
+      node.removeEventListener("touchstart", onTouchStart);
+      node.removeEventListener("touchmove", onTouchMove);
+    };
+  }, [history.length]);
 
   const virtualItems = virtualizer.getVirtualItems();
 
@@ -108,7 +210,7 @@ export default function ChatHistory({
       >
         <div
           className="relative w-full"
-          style={{ height: virtualizer.getTotalSize() }}
+          style={{ height: totalSize }}
         >
           {virtualItems.map((virtualItem) => {
             const group = groups[virtualItem.index];

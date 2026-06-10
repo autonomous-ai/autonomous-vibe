@@ -4,8 +4,8 @@ import test from "node:test";
 import { phaseLabel, toolLabel } from "../activityLabels.js";
 
 test("toolLabel maps known tools to friendly phrases", () => {
-  assert.equal(toolLabel("cadcode"), "Designing geometry");
-  assert.equal(toolLabel("Skill"), "Designing geometry");
+  assert.equal(toolLabel("cadcode"), "Designing");
+  assert.equal(toolLabel("Skill"), "Designing");
   assert.equal(toolLabel("Write"), "Writing CAD source");
   assert.equal(toolLabel("Edit"), "Editing CAD source");
   assert.equal(toolLabel("MultiEdit"), "Editing CAD source");

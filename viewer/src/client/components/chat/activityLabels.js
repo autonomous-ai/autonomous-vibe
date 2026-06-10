@@ -23,7 +23,7 @@ export function toolLabel(tool, input) {
   switch (name) {
     case "cadcode":
     case "Skill":
-      return "Designing geometry";
+      return "Designing";
     case "Write":
       return "Writing CAD source";
     case "Edit":

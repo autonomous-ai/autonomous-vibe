@@ -214,7 +214,7 @@ function ChatInput({ className }, ref) {
         onDragOver={handleDragOver}
         onDrop={handleDrop}
         className={cn(
-          "relative flex min-h-24 flex-col gap-2 rounded-[1.35rem] border border-border/50 bg-muted/55 px-3 py-2.5 shadow-sm transition-colors",
+          "relative flex min-h-24 flex-col gap-2 rounded-[1.35rem] border border-border/50 bg-muted/55 px-[14.5px] py-2.5 shadow-sm transition-colors",
           "focus-within:border-ring/50 focus-within:ring-2 focus-within:ring-ring/20",
           dragging && "border-primary",
         )}

@@ -100,7 +100,7 @@ export default function ChatCodeBlock({
   return (
     <div
       data-slot="chat-code-block"
-      className={`chat-code-highlight group/code my-2 overflow-hidden rounded-lg border border-white/10 bg-[#2f2f2f] text-[#f4f4f5] shadow-sm ${className}`}
+      className={`chat-code-highlight group/code my-2 overflow-hidden rounded-lg border border-border bg-[var(--chat-code-bg)] text-[var(--chat-code-text)] shadow-sm ${className}`}
     >
       <style>{`
         .chat-code-highlight .hljs-keyword,
@@ -108,49 +108,49 @@ export default function ChatCodeBlock({
         .chat-code-highlight .hljs-literal,
         .chat-code-highlight .hljs-type,
         .chat-code-highlight .hljs-selector-tag {
-          color: #f59e0b;
+          color: var(--chat-code-keyword);
         }
         .chat-code-highlight .hljs-string,
         .chat-code-highlight .hljs-regexp,
         .chat-code-highlight .hljs-symbol,
         .chat-code-highlight .hljs-bullet {
-          color: #34d399;
+          color: var(--chat-code-string);
         }
         .chat-code-highlight .hljs-number,
         .chat-code-highlight .hljs-attr,
         .chat-code-highlight .hljs-variable,
         .chat-code-highlight .hljs-template-variable {
-          color: #7dd3fc;
+          color: var(--chat-code-number);
         }
         .chat-code-highlight .hljs-title,
         .chat-code-highlight .hljs-title.function_,
         .chat-code-highlight .hljs-section,
         .chat-code-highlight .hljs-name {
-          color: #f59e0b;
+          color: var(--chat-code-keyword);
         }
         .chat-code-highlight .hljs-comment,
         .chat-code-highlight .hljs-quote {
-          color: #71717a;
+          color: var(--chat-code-comment);
         }
         .chat-code-highlight .hljs-meta,
         .chat-code-highlight .hljs-operator,
         .chat-code-highlight .hljs-punctuation {
-          color: #d4d4d8;
+          color: var(--chat-code-punctuation);
         }
       `}</style>
       {showCopy ? (
-        <div className="flex h-9 items-center justify-between border-b border-white/5 px-3 text-xs text-zinc-300">
+        <div className="flex h-9 items-center justify-between border-b border-border/60 px-3 text-xs opacity-70">
           <span className="truncate font-medium">{displayLabel}</span>
           <ChatCopyButton
             value={raw}
             label={copyLabel}
-            className="size-6 text-zinc-300 opacity-80 hover:bg-white/10 hover:text-white"
+            className="size-6 opacity-80 hover:bg-foreground/10 hover:opacity-100"
           />
         </div>
       ) : null}
       <pre className={`${maxHeightClassName} overflow-auto px-3 py-2.5 text-[12px] leading-relaxed`}>
         <code
-          className="font-mono text-[#f4f4f5]"
+          className="font-mono"
           dangerouslySetInnerHTML={{ __html: highlighted.html }}
         />
       </pre>

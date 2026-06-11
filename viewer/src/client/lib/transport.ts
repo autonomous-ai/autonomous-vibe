@@ -314,6 +314,15 @@ export interface SnapshotSummary {
   createdAt: number;
 }
 
+// Result of snapshot_restore. `chatRewound` is true when the save captured the
+// chat transcript and the live Claude session was rewound to it — the caller
+// then reloads the chat panel from the restored conversation; false keeps the
+// chat linear (an older save with no captured transcript).
+export interface SnapshotRestore {
+  summary: SnapshotSummary;
+  chatRewound: boolean;
+}
+
 // App ------------------------------------------------------------------------
 
 export interface PrereqCheck {
@@ -927,9 +936,12 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
       } as unknown as T;
     case "snapshot_restore":
       return {
-        id: String(args.snapshotId ?? "stub-snap"),
-        label: "Saved state",
-        createdAt: 0,
+        summary: {
+          id: String(args.snapshotId ?? "stub-snap"),
+          label: "Saved state",
+          createdAt: 0,
+        },
+        chatRewound: false,
       } as unknown as T;
     case "snapshot_delete":
       return undefined as unknown as T;
@@ -1080,7 +1092,7 @@ const transportBase = {
   snapshot_save: (projectId: string, label?: string) =>
     invoke<SnapshotSummary>("snapshot_save", { projectId, label }),
   snapshot_restore: (projectId: string, snapshotId: string) =>
-    invoke<SnapshotSummary>("snapshot_restore", { projectId, snapshotId }),
+    invoke<SnapshotRestore>("snapshot_restore", { projectId, snapshotId }),
   snapshot_delete: (projectId: string, snapshotId: string) =>
     invoke<void>("snapshot_delete", { projectId, snapshotId }),
 

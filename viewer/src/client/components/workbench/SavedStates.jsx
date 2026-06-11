@@ -7,7 +7,7 @@ import { Input } from "../ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { getTransport } from "../../lib/transport.ts";
-import { noteRevert, useChatStore } from "../../store/chat.js";
+import { hydrateSession, noteRevert, useChatStore } from "../../store/chat.js";
 
 // Friendly "3m ago" / "2h ago" / date for older saves. Kept tiny + local — the
 // list is short and only ever shows a project's own save-states.
@@ -29,9 +29,10 @@ function defaultLabel(count) {
 }
 
 /**
- * Git-tag-style model save-states. A floating glass button over the 3D view
- * opens a popover to save the current model as a named checkpoint and to revert
- * to an earlier one. Reverting swaps only the model files and drops a linear
+ * Git-tag-style model save-states. An icon button on the active project's
+ * sidebar header (inline with the project name) opens a popover to save the
+ * current model as a named checkpoint and to revert to an earlier one.
+ * Reverting swaps only the model files and drops a linear
  * "↩ Reverted to …" marker into the chat (the backend tells the next turn its
  * files went back); the append-only Claude session is never forked. See
  * `docs/future-work-version-control.md` and `commands/snapshot.rs`.
@@ -103,10 +104,17 @@ export default function SavedStates({ projectId }) {
       setBusyId(id);
       setError("");
       try {
-        const summary = await transport.snapshot_restore(projectId, id);
-        // Reload the viewer from the reverted files, then mark the chat.
+        const result = await transport.snapshot_restore(projectId, id);
+        // Reload the viewer from the reverted files.
         await refreshCadCatalog({ markRefreshing: true }).catch(() => {});
-        noteRevert(summary?.label || "saved state");
+        // If the save captured the conversation, the backend rewound the live
+        // Claude session to it — reload the chat panel from the restored
+        // transcript so it matches the reverted model. Then drop the marker so
+        // the rewound conversation ends with a clear "↩ Reverted to …" line.
+        if (result?.chatRewound) {
+          await hydrateSession(projectId).catch(() => {});
+        }
+        noteRevert(result?.summary?.label || "saved state");
         setConfirmingId("");
         setOpen(false);
       } catch (err) {
@@ -145,11 +153,11 @@ export default function SavedStates({ projectId }) {
               <Button
                 type="button"
                 variant="ghost"
-                size="icon-sm"
+                size="icon-xs"
                 aria-label="Saved states"
-                className="cad-glass-surface size-8 rounded-md border border-sidebar-border text-sidebar-foreground shadow-sm"
+                className="text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
               >
-                <History className="size-4" strokeWidth={2} aria-hidden />
+                <History className="size-3.5" strokeWidth={2} aria-hidden />
               </Button>
             </PopoverTrigger>
           </TooltipTrigger>

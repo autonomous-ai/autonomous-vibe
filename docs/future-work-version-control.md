@@ -1,10 +1,21 @@
 # Model version control
 
-**Status:** implemented (2026-06) as option 1 below — manual, git-tag-style
-"saved states." See `desktop/src-tauri/src/commands/snapshot.rs`, the
-`snapshot_*` IPC commands in `docs/panda-interfaces.md` §2, and the
-`SavedStates` floating control over the 3D view. The notes below are retained as
-the design rationale and a record of what was tried before.
+**Status:** implemented (2026-06) as manual, git-tag-style "saved states." See
+`desktop/src-tauri/src/commands/snapshot.rs`, the `snapshot_*` IPC commands in
+`docs/panda-interfaces.md` §2, and the `SavedStates` control inline on the active
+project's sidebar header.
+
+Originally shipped as option 1 below (model-only snapshot + a linear "↩ Reverted
+to …" marker). Since extended to **rewind the chat too**: a save now captures the
+Claude session transcript alongside the model, and restore overwrites the live
+session JSONL with it, so the conversation rewinds to the snapshot point and the
+next turn resumes from there. This reuses the deterministic per-project session
+id (it does **not** fork to a new id — that was option 2, still rejected). It is
+not the pure option 1 anymore: the chat panel *does* reload on revert. The
+trade-off accepted: messages after the snapshot are dropped from the live session
+(saving a state before reverting preserves them). Saves predating this capture
+restore with the old linear behavior. The notes below are retained as the design
+rationale and a record of what was tried before.
 
 **Earlier status:** deferred / removed (2026-06). A first implementation
 (per-build checkpoints + a "Start from here" restore that forked the Claude

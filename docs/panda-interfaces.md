@@ -531,35 +531,55 @@ interface SnapshotSummary {
   createdAt: number; // epoch millis
 }
 
+interface SnapshotRestore {
+  summary: SnapshotSummary;
+  // True when the save captured the chat transcript and the live Claude session
+  // was rewound to it; the UI then reloads the chat panel from the restored
+  // conversation. False keeps the chat linear (an older save with no transcript).
+  chatRewound: boolean;
+}
+
 // List a project's saved states, newest first.
 function snapshot_list(projectId: string): Promise<SnapshotSummary[]>;
 
-// Save the current model as a named checkpoint. An empty/missing `label`
-// falls back to `Version N`. Rejects a missing project (PROJECT_NOT_FOUND).
+// Save the current model as a named checkpoint, capturing the model files AND
+// the Claude session transcript. An empty/missing `label` falls back to
+// `Version N`. Rejects a missing project (PROJECT_NOT_FOUND).
 function snapshot_save(projectId: string, label?: string): Promise<SnapshotSummary>;
 
-// Revert the model files to a saved state. The saved state is NOT consumed —
-// it stays restorable. Rejects an unknown id (SNAPSHOT_NOT_FOUND). Returns the
-// restored summary so the UI can label its chat marker.
-function snapshot_restore(projectId: string, snapshotId: string): Promise<SnapshotSummary>;
+// Revert to a saved state: model files go back, and — when the save captured the
+// transcript — the live Claude session is rewound to it too (chatRewound=true).
+// The saved state is NOT consumed; it stays restorable. Rejects an unknown id
+// (SNAPSHOT_NOT_FOUND).
+function snapshot_restore(projectId: string, snapshotId: string): Promise<SnapshotRestore>;
 
-// Delete a saved state (files + index entry). Idempotent.
+// Delete a saved state (files + captured transcript + index entry). Idempotent.
 function snapshot_delete(projectId: string, snapshotId: string): Promise<void>;
 ```
 
 **Storage.** A snapshot copies a project's model-defining files (Python source +
 generated artifacts — everything except `.panda`, `.claude`, `.git`,
 `project.json`, and `inputs/`) into `<project>/.panda/snapshots/<id>/`, indexed
-by `<project>/.panda/history.json`. `.panda/` is excluded from catalog scans, so
-saves never surface as CAD parts.
+by `<project>/.panda/history.json`. It also captures the Claude session
+transcript — which lives outside the project at
+`~/.claude/projects/<encoded-cwd>/<session>.jsonl` — as a sibling
+`<project>/.panda/snapshots/<id>.session.jsonl` (a sibling, not inside `<id>/`,
+so `restore_scope` never lands it among the model files). `.panda/` is excluded
+from catalog scans, so saves never surface as CAD parts.
 
-**Linear revert (no session fork).** Restore swaps only the model files, then
-the driver stashes a one-shot per-project note that the *next* `chat_start_turn`
-appends to the user message (telling the model its files went back so the
-append-only Claude session's memory of post-snapshot edits doesn't drift). The
-chat panel shows a single "↩ Reverted to `<label>`" marker; nothing is reloaded
-or hidden. This is option 1 ("linear undo marker") from
-`docs/future-work-version-control.md`. The append-only session is never forked.
+**Rewind revert (same session, no fork).** Restore swaps the model files back
+(stamping fresh mtimes so the viewer reloads — see the cache-bust note below),
+then, if the save captured a transcript, overwrites the live session JSONL with
+it: the conversation rewinds to the snapshot point and the next turn `--resume`s
+from there (`chatRewound=true`). The frontend reloads the chat panel from the
+restored transcript and ends it with a single "↩ Reverted to `<label>`" marker.
+Messages after the snapshot are dropped from the live session — saving a state
+before reverting keeps them. The deterministic per-project session id is reused
+(the session is *not* forked to a new id — that was the removed option 2). Older
+saves with no captured transcript fall back to the prior linear behavior
+(`chatRewound=false`): model files revert, the chat stays put, and the driver
+stashes a one-shot note the *next* `chat_start_turn` appends to the user message
+so the model knows its files went back. See `docs/future-work-version-control.md`.
 
 #### App
 

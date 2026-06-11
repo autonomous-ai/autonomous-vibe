@@ -29,9 +29,10 @@ function defaultLabel(count) {
 }
 
 /**
- * Git-tag-style model save-states. A floating glass button over the 3D view
- * opens a popover to save the current model as a named checkpoint and to revert
- * to an earlier one. Reverting swaps only the model files and drops a linear
+ * Git-tag-style model save-states. An icon button on the active project's
+ * sidebar header (inline with the project name) opens a popover to save the
+ * current model as a named checkpoint and to revert to an earlier one.
+ * Reverting swaps only the model files and drops a linear
  * "↩ Reverted to …" marker into the chat (the backend tells the next turn its
  * files went back); the append-only Claude session is never forked. See
  * `docs/future-work-version-control.md` and `commands/snapshot.rs`.
@@ -145,11 +146,11 @@ export default function SavedStates({ projectId }) {
               <Button
                 type="button"
                 variant="ghost"
-                size="icon-sm"
+                size="icon-xs"
                 aria-label="Saved states"
-                className="cad-glass-surface size-8 rounded-md border border-sidebar-border text-sidebar-foreground shadow-sm"
+                className="text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
               >
-                <History className="size-4" strokeWidth={2} aria-hidden />
+                <History className="size-3.5" strokeWidth={2} aria-hidden />
               </Button>
             </PopoverTrigger>
           </TooltipTrigger>

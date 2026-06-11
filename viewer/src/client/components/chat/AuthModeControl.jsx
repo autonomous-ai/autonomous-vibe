@@ -15,6 +15,7 @@ import {
   buildPandaLoginFlow,
   describePandaLoginProgress,
 } from "@/components/onboarding/onboardingHelpers.js";
+import { useChatStore, selectAnyTurnInProgress } from "@/store/chat.js";
 
 /**
  * Compact badge in the chat header showing which Claude access the next turn
@@ -36,6 +37,10 @@ export default function AuthModeControl() {
   // Set when the user cancels an in-flight sign-in so the resolving flow returns
   // quietly instead of flashing an error.
   const cancelledRef = useRef(false);
+  // True while any session (active project or a backgrounded one) is mid-turn.
+  // Auth mode is global, so switching proxy/local while a turn runs is blocked:
+  // the chooser still opens, but every switch/sign-out option is disabled.
+  const turnBusy = useChatStore(selectAnyTurnInProgress);
 
   // Re-read settings + local auth. Cheap and idempotent — runs each time the
   // chooser opens so the badge reflects changes made elsewhere.
@@ -68,7 +73,7 @@ export default function AuthModeControl() {
 
   const switchTo = useCallback(
     async (panda) => {
-      if (busy) return;
+      if (busy || turnBusy) return;
       setError("");
 
       // Enabling Panda without a stored token → run the browser sign-in first;
@@ -115,14 +120,14 @@ export default function AuthModeControl() {
         setBusy(false);
       }
     },
-    [busy, hasToken, refresh],
+    [busy, turnBusy, hasToken, refresh],
   );
 
   // Sign out of the Panda proxy entirely: clears the stored token and reverts
   // to local Claude. Distinct from switchTo(false), which only flips the mode
   // but keeps the token for a later one-click switch back.
   const signOutPanda = useCallback(async () => {
-    if (busy) return;
+    if (busy || turnBusy) return;
     setBusy(true);
     setError("");
     try {
@@ -137,7 +142,7 @@ export default function AuthModeControl() {
     } finally {
       setBusy(false);
     }
-  }, [busy]);
+  }, [busy, turnBusy]);
 
   // Abort an in-flight "Panda · sign in": stop the local flow and tell Rust to
   // drop the pending login (so app_panda_login returns instead of waiting out
@@ -192,7 +197,7 @@ export default function AuthModeControl() {
           <div className="flex flex-col gap-2">
             <button
               type="button"
-              disabled={busy}
+              disabled={busy || turnBusy}
               onClick={() => void switchTo(true)}
               data-testid="auth-mode-panda"
               className="flex items-start gap-2 rounded-md border border-border p-3 text-left transition-colors hover:bg-muted/50 disabled:opacity-50"
@@ -213,7 +218,7 @@ export default function AuthModeControl() {
                 reads as the default and only Claude Code users go looking. */}
             <button
               type="button"
-              disabled={busy}
+              disabled={busy || turnBusy}
               onClick={() => void switchTo(false)}
               data-testid="auth-mode-local"
               className="inline-flex items-center gap-1.5 self-start text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline disabled:opacity-50"
@@ -226,10 +231,19 @@ export default function AuthModeControl() {
             </button>
           </div>
 
+          {turnBusy ? (
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid="auth-mode-busy-note"
+            >
+              Finish the current chat before switching.
+            </p>
+          ) : null}
+
           {hasToken ? (
             <button
               type="button"
-              disabled={busy}
+              disabled={busy || turnBusy}
               onClick={() => void signOutPanda()}
               data-testid="auth-mode-panda-logout"
               className="self-start text-xs text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline disabled:opacity-50"

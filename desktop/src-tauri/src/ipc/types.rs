@@ -296,6 +296,11 @@ pub enum ChatEvent {
         /// Matches the `ToolUseStart.tool_use_id` this result completes.
         tool_use_id: String,
         ok: bool,
+        /// Short human summary of the tool's output ("3 lines", "10 results"),
+        /// derived from the `tool_result` content. `None` when there's nothing
+        /// meaningful to show (empty result, or an opaque non-text payload).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result_summary: Option<String>,
     },
     ArtifactChanged {
         turn_id: String,

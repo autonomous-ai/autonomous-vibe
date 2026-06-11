@@ -26,6 +26,7 @@ import { __setTransportForTesting, getTransport } from "../lib/transport.ts";
  * @property {string=} toolUseId
  * @property {unknown=} input
  * @property {"running"|"ok"|"error"|"cancelled"} status
+ * @property {string=} resultSummary short summary of the tool's output ("3 lines")
  *
  * @typedef {Object} ChatArtifactBlock
  * @property {"artifact"} kind
@@ -49,6 +50,8 @@ import { __setTransportForTesting, getTransport } from "../lib/transport.ts";
  * @property {ChatBlock[]} blocks
  * @property {"pending"|"running"|"complete"|"cancelled"|"error"} status
  * @property {number} startedAt
+ * @property {number=} firstTextAt
+ * @property {number=} lastActivityAt timestamp of the most recent reasoning/tool event
  * @property {number=} endedAt
  * @property {string=} userText
  * @property {"plan"|"implement"=} phase
@@ -122,6 +125,60 @@ export const INITIAL_CHAT_STATE = Object.freeze({
 export const PANDA_REAUTH_MESSAGE =
   "Your Panda sign-in expired or was revoked. Sign in again to keep chatting.";
 
+/**
+ * How long the turn spent on behind-the-scenes work (reasoning + tool calls),
+ * in ms. While running, counts up to `now` (work is ongoing). Once complete,
+ * counts to the last reasoning/tool activity — so a long build reads its true
+ * span, and a chat reply excludes the answer-streaming tail (older turns with
+ * no `lastActivityAt` fall back through `firstTextAt`/`endedAt`).
+ *
+ * @param {ChatTurn} turn
+ * @param {number=} now epoch ms for the live case; defaults to Date.now()
+ * @returns {number}
+ */
+export function thinkingDurationMs(turn, now) {
+  if (!turn || typeof turn.startedAt !== "number") return 0;
+  const fallback = typeof now === "number" ? now : Date.now();
+  const end =
+    turn.endedAt == null
+      ? fallback
+      : turn.lastActivityAt ?? turn.firstTextAt ?? turn.endedAt;
+  return Math.max(0, end - turn.startedAt);
+}
+
+/**
+ * Split a turn's blocks into the collapsed pre-answer trace vs. the visible
+ * answer body. The agentic loop emits inter-step narration as plain `text`
+ * blocks between tool calls (structurally identical to the final answer); the
+ * separating signal is position — any `text` before the last tool/thinking
+ * activity is narration, while the trailing text is the real answer.
+ *
+ *   trace: thinking + tool_use + intermediate (pre-answer) text — for the pill
+ *   body:  final answer text + plan/artifact/error — rendered inline as-is
+ *
+ * @param {ChatBlock[]} blocks
+ * @returns {{ trace: ChatBlock[], body: ChatBlock[] }}
+ */
+export function partitionTurnBlocks(blocks) {
+  const list = Array.isArray(blocks) ? blocks : [];
+  let lastActivityIdx = -1;
+  list.forEach((block, i) => {
+    if (block.kind === "thinking" || block.kind === "tool_use") lastActivityIdx = i;
+  });
+  const trace = [];
+  const body = [];
+  list.forEach((block, i) => {
+    if (block.kind === "thinking" || block.kind === "tool_use") {
+      trace.push(block);
+    } else if (block.kind === "text" && i < lastActivityIdx) {
+      trace.push(block); // narration emitted before the answer began
+    } else {
+      body.push(block);
+    }
+  });
+  return { trace, body };
+}
+
 // ---------------------------------------------------------------------------
 // Reducer — pure; the only place state evolves
 // ---------------------------------------------------------------------------
@@ -163,7 +220,7 @@ function updateAssistantTurn(history, turnId, updater) {
   return touched ? next : history;
 }
 
-function appendTextDelta(turn, text) {
+function appendTextDelta(turn, text, now) {
   if (!text) return turn;
   const blocks = [...turn.blocks];
   const last = blocks[blocks.length - 1];
@@ -172,7 +229,17 @@ function appendTextDelta(turn, text) {
   } else {
     blocks.push({ kind: "text", text });
   }
-  return { ...turn, blocks };
+  // Stamp when the final answer begins — closes the "thinking window" so the
+  // collapsed indicator can show how long pre-answer work took. Set once.
+  const firstTextAt = turn.firstTextAt ?? (typeof now === "number" ? now : undefined);
+  return { ...turn, blocks, ...(firstTextAt != null ? { firstTextAt } : {}) };
+}
+
+// Stamp the time of the most recent reasoning/tool event so the duration
+// reflects the full span of behind-the-scenes work — not just up to the first
+// answer token (a build keeps working long after it starts talking).
+function withActivity(turn, now) {
+  return typeof now === "number" ? { ...turn, lastActivityAt: now } : turn;
 }
 
 function appendThinkingDelta(turn, text) {
@@ -202,18 +269,19 @@ function appendToolUseStart(turn, tool, input, toolUseId) {
 // by name would flip the wrong block and strand the real one on "Running");
 // fall back to name only for legacy/id-less events. An end with no matching
 // start is still recorded, for observability.
-function markToolUseEnd(turn, toolUseId, tool, ok) {
+function markToolUseEnd(turn, toolUseId, tool, ok, resultSummary) {
+  const summary = resultSummary ? { resultSummary } : {};
   const blocks = [...turn.blocks];
   for (let i = blocks.length - 1; i >= 0; i -= 1) {
     const block = blocks[i];
     if (block.kind !== "tool_use" || block.status !== "running") continue;
     const matches = toolUseId ? block.toolUseId === toolUseId : block.tool === tool;
     if (matches) {
-      blocks[i] = { ...block, status: ok ? "ok" : "error" };
+      blocks[i] = { ...block, status: ok ? "ok" : "error", ...summary };
       return { ...turn, blocks };
     }
   }
-  blocks.push({ kind: "tool_use", tool, toolUseId, status: ok ? "ok" : "error" });
+  blocks.push({ kind: "tool_use", tool, toolUseId, status: ok ? "ok" : "error", ...summary });
   return { ...turn, blocks };
 }
 
@@ -318,7 +386,7 @@ function applyChatEventToSession(session, event, now) {
         history: updateAssistantTurn(
           ensureAssistantTurn(session.history, turnId, now),
           turnId,
-          (turn) => appendTextDelta(turn, event.text),
+          (turn) => appendTextDelta(turn, event.text, now),
         ),
       };
     case "thinking_delta":
@@ -327,7 +395,7 @@ function applyChatEventToSession(session, event, now) {
         history: updateAssistantTurn(
           ensureAssistantTurn(session.history, turnId, now),
           turnId,
-          (turn) => appendThinkingDelta(turn, event.text),
+          (turn) => withActivity(appendThinkingDelta(turn, event.text), now),
         ),
       };
     case "tool_use_start":
@@ -336,7 +404,7 @@ function applyChatEventToSession(session, event, now) {
         history: updateAssistantTurn(
           ensureAssistantTurn(session.history, turnId, now),
           turnId,
-          (turn) => appendToolUseStart(turn, event.tool, event.input, event.toolUseId),
+          (turn) => withActivity(appendToolUseStart(turn, event.tool, event.input, event.toolUseId), now),
         ),
       };
     case "tool_use_end":
@@ -345,7 +413,7 @@ function applyChatEventToSession(session, event, now) {
         history: updateAssistantTurn(
           ensureAssistantTurn(session.history, turnId, now),
           turnId,
-          (turn) => markToolUseEnd(turn, event.toolUseId, event.tool, event.ok),
+          (turn) => withActivity(markToolUseEnd(turn, event.toolUseId, event.tool, event.ok, event.resultSummary), now),
         ),
       };
     case "artifact_changed":
@@ -692,6 +760,21 @@ export function selectSliceTargetStl(state) {
   const selected = String(state?.selectedMeshFile || "").trim();
   if (endsWith(selected, ".stl")) return selected;
   return selectLatestStl(state);
+}
+
+/**
+ * True while *any* session is mid-turn: the active project (top-level slice) or
+ * any backgrounded project whose retained slice is still streaming. Auth mode is
+ * a global setting that decides how the `claude` subprocess is spawned, so the
+ * proxy/local switch is gated on this — flipping it while a turn runs is blocked.
+ *
+ * @param {ChatState} state
+ */
+export function selectAnyTurnInProgress(state) {
+  if (state?.turnInProgress) return true;
+  const sessions = state?.sessions;
+  if (!sessions) return false;
+  return Object.values(sessions).some((s) => s?.turnInProgress === true);
 }
 
 // ---------------------------------------------------------------------------

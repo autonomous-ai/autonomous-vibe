@@ -31,6 +31,17 @@ export function toolLabel(tool, input) {
       return "Editing CAD source";
     case "Read":
       return "Reading files";
+    case "Grep":
+      return "Searching code";
+    case "Glob":
+      return "Finding files";
+    case "WebSearch":
+      return "Searching the web";
+    case "WebFetch":
+      return "Reading a page";
+    case "Task":
+    case "Agent":
+      return "Running a subtask";
     case "ExitPlanMode":
       return "Finalizing plan";
     case "Bash": {
@@ -43,6 +54,57 @@ export function toolLabel(tool, input) {
     }
     default:
       return titleize(name);
+  }
+}
+
+/**
+ * The specific target a tool acted on — the search pattern, the file, the
+ * command, the query — so a trace row reads "Searching code · «pattern»"
+ * instead of a bare verb. Returns "" when there's nothing meaningful to show.
+ * Full string (no truncation); callers truncate for display.
+ *
+ * @param {string} tool
+ * @param {unknown} [input]
+ * @returns {string}
+ */
+export function toolDetail(tool, input) {
+  const obj = input && typeof input === "object" ? /** @type {Record<string, unknown>} */ (input) : {};
+  const str = (v) => (typeof v === "string" ? v.trim() : "");
+  const basename = (p) => {
+    const s = str(p);
+    const parts = s.split(/[\\/]/);
+    return parts[parts.length - 1] || s;
+  };
+  switch (String(tool || "")) {
+    case "Read":
+    case "Write":
+    case "Edit":
+    case "MultiEdit":
+      return basename(obj.file_path);
+    case "Grep":
+    case "Glob":
+      return str(obj.pattern);
+    case "Bash":
+      return str(obj.command);
+    case "WebSearch":
+      return str(obj.query);
+    case "WebFetch":
+      return str(obj.url);
+    case "Task":
+    case "Agent":
+      return str(obj.description);
+    case "cadcode":
+    case "Skill":
+      return str(obj.command) || str(obj.skill) || str(obj.name);
+    default: {
+      // Generic: surface the first non-empty string field so a new tool is
+      // never reduced to a bare verb.
+      for (const value of Object.values(obj)) {
+        const s = str(value);
+        if (s) return s;
+      }
+      return "";
+    }
   }
 }
 

@@ -1,12 +1,13 @@
 import { memo } from "react";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/ui/utils";
-import ToolUseBlock from "./ToolUseBlock";
 import ArtifactBadge from "./ArtifactBadge";
 import PlanBlock from "./PlanBlock";
 import Markdown from "./Markdown";
 import ChatCopyButton from "./ChatCopyButton";
+import ThinkingSummary from "./ThinkingSummary";
 import { phaseLabel, toolLabel } from "./activityLabels";
+import { partitionTurnBlocks } from "@/store/chat";
 
 function TextBlock({ text, streaming }) {
   if (streaming) {
@@ -52,17 +53,6 @@ function PhaseBadge({ phase, running }) {
       ) : null}
       {label}
     </span>
-  );
-}
-
-function ThinkingBlock({ text }) {
-  return (
-    <p
-      data-slot="chat-thinking"
-      className="whitespace-pre-wrap rounded-md border border-dashed border-border/60 bg-muted/20 px-2 py-1 text-xs italic text-muted-foreground"
-    >
-      {text}
-    </p>
   );
 }
 
@@ -122,15 +112,20 @@ export default memo(function ChatTurn({ turn, onOpenArtifact }) {
     turn.blocks.some((block) => block.kind === "artifact");
   const copyText = turnCopyText(turn);
   const showCopyButton = turnShowsCopyButton(turn);
-  // Tool calls are intentionally not rendered (see the tool_use case below).
-  // While the turn is running and there's no streaming text to show — either
-  // nothing has arrived yet, or a hidden tool call is the latest activity —
-  // surface one generic "Working…" line so the user knows something is happening.
-  const lastBlock = turn.blocks[turn.blocks.length - 1];
-  const showWorking =
-    !isUser &&
-    turn.status === "running" &&
-    (turn.blocks.length === 0 || lastBlock?.kind === "tool_use");
+  // Pre-answer narration (text emitted between tool calls) folds into the
+  // ThinkingSummary trace; only the answer body renders inline here.
+  const bodyBlocks = isUser ? turn.blocks : partitionTurnBlocks(turn.blocks).body;
+  // The ThinkingSummary pill carries the generic "Working…/Thinking…" signal in
+  // the header for the whole run. Here in the body we only surface the *specific*
+  // in-flight step ("Rendering preview…") when a tool is actually mid-run and no
+  // answer text is currently streaming — so there's no dead gap and no duplicate
+  // generic spinner.
+  const running = !isUser && turn.status === "running";
+  const answerStreaming = bodyBlocks[bodyBlocks.length - 1]?.kind === "text";
+  const runningTool =
+    running && !answerStreaming
+      ? [...turn.blocks].reverse().find((b) => b.kind === "tool_use" && b.status === "running")
+      : null;
   return (
     <article
       data-slot="chat-turn"
@@ -158,6 +153,8 @@ export default memo(function ChatTurn({ turn, onOpenArtifact }) {
         <header className="mb-1.5 flex items-center justify-between gap-2">
           <span className="flex items-center gap-1.5">
             <PhaseBadge phase={turn.phase} running={turn.status === "running"} />
+            {!isUser ? <ThinkingSummary turn={turn} /> : null}
+
           </span>
           <StatusLine turn={turn} />
         </header>
@@ -176,31 +173,21 @@ export default memo(function ChatTurn({ turn, onOpenArtifact }) {
             ))}
           </div>
         ) : null}
-        {turn.blocks.map((block, index) => {
+        {bodyBlocks.map((block, index) => {
           switch (block.kind) {
             case "text":
               return (
                 <TextBlock
                   key={index}
                   text={block.text}
-                  streaming={turn.status === "running" && index === turn.blocks.length - 1}
+                  streaming={turn.status === "running" && index === bodyBlocks.length - 1}
                 />
               );
             case "thinking":
-              return <ThinkingBlock key={index} text={block.text} />;
             case "tool_use":
-              // Tool calls are intentionally not shown — the generic "Working…"
-              // indicator below tells the user something is happening without
-              // exposing tool internals. Uncomment to restore the detail cards.
-              // return (
-              //   <ToolUseBlock
-              //     key={index}
-              //     tool={block.tool}
-              //     label={toolLabel(block.tool, block.input)}
-              //     input={block.input}
-              //     status={block.status}
-              //   />
-              // );
+              // Reasoning, tool calls, and pre-answer narration are collapsed
+              // into the ThinkingSummary pill (full trace in a modal) — never
+              // rendered inline. (partitionTurnBlocks keeps them out of body.)
               return null;
             case "plan":
               return <PlanBlock key={index} plan={block.plan} status={block.status} />;
@@ -220,13 +207,13 @@ export default memo(function ChatTurn({ turn, onOpenArtifact }) {
               return null;
           }
         })}
-        {showWorking ? (
+        {runningTool ? (
           <p
             data-slot="chat-working"
             className="flex items-center gap-1.5 text-sm text-muted-foreground"
           >
             <Loader2 className="size-3.5 animate-spin" aria-hidden />
-            Working…
+            {`${toolLabel(runningTool.tool, runningTool.input)}…`}
           </p>
         ) : null}
         {showModifyHint ? (

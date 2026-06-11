@@ -941,14 +941,19 @@ fn plan_from_exit_plan_mode(input: Option<&Value>) -> String {
 /// Last-resort plan recovery. When `ExitPlanMode` arrives with an empty
 /// `plan` AND no `planFilePath` (common on a resumed session — the model treats
 /// ExitPlanMode as a bare "approve the plan we already discussed" signal and
-/// doesn't restate it), recover the plan from the persisted transcript: the
-/// most recent *substantial* assistant text block, which is the plan the model
-/// wrote out before exiting plan mode. Returns "" when nothing qualifies.
+/// doesn't restate it), recover the plan from the persisted transcript.
+///
+/// Prefers the most recent *substantial* assistant `text` block (the plan the
+/// model wrote out). Falls back to the most recent substantial `thinking`
+/// block: under autopilot the model often keeps the whole plan in its reasoning
+/// channel and never restates it as text, so the thinking is the only place the
+/// plan exists. Returns "" when nothing qualifies.
 fn recover_plan_from_transcript(contents: &str) -> String {
     // Plans run to hundreds/thousands of chars; this filters out chatter like
     // "your plan is ready" without matching a short acknowledgement.
     const MIN_PLAN_CHARS: usize = 200;
-    let mut best = String::new();
+    let mut best_text = String::new();
+    let mut best_thinking = String::new();
     for line in contents.lines() {
         let Ok(obj) = serde_json::from_str::<Value>(line) else {
             continue; // skip blanks / partial trailing writes
@@ -964,17 +969,26 @@ fn recover_plan_from_transcript(contents: &str) -> String {
             continue;
         };
         for block in content {
-            if block.get("type").and_then(Value::as_str) != Some("text") {
-                continue;
-            }
-            if let Some(text) = block.get("text").and_then(Value::as_str) {
+            // `text` blocks carry their content under `text`; `thinking` blocks
+            // under `thinking`. Keep the last (most recent) substantial one of
+            // each kind.
+            let (slot, field) = match block.get("type").and_then(Value::as_str) {
+                Some("text") => (&mut best_text, "text"),
+                Some("thinking") => (&mut best_thinking, "thinking"),
+                _ => continue,
+            };
+            if let Some(text) = block.get(field).and_then(Value::as_str) {
                 if text.trim().chars().count() >= MIN_PLAN_CHARS {
-                    best = text.to_string(); // keep the last (most recent) one
+                    *slot = text.to_string();
                 }
             }
         }
     }
-    best
+    if !best_text.is_empty() {
+        best_text
+    } else {
+        best_thinking
+    }
 }
 
 /// Resolve and read this project's session transcript, then recover the plan
@@ -1142,9 +1156,43 @@ fn from_user(o: &Value, turn_id: &str, state: &mut StreamState) -> Vec<ChatEvent
             tool: tool_name,
             tool_use_id: tu_id.to_string(),
             ok: !is_error,
+            result_summary: summarize_tool_result(block.get("content")),
         });
     }
     out
+}
+
+/// Flatten a `tool_result` `content` field to plain text. The CLI sends it
+/// either as a bare string or as an array of `{type, text}` blocks.
+fn tool_result_text(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| {
+                if item.get("type").and_then(Value::as_str) == Some("text") {
+                    item.get("text").and_then(Value::as_str).map(str::to_string)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// Short human summary of a tool's output for the trace timeline — a line
+/// count ("3 lines"). `None` when the result is empty or non-text, so the UI
+/// simply omits it rather than showing "0 lines".
+fn summarize_tool_result(content: Option<&Value>) -> Option<String> {
+    let text = tool_result_text(content);
+    let trimmed = text.trim_end();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lines = trimmed.lines().count().max(1);
+    Some(format!("{lines} line{}", if lines == 1 { "" } else { "s" }))
 }
 
 // ---------------------------------------------------------------------------
@@ -2757,6 +2805,49 @@ mod tests {
     }
 
     #[test]
+    fn tool_use_end_summarizes_result_output_as_line_count() {
+        let mut state = StreamState::default();
+        let asst = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_g","name":"Grep","input":{"pattern":"foo"}}]}}"#;
+        let _ = parse_stream_line(asst, "T1", &mut state);
+        // Array-of-text-blocks content with three lines.
+        let user = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_g","is_error":false,"content":[{"type":"text","text":"a\nb\nc"}]}]}}"#;
+        let end = parse_stream_line(user, "T1", &mut state);
+        match &end[0] {
+            ChatEvent::ToolUseEnd { result_summary, ok, .. } => {
+                assert!(*ok);
+                assert_eq!(result_summary.as_deref(), Some("3 lines"));
+            }
+            other => panic!("expected ToolUseEnd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_use_end_summary_handles_string_content_and_singular_and_empty() {
+        // Bare-string content, single line → singular "1 line".
+        let mut state = StreamState::default();
+        let asst = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_r","name":"Read","input":{"file_path":"a.py"}}]}}"#;
+        let _ = parse_stream_line(asst, "T1", &mut state);
+        let user = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_r","is_error":false,"content":"only one line"}]}}"#;
+        match &parse_stream_line(user, "T1", &mut state)[0] {
+            ChatEvent::ToolUseEnd { result_summary, .. } => {
+                assert_eq!(result_summary.as_deref(), Some("1 line"));
+            }
+            other => panic!("expected ToolUseEnd, got {other:?}"),
+        }
+
+        // Missing/empty content → no summary.
+        let asst2 = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_e","name":"Bash","input":{"command":"true"}}]}}"#;
+        let _ = parse_stream_line(asst2, "T1", &mut state);
+        let user2 = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_e","is_error":false}]}}"#;
+        match &parse_stream_line(user2, "T1", &mut state)[0] {
+            ChatEvent::ToolUseEnd { result_summary, .. } => {
+                assert_eq!(*result_summary, None);
+            }
+            other => panic!("expected ToolUseEnd, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn exit_plan_mode_emits_plan_proposed_not_tool_chip() {
         let mut state = StreamState::default();
         let asst = r##"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_p","name":"ExitPlanMode","input":{"plan":"# Plan\n- base\n- lid"}}]}}"##;
@@ -2871,6 +2962,43 @@ mod tests {
             "not json".to_string(),   // partial/blank lines are skipped
         ]
         .join("\n");
+        assert_eq!(recover_plan_from_transcript(&transcript), plan);
+    }
+
+    #[test]
+    fn recover_plan_falls_back_to_thinking_when_no_text_plan() {
+        // Under autopilot the model plans entirely in the thinking channel and
+        // exits plan mode without a text restatement — recover from thinking.
+        let thinking = format!("Plan: {}", "C".repeat(400));
+        let transcript = [
+            r#"{"type":"user","message":{"role":"user","content":"make a bracket"}}"#.to_string(),
+            serde_json::json!({
+                "type": "assistant",
+                "message": {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": thinking, "signature": "sig"},
+                    {"type": "text", "text": "On it!"} // short text must not win
+                ]}
+            })
+            .to_string(),
+        ]
+        .join("\n");
+        assert_eq!(recover_plan_from_transcript(&transcript), thinking);
+    }
+
+    #[test]
+    fn recover_plan_prefers_text_over_thinking() {
+        // When both a substantial text plan and substantial thinking exist, the
+        // written text wins regardless of order.
+        let thinking = "T".repeat(400);
+        let plan = format!("# Real plan\n{}", "P".repeat(400));
+        let transcript = serde_json::json!({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [
+                {"type": "text", "text": plan},
+                {"type": "thinking", "thinking": thinking, "signature": "sig"}
+            ]}
+        })
+        .to_string();
         assert_eq!(recover_plan_from_transcript(&transcript), plan);
     }
 

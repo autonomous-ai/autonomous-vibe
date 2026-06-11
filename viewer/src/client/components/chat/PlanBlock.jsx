@@ -57,6 +57,10 @@ export default function PlanBlock({ plan, status }) {
       : STATUS_PILL[status] || STATUS_PILL.proposed;
   const isProposed = status === "proposed" && !autopilot;
   const busy = turnInProgress;
+  // The model sometimes exits plan mode without writing a plan body (typical
+  // under autopilot, where it keeps planning in the thinking channel and goes
+  // straight to building). Render a short note instead of an empty card.
+  const hasPlan = typeof plan === "string" && plan.trim().length > 0;
 
   const handleApprove = () => {
     if (busy) return;
@@ -95,8 +99,14 @@ export default function PlanBlock({ plan, status }) {
             className="scrollbar-thin border-border bg-foreground/[0.04] text-sm text-foreground"
             data-slot="chat-plan-editor"
           />
+        ) : hasPlan ? (
+          <Markdown source={plan} className={PLAN_MD} />
         ) : (
-          <Markdown source={editing ? draft : plan} className={PLAN_MD} />
+          <p data-slot="chat-plan-empty" className="text-[13.5px] leading-relaxed text-muted-foreground">
+            {autopilot
+              ? "Building your design automatically — no separate written plan for this one. Open “Thought for…” above to see the reasoning."
+              : "No plan details were written for this turn."}
+          </p>
         )}
       </div>
 

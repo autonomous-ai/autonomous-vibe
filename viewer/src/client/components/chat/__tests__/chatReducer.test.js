@@ -12,6 +12,7 @@ import {
   selectLatestGcode,
   selectLatestGcode3mf,
   selectLatestStl,
+  selectAnyTurnInProgress,
   INITIAL_CHAT_STATE,
   PANDA_REAUTH_MESSAGE,
 } from "../../../store/chat.js";
@@ -366,6 +367,36 @@ test("selectLatestGcode returns the most recent .gcode artifact", () => {
   ];
   const state = applyEvents(INITIAL_CHAT_STATE, events);
   assert.equal(selectLatestGcode(state), "final.gcode");
+});
+
+test("selectAnyTurnInProgress is false when idle and true for the active project's turn", () => {
+  assert.equal(selectAnyTurnInProgress(INITIAL_CHAT_STATE), false);
+  const running = applyEvents(INITIAL_CHAT_STATE, [
+    { kind: "turn_start", turnId: "t-1" },
+  ]);
+  assert.equal(running.turnInProgress, true);
+  assert.equal(selectAnyTurnInProgress(running), true);
+});
+
+test("selectAnyTurnInProgress is true when only a backgrounded session is mid-turn", () => {
+  const state = {
+    ...INITIAL_CHAT_STATE,
+    turnInProgress: false,
+    sessions: {
+      "proj-bg": { turnInProgress: true },
+      "proj-idle": { turnInProgress: false },
+    },
+  };
+  assert.equal(selectAnyTurnInProgress(state), true);
+});
+
+test("selectAnyTurnInProgress is false when active and all backgrounded sessions are idle", () => {
+  const state = {
+    ...INITIAL_CHAT_STATE,
+    turnInProgress: false,
+    sessions: { "proj-a": { turnInProgress: false } },
+  };
+  assert.equal(selectAnyTurnInProgress(state), false);
 });
 
 // --- Change 4: clearer plan card + post-build "ask to modify" hint ---------

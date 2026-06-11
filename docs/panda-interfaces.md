@@ -622,7 +622,7 @@ type ChatEvent =
   | { kind: "text_delta"; turnId: string; text: string }
   | { kind: "thinking_delta"; turnId: string; text: string }
   | { kind: "tool_use_start"; turnId: string; tool: string; input: unknown }
-  | { kind: "tool_use_end"; turnId: string; tool: string; ok: boolean }
+  | { kind: "tool_use_end"; turnId: string; tool: string; ok: boolean; resultSummary?: string }
   | { kind: "artifact_changed"; turnId: string; file: string; reason: "new" | "modified" }
   | { kind: "turn_end"; turnId: string }
   | { kind: "error"; turnId: string; message: string };

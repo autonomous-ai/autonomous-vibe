@@ -306,6 +306,14 @@ export interface CreateProjectRequest {
   name: string;
 }
 
+// Snapshots (git-tag-style model save states) --------------------------------
+
+export interface SnapshotSummary {
+  id: string;
+  label: string;
+  createdAt: number;
+}
+
 // App ------------------------------------------------------------------------
 
 export interface PrereqCheck {
@@ -909,6 +917,22 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
       } as unknown as T;
     case "project_delete":
       return undefined as unknown as T;
+    case "snapshot_list":
+      return [] as unknown as T;
+    case "snapshot_save":
+      return {
+        id: `stub-snap-${Date.now()}`,
+        label: String(args.label ?? "Version 1"),
+        createdAt: Date.now(),
+      } as unknown as T;
+    case "snapshot_restore":
+      return {
+        id: String(args.snapshotId ?? "stub-snap"),
+        label: "Saved state",
+        createdAt: 0,
+      } as unknown as T;
+    case "snapshot_delete":
+      return undefined as unknown as T;
     case "update_check":
       // Browser dev: no updater. Report "no update available" so the
       // notifier stays dormant rather than throwing.
@@ -1049,6 +1073,16 @@ const transportBase = {
   project_rename: (id: string, name: string) =>
     invoke<ProjectSummary>("project_rename", { id, name }),
   project_delete: (id: string) => invoke<void>("project_delete", { id }),
+
+  // snapshots (model save-states) — see desktop/src-tauri/src/commands/snapshot.rs
+  snapshot_list: (projectId: string) =>
+    invoke<SnapshotSummary[]>("snapshot_list", { projectId }),
+  snapshot_save: (projectId: string, label?: string) =>
+    invoke<SnapshotSummary>("snapshot_save", { projectId, label }),
+  snapshot_restore: (projectId: string, snapshotId: string) =>
+    invoke<SnapshotSummary>("snapshot_restore", { projectId, snapshotId }),
+  snapshot_delete: (projectId: string, snapshotId: string) =>
+    invoke<void>("snapshot_delete", { projectId, snapshotId }),
 
   // update — see desktop/src-tauri/src/commands/update.rs
   update_check: () => invoke<UpdateInfo | null>("update_check"),

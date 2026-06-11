@@ -12,7 +12,7 @@ import {
 import { THEME_STORAGE_KEY } from "../ui/colorScheme.js";
 import { normalizeRenderFormat } from "cadjs/lib/fileFormats.js";
 import { isCadWorkspaceCompactFileSheetViewport } from "./breakpoints.js";
-import { DRAWING_TOOL, RENDER_FORMAT, TAB_TOOL_MODE } from "./constants.js";
+import { DRAWING_TOOL, RENDER_FORMAT, RULER_TOOL, RULER_UNIT, TAB_TOOL_MODE } from "./constants.js";
 
 export { THEME_STORAGE_KEY };
 const THEME_STORAGE_VERSION = 11;
@@ -176,7 +176,114 @@ function normalizeDrawingTool(value) {
 
 function normalizeTabToolMode(value) {
   const normalized = normalizeString(value || TAB_TOOL_MODE.REFERENCES);
-  return normalized === TAB_TOOL_MODE.DRAW ? TAB_TOOL_MODE.DRAW : TAB_TOOL_MODE.REFERENCES;
+  if (normalized === TAB_TOOL_MODE.DRAW) {
+    return TAB_TOOL_MODE.DRAW;
+  }
+  if (normalized === TAB_TOOL_MODE.RULER) {
+    return TAB_TOOL_MODE.RULER;
+  }
+  return TAB_TOOL_MODE.REFERENCES;
+}
+
+function normalizeRulerTool(value) {
+  const normalized = normalizeString(value || RULER_TOOL.DISTANCE);
+  switch (normalized) {
+    case RULER_TOOL.FEATURES:
+    case RULER_TOOL.ANGLE:
+    case RULER_TOOL.DIAMETER:
+    case RULER_TOOL.WALL_THICKNESS:
+    case RULER_TOOL.BOUNDING_BOX:
+    case RULER_TOOL.DISTANCE:
+      return normalized;
+    default:
+      return RULER_TOOL.DISTANCE;
+  }
+}
+
+function normalizeRulerUnit(value) {
+  const normalized = normalizeString(value || RULER_UNIT.MM);
+  switch (normalized) {
+    case RULER_UNIT.CM:
+    case RULER_UNIT.INCH:
+    case RULER_UNIT.MM:
+      return normalized;
+    default:
+      return RULER_UNIT.MM;
+  }
+}
+
+function cloneMeasurement(measurement) {
+  if (!measurement || typeof measurement !== "object") {
+    return null;
+  }
+  return {
+    id: String(measurement.id || ""),
+    tool: normalizeRulerTool(measurement.tool),
+    points: Array.isArray(measurement.points)
+      ? measurement.points.map(clonePoint3).filter(Boolean)
+      : [],
+    value: Number(measurement.value) || 0,
+    components: Array.isArray(measurement.components)
+      ? measurement.components.map((entry) => Number(entry) || 0)
+      : [],
+    partId: String(measurement.partId || "")
+  };
+}
+
+export function cloneRulerMeasurements(measurements) {
+  return Array.isArray(measurements) ? measurements.map(cloneMeasurement).filter(Boolean) : [];
+}
+
+function numberListEqual(a, b) {
+  if (a === b) {
+    return true;
+  }
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
+    return false;
+  }
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function measurementPointsEqual(a, b) {
+  if (a === b) {
+    return true;
+  }
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
+    return false;
+  }
+  for (let index = 0; index < a.length; index += 1) {
+    if (!pointsEqualN(a[index], b[index], 3)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function rulerMeasurementsEqual(a, b) {
+  if (a === b) {
+    return true;
+  }
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
+    return false;
+  }
+  for (let index = 0; index < a.length; index += 1) {
+    if (
+      a[index]?.id !== b[index]?.id ||
+      a[index]?.tool !== b[index]?.tool ||
+      a[index]?.value !== b[index]?.value ||
+      a[index]?.partId !== b[index]?.partId ||
+      !numberListEqual(a[index]?.components, b[index]?.components) ||
+      !measurementPointsEqual(a[index]?.points, b[index]?.points)
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function pointsEqualN(a, b, length) {
@@ -259,7 +366,11 @@ function cloneDrawingStroke(stroke) {
     points: Array.isArray(stroke?.points) ? stroke.points.map(cloneDrawingPoint) : [],
     fillPoints: Array.isArray(stroke?.fillPoints) ? stroke.fillPoints.map(cloneDrawingPoint) : [],
     guessed: stroke?.guessed === true,
-    surfaceLine: cloneSurfaceLineData(stroke?.surfaceLine)
+    surfaceLine: cloneSurfaceLineData(stroke?.surfaceLine),
+    // Per-region note from the "Send to AI" popover. Preserved here so it
+    // survives clones (every commit re-clones existing strokes) and persists
+    // with the tab session; "" when unset.
+    note: typeof stroke?.note === "string" ? stroke.note : ""
   };
 }
 
@@ -279,6 +390,7 @@ export function drawingStrokesEqual(a, b) {
       a[index]?.id !== b[index]?.id ||
       a[index]?.tool !== b[index]?.tool ||
       a[index]?.guessed !== b[index]?.guessed ||
+      (a[index]?.note || "") !== (b[index]?.note || "") ||
       !surfaceLineEqual(a[index]?.surfaceLine, b[index]?.surfaceLine) ||
       !drawingPointsEqual(a[index]?.points, b[index]?.points) ||
       !drawingPointsEqual(a[index]?.fillPoints, b[index]?.fillPoints)
@@ -420,6 +532,28 @@ const TAB_STATE_SCHEMA = [
     normalize: cloneDrawingHistoryStack,
     clone: cloneDrawingHistoryStack,
     equals: drawingHistoryStackEqual
+  },
+  {
+    key: "rulerTool",
+    defaultValue: RULER_TOOL.FEATURES,
+    normalize: normalizeRulerTool
+  },
+  {
+    key: "rulerUnit",
+    defaultValue: RULER_UNIT.MM,
+    normalize: normalizeRulerUnit
+  },
+  {
+    key: "rulerMeasurements",
+    defaultValue: [],
+    normalize: cloneRulerMeasurements,
+    clone: cloneRulerMeasurements,
+    equals: rulerMeasurementsEqual
+  },
+  {
+    key: "rulerVisible",
+    defaultValue: true,
+    normalize: (value) => normalizeBoolean(value, true)
   }
 ];
 

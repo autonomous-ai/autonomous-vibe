@@ -37,6 +37,12 @@ const APPROVE_PLAN_PREAMBLE: &str = "The plan below is approved. Implement it no
 /// shows only what the user typed — never the machine-readable image note.
 const ATTACHMENT_NOTE_MARKER: &str = "\n\n[Attached reference image";
 
+/// Marker beginning the note [`revert_note`] appends to the first user message
+/// after a `snapshot_restore`, so the model learns its files were reverted to a
+/// saved state (the append-only session still "remembers" the post-snapshot
+/// edits). Stripped from rehydrated history exactly like [`ATTACHMENT_NOTE_MARKER`].
+const REVERT_NOTE_MARKER: &str = "\n\n[The model was reverted";
+
 /// Caps on per-turn reference images: count, and bytes per image. Generous for
 /// phone photos while bounding memory and the appended note's length.
 const MAX_ATTACHMENTS: usize = 6;
@@ -243,6 +249,18 @@ fn image_extension(media_type: &str) -> Option<&'static str> {
     }
 }
 
+/// The note appended to the next user message after a model revert, telling the
+/// model the on-disk files went back to the saved state `label` and to ignore
+/// the post-snapshot edits its session still remembers. Begins with
+/// [`REVERT_NOTE_MARKER`] so it's stripped on rehydration.
+fn revert_note(label: &str) -> String {
+    format!(
+        "{REVERT_NOTE_MARKER} to the saved state \"{label}\". The files on disk now reflect \
+         that earlier version — build on the current files and disregard any changes described \
+         after that state was saved.]"
+    )
+}
+
 /// The note appended to a user message so the model opens the attached images
 /// (Claude Code's Read tool renders images). Listing workspace-relative paths
 /// suffices — the child's cwd is the workspace. Begins with
@@ -261,12 +279,19 @@ fn attachment_note(rels: &[String]) -> String {
 pub async fn chat_start_turn(
     req: StartTurnRequest,
     app: AppHandle,
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
 ) -> IpcResult<StartTurnResponse> {
     // A fresh user message always starts in the planning phase; the model
     // may call ExitPlanMode immediately for a trivial edit (a one-line
     // plan) or run a full design pass for a new part.
     let mut message = req.user_message;
+    // If the model was just reverted to a saved state, tell it so — the
+    // append-only session otherwise still "remembers" the edits made after that
+    // snapshot, which no longer match the files on disk. Drained (one-shot)
+    // here; appended like the attachment note so it's stripped on rehydration.
+    if let Some(label) = state.take_pending_revert_note(&req.project_id) {
+        message.push_str(&revert_note(&label));
+    }
     if !req.images.is_empty() {
         // Persist the reference images into the project workspace and point the
         // model at them (it views them with its Read tool). Done here, before
@@ -379,11 +404,18 @@ fn parse_session_history(contents: &str) -> Vec<ChatHistoryEntry> {
             .and_then(Value::as_object)
             .map(|message| extract_visible_text(message.get("content")))
             .unwrap_or_default();
-        // Strip the machine-readable image note the build appends to a user
-        // message (everything from the marker on) so the rehydrated bubble shows
-        // only what the user typed.
+        // Strip the machine-readable notes the build appends to a user message
+        // (image attachments, model-revert) — everything from the earliest
+        // marker on — so the rehydrated bubble shows only what the user typed.
         if role == ChatRole::User {
-            if let Some(idx) = text.find(ATTACHMENT_NOTE_MARKER) {
+            if let Some(idx) = [
+                text.find(ATTACHMENT_NOTE_MARKER),
+                text.find(REVERT_NOTE_MARKER),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
+            {
                 text.truncate(idx);
             }
         }
@@ -663,6 +695,43 @@ mod tests {
         assert_eq!(req.images.len(), 1);
         assert_eq!(req.images[0].media_type, "image/png");
         assert_eq!(req.images[0].data_base64, "aGVsbG8=");
+    }
+
+    #[test]
+    fn revert_note_strips_on_rehydration_and_keeps_user_text() {
+        // A user message carrying the revert note shows only the typed text.
+        let content = format!("make it taller{}", revert_note("Version 2"));
+        let line = serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": content},
+            "timestamp": "2026-06-10T00:00:00.000Z"
+        })
+        .to_string();
+        let history = parse_session_history(&line);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].content, "make it taller");
+        // The note names the saved state so the model knows what changed.
+        assert!(revert_note("Version 2").contains("Version 2"));
+    }
+
+    #[test]
+    fn parse_session_history_strips_earliest_of_revert_and_attachment_notes() {
+        // Both notes can ride one message (revert + attached image); strip from
+        // the earliest marker so neither leaks into the rehydrated bubble.
+        let content = format!(
+            "tweak it{}{}",
+            revert_note("v1"),
+            attachment_note(&["inputs/a.png".into()])
+        );
+        let line = serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": content},
+            "timestamp": "2026-06-10T00:00:00.000Z"
+        })
+        .to_string();
+        let history = parse_session_history(&line);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].content, "tweak it");
     }
 
     #[test]

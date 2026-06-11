@@ -669,6 +669,22 @@ pub struct ProjectOpenResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Snapshots (git-tag-style model save states)
+// ---------------------------------------------------------------------------
+
+/// One saved model state. The files themselves live under
+/// `<project>/.panda/snapshots/<id>/`; this is the index entry the UI lists
+/// and reverts to. See `commands/snapshot.rs`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotSummary {
+    pub id: String,
+    pub label: String,
+    /// Milliseconds since the Unix epoch.
+    pub created_at: i64,
+}
+
+// ---------------------------------------------------------------------------
 // App settings + prereq check
 // ---------------------------------------------------------------------------
 

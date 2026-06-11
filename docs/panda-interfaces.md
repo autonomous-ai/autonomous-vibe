@@ -522,6 +522,45 @@ AI-generated title on the first list refresh after a title exists. The user can
 override this at any time via `project_rename` (sidebar inline edit); once a
 non-placeholder name is set, the self-heal stops touching it.
 
+#### Snapshots (git-tag-style model save states)
+
+```typescript
+interface SnapshotSummary {
+  id: string;
+  label: string;
+  createdAt: number; // epoch millis
+}
+
+// List a project's saved states, newest first.
+function snapshot_list(projectId: string): Promise<SnapshotSummary[]>;
+
+// Save the current model as a named checkpoint. An empty/missing `label`
+// falls back to `Version N`. Rejects a missing project (PROJECT_NOT_FOUND).
+function snapshot_save(projectId: string, label?: string): Promise<SnapshotSummary>;
+
+// Revert the model files to a saved state. The saved state is NOT consumed —
+// it stays restorable. Rejects an unknown id (SNAPSHOT_NOT_FOUND). Returns the
+// restored summary so the UI can label its chat marker.
+function snapshot_restore(projectId: string, snapshotId: string): Promise<SnapshotSummary>;
+
+// Delete a saved state (files + index entry). Idempotent.
+function snapshot_delete(projectId: string, snapshotId: string): Promise<void>;
+```
+
+**Storage.** A snapshot copies a project's model-defining files (Python source +
+generated artifacts — everything except `.panda`, `.claude`, `.git`,
+`project.json`, and `inputs/`) into `<project>/.panda/snapshots/<id>/`, indexed
+by `<project>/.panda/history.json`. `.panda/` is excluded from catalog scans, so
+saves never surface as CAD parts.
+
+**Linear revert (no session fork).** Restore swaps only the model files, then
+the driver stashes a one-shot per-project note that the *next* `chat_start_turn`
+appends to the user message (telling the model its files went back so the
+append-only Claude session's memory of post-snapshot edits doesn't drift). The
+chat panel shows a single "↩ Reverted to `<label>`" marker; nothing is reloaded
+or hidden. This is option 1 ("linear undo marker") from
+`docs/future-work-version-control.md`. The append-only session is never forked.
+
 #### App
 
 ```typescript

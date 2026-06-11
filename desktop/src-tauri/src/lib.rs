@@ -208,6 +208,11 @@ pub fn run() {
             project::project_open,
             project::project_rename,
             project::project_delete,
+            // snapshot (git-tag-style model save states)
+            snapshot::snapshot_list,
+            snapshot::snapshot_save,
+            snapshot::snapshot_restore,
+            snapshot::snapshot_delete,
             // update
             update::update_check,
             update::update_install,

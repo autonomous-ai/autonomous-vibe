@@ -15,6 +15,10 @@ import UrdfFileSheet from "./workbench/UrdfFileSheet";
 import ViewerAlertDialog from "./workbench/ViewerAlertDialog";
 import ViewerLoadingOverlay from "./workbench/ViewerLoadingOverlay";
 import FloatingToolBar from "./workbench/FloatingToolBar";
+import SavedStates from "./workbench/SavedStates";
+import RegionNotePopover from "./workbench/RegionNotePopover";
+import { isRegionStroke, regionStrokes } from "cadjs/lib/viewer/drawingTools";
+import { regionBadgePixelAnchor } from "cadjs/lib/viewer/drawingCanvas";
 import { useCadAssets } from "./workbench/hooks/useCadAssets";
 import {
   resolveDesktopPanelWidths,
@@ -49,8 +53,11 @@ import {
   DRAWING_TOOL,
   RENDER_FORMAT,
   REFERENCE_STATUS,
+  RULER_TOOL,
+  RULER_UNIT,
   TAB_TOOL_MODE
 } from "@/workbench/constants";
+import { formatAngle, formatLength } from "cadjs/lib/viewer/rulerGeometry";
 import {
   FILE_SHEET_SECTION_IDS,
   defaultOpenFileSheetSectionIds,
@@ -61,6 +68,7 @@ import {
 import {
   entrySourceFormat,
   fileSheetKindForEntry,
+  isMeshRenderFormat,
   isRobotRenderFormat
 } from "cadjs/lib/fileFormats";
 import {
@@ -106,10 +114,12 @@ import {
   cadWorkspaceDefaultFileSheetWidthForViewport,
   createWorkspaceSessionThemeSlice,
   cloneDrawingStrokes,
+  cloneRulerMeasurements,
   cloneTabSnapshot,
   createTabRecord,
   deleteCustomThemePreset,
   drawingStrokesEqual,
+  rulerMeasurementsEqual,
   getAvailableThemePresetIdForSettings,
   readCadWorkspaceSessionState,
   readCustomThemePresets,
@@ -262,10 +272,12 @@ import {
 import { emitCadRefSelection } from "@/components/chat/cadRefEvents";
 import { basename, pickPrinterForSlice, PRINT_CONFIG_CHANGED_EVENT } from "@/components/chat/actionButtonsHelpers";
 import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
-import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, selectSliceTargetStl, getChatState, useChatStore } from "@/store/chat";
+import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, selectSliceTargetStl, getChatState, addPendingAttachment, setPendingViewContext, useChatStore } from "@/store/chat";
 import { useProjectsStore } from "@/store/projects.ts";
 import { sortProjects } from "@/components/library/projectListHelpers.js";
-import { PLACEHOLDER_PROJECT_NAME } from "@/components/chat/chatInputHelpers";
+import { PLACEHOLDER_PROJECT_NAME, FOCUS_CHAT_INPUT_EVENT, PREFILL_CHAT_INPUT_EVENT } from "@/components/chat/chatInputHelpers";
+import { blobToAttachment, MAX_ATTACHMENTS } from "@/components/chat/attachments";
+import { buildHighlightContextNote, buildDrawingSuggestionText } from "@/components/chat/highlightContext";
 import { useProjectsFileTree } from "./workbench/hooks/useProjectsFileTree";
 import DeleteConfirmDialog from "@/components/library/DeleteConfirmDialog.jsx";
 
@@ -775,8 +787,15 @@ export default function CadWorkspace({
   const [viewerPerspective, setViewerPerspective] = useState(null);
   const [tabToolMode, setTabToolMode] = useState(TAB_TOOL_MODE.REFERENCES);
   const [drawingStrokes, setDrawingStrokes] = useState([]);
+  // Inline note editor target: the region whose badge a popover is anchored to.
+  // { strokeId, number, initialNote, anchor: {left, top} } | null.
+  const [activeRegionNote, setActiveRegionNote] = useState(null);
   const [drawingUndoStack, setDrawingUndoStack] = useState([]);
   const [drawingRedoStack, setDrawingRedoStack] = useState([]);
+  const [rulerTool, setRulerTool] = useState(RULER_TOOL.FEATURES);
+  const [rulerUnit, setRulerUnit] = useState(RULER_UNIT.MM);
+  const [rulerMeasurements, setRulerMeasurements] = useState([]);
+  const [rulerVisible, setRulerVisible] = useState(true);
   const [jointValuesByFileRef, setJointValuesByFileRef] = useState({});
   const [urdfMotionStateByFileRef, setUrdfMotionStateByFileRef] = useState({});
   const [stepModuleLoadState, setStepModuleLoadState] = useState({
@@ -2106,7 +2125,15 @@ export default function CadWorkspace({
     isAssemblyView &&
     String(assemblyCurrentNode?.nodeType || "assembly").trim() === "assembly";
   const viewerMode = viewerInAssemblyMode ? "assembly" : "part";
-  const drawModeActive = selectedEntrySourceFormat === RENDER_FORMAT.STEP && tabToolMode === TAB_TOOL_MODE.DRAW;
+  // Drawing is a 2D screen-space overlay, so it works on any rendered solid —
+  // STEP parts and raw meshes (STL/OBJ/GLB) alike. Off for DXF (2D), G-code
+  // (toolpath) and robot views. Mesh views lack topology, so picking/references
+  // stay gated elsewhere; only the overlay is shared.
+  const drawModeActive =
+    (selectedEntrySourceFormat === RENDER_FORMAT.STEP ||
+      isMeshRenderFormat(selectedEntrySourceFormat)) &&
+    tabToolMode === TAB_TOOL_MODE.DRAW;
+  const rulerModeActive = tabToolMode === TAB_TOOL_MODE.RULER && !!selectedMeshData && !isUrdfView && !isGcodeView;
   const selectionCountBase = selectedPartIds.length + selectedReferenceIds.length;
 
   const selectedReferenceIdsRef = useRef(selectedReferenceIds);
@@ -2118,6 +2145,8 @@ export default function CadWorkspace({
   const drawingStrokesRef = useRef(drawingStrokes);
   const drawingUndoStackRef = useRef(drawingUndoStack);
   const drawingRedoStackRef = useRef(drawingRedoStack);
+  const rulerMeasurementsRef = useRef(rulerMeasurements);
+  const tabToolModeRef = useRef(tabToolMode);
   const viewerRef = useRef(null);
   const previewUiStateRef = useRef(null);
   const panelResizeStateRef = useRef(null);
@@ -2689,7 +2718,11 @@ export default function CadWorkspace({
       tabToolMode,
       drawingStrokes,
       drawingUndoStack,
-      drawingRedoStack
+      drawingRedoStack,
+      rulerTool,
+      rulerUnit,
+      rulerMeasurements,
+      rulerVisible
     });
   }, [
     dxfThicknessMm,
@@ -2703,6 +2736,10 @@ export default function CadWorkspace({
     expandedStepTreeNodeIds,
     hiddenPartIds,
     referenceQuery,
+    rulerMeasurements,
+    rulerTool,
+    rulerUnit,
+    rulerVisible,
     selectedPartIds,
     selectedReferenceIds,
     stepTreeRootShowMore,
@@ -2936,6 +2973,10 @@ export default function CadWorkspace({
     setDrawingStrokes(nextTab.drawingStrokes);
     setDrawingUndoStack(nextTab.drawingUndoStack);
     setDrawingRedoStack(nextTab.drawingRedoStack);
+    setRulerTool(nextTab.rulerTool);
+    setRulerUnit(nextTab.rulerUnit);
+    setRulerMeasurements(nextTab.rulerMeasurements);
+    setRulerVisible(nextTab.rulerVisible);
     setSelectedKey(nextTab.key);
   }, [fileSheetSelectionKeyForTab]);
 
@@ -2970,6 +3011,10 @@ export default function CadWorkspace({
     setDrawingStrokes([]);
     setDrawingUndoStack([]);
     setDrawingRedoStack([]);
+    setRulerTool(RULER_TOOL.FEATURES);
+    setRulerUnit(RULER_UNIT.MM);
+    setRulerMeasurements([]);
+    setRulerVisible(true);
     setSelectedKey("");
   }, [setTabToolsOpen]);
 
@@ -3265,6 +3310,22 @@ export default function CadWorkspace({
   useEffect(() => {
     drawingStrokesRef.current = drawingStrokes;
   }, [drawingStrokes]);
+
+  useEffect(() => {
+    rulerMeasurementsRef.current = rulerMeasurements;
+  }, [rulerMeasurements]);
+
+  useEffect(() => {
+    tabToolModeRef.current = tabToolMode;
+  }, [tabToolMode]);
+
+  // Feature mode needs B-rep topology (STEP only); fall back to free-point
+  // distance when the active model has none, so the ruler stays usable.
+  useEffect(() => {
+    if (!isStepView && rulerTool === RULER_TOOL.FEATURES) {
+      setRulerTool(RULER_TOOL.DISTANCE);
+    }
+  }, [isStepView, rulerTool]);
 
   useEffect(() => {
     drawingUndoStackRef.current = drawingUndoStack;
@@ -5667,6 +5728,26 @@ export default function CadWorkspace({
     }
   }, [activateEntryTab, entryMap, isDesktop, writeCadParam]);
 
+  // The catalog entry whose model produced the currently-viewed `.gcode`, or null
+  // when the selection isn't a sliced toolpath (or its source model is gone).
+  // `gcodeSourceStl` maps the gcode back to its workspace-relative `.stl`; we
+  // re-find the entry that owns that STL — an STL entry (its own file) or a STEP
+  // entry whose sibling preview STL matches — so selecting it renders the model.
+  const gcodeSourceModelEntry = useMemo(() => {
+    const sourceStl = gcodeSourceStl(selectedEntry, catalogEntries);
+    if (!sourceStl) {
+      return null;
+    }
+    return catalogEntries.find((entry) => entryStlFile(entry) === sourceStl) ?? null;
+  }, [selectedEntry, catalogEntries]);
+
+  // Switch the viewer from a sliced gcode back to the model it was sliced from.
+  const handleViewSourceModel = useCallback(() => {
+    if (gcodeSourceModelEntry) {
+      handleSelectEntry(fileKey(gcodeSourceModelEntry));
+    }
+  }, [gcodeSourceModelEntry, handleSelectEntry]);
+
   // Clicking a file in the sidebar may target a NON-active project. Switch the
   // active project (chat session + 3D viewer follow it), then select the file
   // once that project's catalog has loaded. File keys are project-relative, so
@@ -6036,10 +6117,43 @@ export default function CadWorkspace({
 
   const handleSelectTabToolMode = useCallback((mode) => {
     setViewerAlertOpen(false);
-    const normalizedMode = mode === TAB_TOOL_MODE.DRAW ? TAB_TOOL_MODE.DRAW : TAB_TOOL_MODE.REFERENCES;
-    setTabToolMode(normalizedMode);
+    const normalizedMode = mode === TAB_TOOL_MODE.DRAW
+      ? TAB_TOOL_MODE.DRAW
+      : mode === TAB_TOOL_MODE.RULER
+        ? TAB_TOOL_MODE.RULER
+        : TAB_TOOL_MODE.REFERENCES;
+    // The ruler has no Select button on mesh-only views, so clicking the active
+    // Measure button must turn it back off — otherwise there is no way out.
+    const wasRulerActive = tabToolModeRef.current === TAB_TOOL_MODE.RULER;
+    const nextMode =
+      normalizedMode === TAB_TOOL_MODE.RULER && wasRulerActive
+        ? TAB_TOOL_MODE.REFERENCES
+        : normalizedMode;
+    setTabToolMode(nextMode);
     if (normalizedMode === TAB_TOOL_MODE.DRAW && drawingTool === DRAWING_TOOL.SURFACE_LINE) {
       setDrawingTool(DRAWING_TOOL.FREEHAND);
+    }
+    // Deselecting the measure tool wipes its measurements (mirroring the draw
+    // cleanup below) so the viewer is clean. Only the explicit deselect actions
+    // (Measure toggle, Select) reach here; part/tab switches use setTabToolMode
+    // directly and keep their saved measurements.
+    if (
+      wasRulerActive &&
+      nextMode !== TAB_TOOL_MODE.RULER &&
+      rulerMeasurementsRef.current.length
+    ) {
+      setRulerMeasurements([]);
+    }
+    // Deselecting the draw tool wipes the marks (and their history + any open
+    // popover) so the viewer is clean. Only the explicit deselect actions (Draw
+    // toggle, Esc, Select) reach here; part/tab switches use setTabToolMode
+    // directly and keep their saved strokes.
+    if (normalizedMode === TAB_TOOL_MODE.REFERENCES && drawingStrokesRef.current.length) {
+      drawingStrokesRef.current = [];
+      setDrawingStrokes([]);
+      setDrawingUndoStack([]);
+      setDrawingRedoStack([]);
+      setActiveRegionNote(null);
     }
   }, [drawingTool]);
 
@@ -6180,6 +6294,42 @@ export default function CadWorkspace({
     }
   }, [fileRevealAvailable]);
 
+  // Open the inline note editor anchored to a region's badge. Best-effort: it
+  // needs the live overlay rect (so it lines up with the baked badge); if the
+  // viewer isn't mounted yet we just skip the popover, the region is still sent.
+  const openRegionNotePopover = useCallback((stroke, strokes) => {
+    const rect = viewerRef.current?.getDrawingCanvasRect?.();
+    if (!rect) {
+      return;
+    }
+    const anchorPx = regionBadgePixelAnchor(stroke, rect.width, rect.height);
+    if (!anchorPx) {
+      return;
+    }
+    const number = regionStrokes(strokes).findIndex((entry) => entry.id === stroke.id) + 1;
+    // Pre-fill with a shape-aware suggestion ("Improve the detail inside the
+    // circle."), unless the region already carries a note the user typed.
+    const existingNote = typeof stroke.note === "string" ? stroke.note.trim() : "";
+    setActiveRegionNote({
+      strokeId: stroke.id,
+      number,
+      initialNote: existingNote || buildDrawingSuggestionText([stroke]),
+      anchor: { left: rect.left + anchorPx[0], top: rect.top + anchorPx[1] },
+    });
+  }, []);
+
+  const handleSetRegionNote = useCallback((strokeId, text) => {
+    // A note is metadata, not a shape edit — write it straight onto the stroke
+    // (no undo entry) and keep the ref in sync for the overlay/capture path.
+    const next = drawingStrokesRef.current.map((stroke) =>
+      stroke.id === strokeId ? { ...stroke, note: String(text || "") } : stroke,
+    );
+    drawingStrokesRef.current = next;
+    setDrawingStrokes(next);
+  }, []);
+
+  const handleCloseRegionNote = useCallback(() => setActiveRegionNote(null), []);
+
   const handleDrawingStrokesChange = useCallback((nextStrokes) => {
     const normalized = cloneDrawingStrokes(nextStrokes);
     const current = drawingStrokesRef.current;
@@ -6189,7 +6339,55 @@ export default function CadWorkspace({
     setDrawingUndoStack((history) => [...history, cloneDrawingStrokes(current)]);
     setDrawingRedoStack([]);
     setDrawingStrokes(normalized);
-  }, []);
+    // A freshly drawn highlight (circle, rectangle, or freehand loop) opens the
+    // suggestion popover. Guard on an absent note so undo→redo of an already-sent
+    // highlight doesn't reopen. Circles/rectangles are numbered regions; freehand
+    // gets the popover too but no baked badge number.
+    const previousIds = new Set(current.map((stroke) => stroke.id));
+    const addedHighlight = normalized.find(
+      (stroke) =>
+        (isRegionStroke(stroke) || stroke.tool === DRAWING_TOOL.FREEHAND) &&
+        !previousIds.has(stroke.id) &&
+        !stroke.note,
+    );
+    if (addedHighlight) {
+      openRegionNotePopover(addedHighlight, normalized);
+    }
+  }, [openRegionNotePopover]);
+
+  // Dismiss the note popover if its region is gone — erased, undone, cleared, or
+  // wiped because the camera moved (strokes are screen-space, so an orbit clears
+  // them). Keeps a stale editor from floating over an empty viewport.
+  useEffect(() => {
+    if (activeRegionNote && !drawingStrokes.some((stroke) => stroke.id === activeRegionNote.strokeId)) {
+      setActiveRegionNote(null);
+    }
+  }, [drawingStrokes, activeRegionNote]);
+
+  // Esc leaves draw mode — but if the suggestion popover is open, the first Esc
+  // just closes it (its own handler marks the event handled, so we skip). Also
+  // skips while typing in a field so it never interrupts the chat composer.
+  useEffect(() => {
+    if (!drawModeActive) {
+      return undefined;
+    }
+    const handleEscape = (event) => {
+      if (event.key !== "Escape" || event.defaultPrevented) {
+        return;
+      }
+      if (activeRegionNote) {
+        setActiveRegionNote(null);
+        return;
+      }
+      const tag = String(event.target?.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || event.target?.isContentEditable) {
+        return;
+      }
+      handleSelectTabToolMode("references");
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [drawModeActive, activeRegionNote, handleSelectTabToolMode]);
 
   const handleSelectDrawingTool = useCallback((tool) => {
     setTabToolMode(TAB_TOOL_MODE.DRAW);
@@ -6228,6 +6426,76 @@ export default function CadWorkspace({
     setDrawingRedoStack([]);
     setDrawingStrokes([]);
   }, []);
+
+  const handleSelectRulerTool = useCallback((tool) => {
+    setTabToolMode(TAB_TOOL_MODE.RULER);
+    setRulerTool(tool);
+  }, []);
+
+  const handleSelectRulerUnit = useCallback((unit) => {
+    setRulerUnit(unit);
+  }, []);
+
+  const handleToggleRulerVisible = useCallback(() => {
+    setRulerVisible((visible) => !visible);
+  }, []);
+
+  const handleDeactivateRulerTool = useCallback(() => {
+    setTabToolMode(TAB_TOOL_MODE.REFERENCES);
+    // Leaving the measure tool clears every measurement it created.
+    if (rulerMeasurementsRef.current.length) {
+      setRulerMeasurements([]);
+    }
+  }, []);
+
+  const handleRulerMeasurementsChange = useCallback((nextMeasurements) => {
+    const normalized = cloneRulerMeasurements(nextMeasurements);
+    if (rulerMeasurementsEqual(rulerMeasurementsRef.current, normalized)) {
+      return;
+    }
+    setRulerMeasurements(normalized);
+  }, []);
+
+  const handleClearRulerMeasurements = useCallback(() => {
+    if (!rulerMeasurementsRef.current.length) {
+      return;
+    }
+    setRulerMeasurements([]);
+  }, []);
+
+  const handleRemoveRulerMeasurement = useCallback((id) => {
+    const targetId = String(id || "");
+    setRulerMeasurements((current) => current.filter((measurement) => measurement.id !== targetId));
+  }, []);
+
+  const handleCopyRulerMeasurement = useCallback((measurement) => {
+    if (!measurement || typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+      return;
+    }
+    const components = Array.isArray(measurement.components) ? measurement.components : [];
+    let text;
+    switch (measurement.tool) {
+      case RULER_TOOL.ANGLE:
+        text = `Angle: ${formatAngle(measurement.value)}`;
+        break;
+      case RULER_TOOL.DIAMETER:
+        text = `Diameter: ${formatLength(measurement.value, rulerUnit)} (radius ${formatLength(components[0] || measurement.value / 2, rulerUnit)})`;
+        break;
+      case RULER_TOOL.WALL_THICKNESS:
+        text = `Wall thickness: ${formatLength(measurement.value, rulerUnit)}`;
+        break;
+      case RULER_TOOL.BOUNDING_BOX:
+        text = `Bounding box: ${formatLength(components[0] || 0, rulerUnit)} × ${formatLength(components[1] || 0, rulerUnit)} × ${formatLength(components[2] || 0, rulerUnit)}`;
+        break;
+      default:
+        text = `Distance: ${formatLength(measurement.value, rulerUnit)}\nΔX: ${formatLength(components[0] || 0, rulerUnit)}  ΔY: ${formatLength(components[1] || 0, rulerUnit)}  ΔZ: ${formatLength(components[2] || 0, rulerUnit)}`;
+        break;
+    }
+    navigator.clipboard.writeText(text).then(
+      () => setCopyStatus("Copied measurement"),
+      () => setCopyStatus("Clipboard write failed")
+    );
+  }, [rulerUnit]);
 
   const handlePerspectiveChange = useCallback((nextPerspective) => {
     const normalizedPerspective = clonePerspectiveSnapshot(nextPerspective);
@@ -6312,6 +6580,71 @@ export default function CadWorkspace({
       setScreenshotStatus(captureError instanceof Error ? captureError.message : "Clipboard copy failed");
     }
   }, [selectedEntry]);
+
+  // Bridge the annotated viewport into the chat composer: capture the same
+  // composite the screenshot tools produce (render + drawing overlay), wrap it
+  // as a chat image attachment, and queue it. The chip then shows in the
+  // always-visible chat sidebar; we focus the composer so the user can type the
+  // instruction for the highlighted area ("improve this", "add vents", …).
+  const handleSendDrawingToChat = useCallback(async (textOverride) => {
+    if (!selectedEntry) {
+      return;
+    }
+    if (!viewerRef.current?.captureScreenshot) {
+      setScreenshotStatus("CAD Viewer not ready");
+      return;
+    }
+    const pending = getChatState().pendingAttachments?.length || 0;
+    if (pending >= MAX_ATTACHMENTS) {
+      setCopyStatus("");
+      setScreenshotStatus(`Up to ${MAX_ATTACHMENTS} images per message`);
+      return;
+    }
+    try {
+      const blob = await viewerRef.current.captureScreenshot({ mode: "blob" });
+      const name = `highlight-${fileKey(selectedEntry).replace(/[^a-zA-Z0-9._-]+/g, "-")}.png`;
+      const file = typeof File === "function"
+        ? new File([blob], name, { type: blob.type || "image/png" })
+        : blob;
+      addPendingAttachment(await blobToAttachment(file, { name }));
+      // Tell the model *where* the highlight is (frame region + camera), to ride
+      // alongside the image. Best-effort: a missing perspective just omits it.
+      const perspective = viewerRef.current.getPerspective?.() || null;
+      const contextNote = buildHighlightContextNote({
+        strokes: drawingStrokesRef.current,
+        perspective,
+      });
+      setPendingViewContext(contextNote);
+      // Pre-fill the composer: the popover passes its edited text; the toolbar
+      // button passes its click event (ignored), so we fall back to a shape-aware
+      // suggestion. The prefill event focuses too, so the bare focus is just the
+      // fallback when there's nothing to suggest.
+      const override = typeof textOverride === "string" ? textOverride.trim() : "";
+      const suggestion = override || buildDrawingSuggestionText(drawingStrokesRef.current);
+      if (suggestion) {
+        window.dispatchEvent(new CustomEvent(PREFILL_CHAT_INPUT_EVENT, { detail: { text: suggestion } }));
+      } else {
+        window.dispatchEvent(new Event(FOCUS_CHAT_INPUT_EVENT));
+      }
+      // The marks are now baked into the attached screenshot — clear them so the
+      // canvas is fresh for the next highlight (undoable if they want them back).
+      handleClearDrawings();
+      setCopyStatus("");
+      setScreenshotStatus("Attached highlighted view to chat");
+    } catch (captureError) {
+      setCopyStatus("");
+      setScreenshotStatus(captureError instanceof Error ? captureError.message : "Could not attach view to chat");
+    }
+  }, [selectedEntry, handleClearDrawings]);
+
+  // "Send to AI" from the region popover: persist the edited text as the region
+  // note (so it also rides in the model-facing context), close the popover, then
+  // attach the annotated view + that text to the composer.
+  const handleSendRegionToChat = useCallback((strokeId, text) => {
+    handleSetRegionNote(strokeId, text);
+    setActiveRegionNote(null);
+    void handleSendDrawingToChat(text);
+  }, [handleSetRegionNote, handleSendDrawingToChat]);
 
   const handleSlicePlate = useCallback(async () => {
     // Slice the STL the user is currently viewing. Non-STL selections don't
@@ -6719,6 +7052,7 @@ export default function CadWorkspace({
   });
   const selectionToolActive = effectiveRenderFormat === RENDER_FORMAT.STEP && tabToolMode === TAB_TOOL_MODE.REFERENCES;
   const drawToolActive = drawModeActive;
+  const rulerToolActive = rulerModeActive;
   const selectionCount = selectionCountBase;
   const activeReferenceTreeNodeId = useMemo(() => {
     const activeReferenceId = String(selectedReferenceIds[selectedReferenceIds.length - 1] || "").trim();
@@ -6819,6 +7153,13 @@ export default function CadWorkspace({
     { id: DRAWING_TOOL.FILL, label: "Fill", Icon: PaintBucket },
     { id: DRAWING_TOOL.ERASE, label: "Erase", Icon: Eraser }
   ];
+  const rulerToolOptions = [
+    { id: RULER_TOOL.FEATURES, label: "Features", stepOnly: true },
+    { id: RULER_TOOL.DISTANCE, label: "Distance" },
+    { id: RULER_TOOL.ANGLE, label: "Angle" },
+    { id: RULER_TOOL.WALL_THICKNESS, label: "Wall thickness" },
+    { id: RULER_TOOL.BOUNDING_BOX, label: "Bounding box" }
+  ];
   const renderDisplaySettings = isStepView ? displaySettings : null;
   const selectedStepEdgeAvailability =
     selectedDisplayEdgeRuntime?.edgeRendering ||
@@ -6895,6 +7236,13 @@ export default function CadWorkspace({
           drawingTool={drawingTool}
           drawingStrokes={drawingStrokes}
           handleDrawingStrokesChange={handleDrawingStrokesChange}
+          rulerToolActive={rulerToolActive}
+          rulerTool={rulerTool}
+          rulerUnit={rulerUnit}
+          rulerMeasurements={rulerMeasurements}
+          rulerVisible={rulerVisible}
+          handleRulerMeasurementsChange={handleRulerMeasurementsChange}
+          handleDeactivateRulerTool={handleDeactivateRulerTool}
           handlePerspectiveChange={handlePerspectiveChange}
           handleModelHoverChange={handleModelHoverChange}
           handleModelReferenceActivate={handleModelReferenceActivate}
@@ -6971,6 +7319,15 @@ export default function CadWorkspace({
                 </div>
               ) : null}
 
+              {/* Git-tag-style model save-states. Sits just right of the Models
+                  toggle, shown only when a model is on screen — "I like this,
+                  save it before I keep prompting." */}
+              {!previewMode && currentProjectId && selectedEntry ? (
+                <div className="pointer-events-auto absolute left-[3.625rem] top-3.5 z-20">
+                  <SavedStates projectId={currentProjectId} />
+                </div>
+              ) : null}
+
               <FloatingToolBar
                 previewMode={previewMode}
                 selectedEntry={selectedEntry}
@@ -6994,9 +7351,22 @@ export default function CadWorkspace({
                 handleUndoDrawing={handleUndoDrawing}
                 handleRedoDrawing={handleRedoDrawing}
                 handleClearDrawings={handleClearDrawings}
+                handleSendDrawingToChat={handleSendDrawingToChat}
                 canUndoDrawing={canUndoDrawing}
                 canRedoDrawing={canRedoDrawing}
                 drawingStrokes={drawingStrokes}
+                rulerToolActive={rulerToolActive}
+                rulerToolOptions={rulerToolOptions}
+                rulerTool={rulerTool}
+                rulerUnit={rulerUnit}
+                rulerMeasurements={rulerMeasurements}
+                rulerVisible={rulerVisible}
+                handleSelectRulerTool={handleSelectRulerTool}
+                handleSelectRulerUnit={handleSelectRulerUnit}
+                handleToggleRulerVisible={handleToggleRulerVisible}
+                handleClearRulerMeasurements={handleClearRulerMeasurements}
+                handleRemoveRulerMeasurement={handleRemoveRulerMeasurement}
+                handleCopyRulerMeasurement={handleCopyRulerMeasurement}
                 handleEnterPreviewMode={handleEnterPreviewMode}
                 handleScreenshotCopy={handleScreenshotCopy}
                 handleScreenshotDownload={handleScreenshotDownload}
@@ -7015,11 +7385,25 @@ export default function CadWorkspace({
                 printing={printing || Boolean(monitoredPrinterId)}
                 printLabel={printButtonLabel(printing, printJob, bambuStudioSelected, openTargetAppLabel(openTarget))}
                 handlePrint={handlePrint}
+                canViewSourceModel={Boolean(gcodeSourceModelEntry)}
+                handleViewSourceModel={handleViewSourceModel}
                 canOpenInStudio={selectedEntrySourceFormat === RENDER_FORMAT.STL}
                 openingInStudio={openingInStudio}
                 openInStudioLabel={openingInStudio ? "Opening…" : `Open in ${openTargetAppLabel(openTarget)}`}
                 handleOpenInStudio={handleOpenInStudio}
               />
+
+              {drawToolActive && activeRegionNote ? (
+                <RegionNotePopover
+                  key={activeRegionNote.strokeId}
+                  number={activeRegionNote.number}
+                  initialNote={activeRegionNote.initialNote}
+                  anchor={activeRegionNote.anchor}
+                  onSave={(text) => handleSetRegionNote(activeRegionNote.strokeId, text)}
+                  onSend={(text) => handleSendRegionToChat(activeRegionNote.strokeId, text)}
+                  onClose={handleCloseRegionNote}
+                />
+              ) : null}
 
               <ViewerLoadingOverlay
                 viewerLoading={effectiveViewerLoading}

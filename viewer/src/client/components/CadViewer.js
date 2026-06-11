@@ -110,7 +110,18 @@ import {
   REFERENCE_SELECTED_FILL_OPACITY
 } from "cadjs/lib/viewer/referenceGeometry";
 import { buildRuntimeInitializationAlert } from "cadjs/lib/viewer/webglSupport";
-import { DRAWING_TOOL, RENDER_FORMAT } from "@/workbench/constants";
+import { DRAWING_TOOL, RENDER_FORMAT, RULER_TOOL } from "@/workbench/constants";
+import {
+  buildMeasurementObjects,
+  buildPointMarkers,
+  measurementLabelAnchor
+} from "cadjs/lib/viewer/rulerScene";
+import { formatAngle, formatLength } from "cadjs/lib/viewer/rulerGeometry";
+import {
+  extractFeature,
+  measureFeatureIntrinsic,
+  measureFeaturePair
+} from "cadjs/lib/viewer/rulerFeatures";
 import {
   getEnvironmentPresetById,
   THEME_FLOOR_MODES,
@@ -119,6 +130,7 @@ import {
 import ViewPlaneControl from "./viewer/ViewPlaneControl";
 import { useViewerDrawingOverlay } from "./viewer/hooks/useViewerDrawingOverlay";
 import { useViewerPicking } from "./viewer/hooks/useViewerPicking";
+import { useViewerRulerOverlay } from "./viewer/hooks/useViewerRulerOverlay";
 import { useViewerRuntime } from "./viewer/hooks/useViewerRuntime";
 import { normalizeViewerRenderState } from "./viewer/renderState";
 import {
@@ -969,6 +981,39 @@ function updateGridHelper(
   });
 }
 
+function formatMeasurementLabel(measurement, unit) {
+  const components = Array.isArray(measurement?.components) ? measurement.components : [];
+  switch (measurement?.tool) {
+    case RULER_TOOL.ANGLE:
+      return formatAngle(measurement.value);
+    case RULER_TOOL.DIAMETER:
+      return `Ø ${formatLength(measurement.value, unit)}`;
+    case RULER_TOOL.BOUNDING_BOX:
+      return `${formatLength(components[0] || 0, unit)} × ${formatLength(components[1] || 0, unit)} × ${formatLength(components[2] || 0, unit)}`;
+    default:
+      return formatLength(measurement?.value || 0, unit);
+  }
+}
+
+const RULER_FEATURE_HIGHLIGHT_COLOR = "#38bdf8";
+
+const RULER_LABEL_STYLE = [
+  "position:absolute",
+  "left:0",
+  "top:0",
+  "white-space:nowrap",
+  "padding:2px 6px",
+  "border-radius:6px",
+  "font-size:11px",
+  "font-weight:600",
+  "line-height:1.2",
+  "color:#f8fafc",
+  "background:rgba(15,23,42,0.85)",
+  "border:1px solid rgba(148,163,184,0.45)",
+  "box-shadow:0 1px 4px rgba(0,0,0,0.35)",
+  "pointer-events:none"
+].join(";");
+
 const CadViewer = forwardRef(function CadViewer({
   meshData,
   modelKey,
@@ -1010,6 +1055,13 @@ const CadViewer = forwardRef(function CadViewer({
   drawingTool = DRAWING_TOOL.FREEHAND,
   drawingStrokes = [],
   onDrawingStrokesChange,
+  rulerEnabled = false,
+  rulerTool = RULER_TOOL.DISTANCE,
+  rulerUnit = "mm",
+  rulerMeasurements = [],
+  rulerVisible = true,
+  onRulerMeasurementsChange,
+  onDeactivateRuler,
   onPerspectiveChange,
   onHoverReferenceChange,
   onActivateReference,
@@ -1039,6 +1091,14 @@ const CadViewer = forwardRef(function CadViewer({
   const drawingDraftRef = useRef(null);
   const drawingStrokesRef = useRef(Array.isArray(drawingStrokes) ? drawingStrokes : []);
   const drawingChangeRef = useRef(onDrawingStrokesChange);
+  const rulerLabelLayerRef = useRef(null);
+  const rulerLabelEntriesRef = useRef([]);
+  const rulerMeasurementsRef = useRef(Array.isArray(rulerMeasurements) ? rulerMeasurements : []);
+  const rulerChangeRef = useRef(onRulerMeasurementsChange);
+  const rulerDraftChangeRef = useRef(null);
+  const [rulerDraft, setRulerDraft] = useState(null);
+  const rulerLockedFeatureRef = useRef(null);
+  const [rulerLockedReferenceId, setRulerLockedReferenceId] = useState("");
   const perspectiveChangeRef = useRef(onPerspectiveChange);
   const viewerAlertChangeRef = useRef(onViewerAlertChange);
   const stepModuleTransformDetectedChangeRef = useRef(onStepModuleTransformDetectedChange);
@@ -1611,8 +1671,13 @@ const CadViewer = forwardRef(function CadViewer({
       }
 
       renderDrawingOverlay();
+      // "blob" returns the composited PNG (render + annotation overlay) to the
+      // caller instead of downloading/copying it — used to attach the
+      // highlighted view to the chat. It wants an opaque background for the same
+      // reason clipboard does: a bare alpha PNG reads badly once embedded.
+      const wantsBackground = mode === "clipboard" || mode === "blob";
       const blobPromise = buildCompositeScreenshotBlob(runtime, drawingCanvasRef.current, {
-        backgroundColor: mode === "clipboard"
+        backgroundColor: wantsBackground
           ? resolveElementBackgroundColor(runtime.renderer.domElement)
           : "",
         crop: getViewportFrameCrop(runtime, viewportFrameInsetsRef.current)
@@ -1620,6 +1685,9 @@ const CadViewer = forwardRef(function CadViewer({
 
       if (mode === "clipboard") {
         return await copyImageBlobToClipboard(blobPromise);
+      }
+      if (mode === "blob") {
+        return await blobPromise;
       }
 
       const blob = await blobPromise;
@@ -1639,6 +1707,11 @@ const CadViewer = forwardRef(function CadViewer({
     },
     focusViewPreset(faceId) {
       return activateViewPlaneFace(faceId);
+    },
+    // Viewport-relative rect of the 2D drawing overlay, so the chat layer can
+    // anchor a per-region note popover in screen space. Null until mounted.
+    getDrawingCanvasRect() {
+      return drawingCanvasRef.current?.getBoundingClientRect() || null;
     }
   }), [modelKey, normalizedSceneScaleMode]);
 
@@ -1649,6 +1722,43 @@ const CadViewer = forwardRef(function CadViewer({
   useEffect(() => {
     drawingChangeRef.current = onDrawingStrokesChange;
   }, [onDrawingStrokesChange]);
+
+  useEffect(() => {
+    rulerChangeRef.current = onRulerMeasurementsChange;
+  }, [onRulerMeasurementsChange]);
+
+  useEffect(() => {
+    rulerMeasurementsRef.current = Array.isArray(rulerMeasurements) ? rulerMeasurements : [];
+  }, [rulerMeasurements]);
+
+  useEffect(() => {
+    rulerDraftChangeRef.current = setRulerDraft;
+  }, []);
+
+  // Re-project each measurement's 3D anchor to screen and move its DOM label.
+  // Runs on every camera change (orbit/zoom/pan) so labels track the model.
+  const repositionRulerLabels = useCallback(() => {
+    const runtime = runtimeRef.current;
+    const host = interactionHostRef.current;
+    const entries = rulerLabelEntriesRef.current;
+    if (!runtime?.THREE || !runtime?.camera || !host || !entries?.length) {
+      return;
+    }
+    const width = host.clientWidth || 1;
+    const height = host.clientHeight || 1;
+    const vector = new runtime.THREE.Vector3();
+    for (const entry of entries) {
+      vector.set(entry.anchor[0], entry.anchor[1], entry.anchor[2]).project(runtime.camera);
+      if (vector.z > 1 || vector.z < -1 || !Number.isFinite(vector.x) || !Number.isFinite(vector.y)) {
+        entry.el.style.display = "none";
+        continue;
+      }
+      entry.el.style.display = "";
+      const x = (vector.x + 1) * 0.5 * width;
+      const y = (1 - vector.y) * 0.5 * height;
+      entry.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -130%)`;
+    }
+  }, []);
 
   useEffect(() => {
     perspectiveChangeRef.current = onPerspectiveChange;
@@ -2815,6 +2925,98 @@ const CadViewer = forwardRef(function CadViewer({
     };
   }, [activeSelectorRuntime, drawingStrokes, displayEdgeSettings, pickableReferenceMap, viewerReadyTick, viewerTheme]);
 
+  // Build the ruler measurement geometry (lines/markers/wireframes) plus the DOM
+  // labels. The group lives directly under the scene (world frame) because
+  // measurement points are world-space raycast hits — edgesGroup/modelGroup
+  // carry the model-centering offset, so parenting there would double-apply it.
+  // Labels are positioned by repositionRulerLabels here and on every camera change.
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime?.THREE || !runtime?.scene) {
+      return undefined;
+    }
+    const { THREE, scene } = runtime;
+    if (!runtime.rulerGroup || runtime.rulerGroup.parent !== scene) {
+      runtime.rulerGroup = new THREE.Group();
+      runtime.rulerGroup.renderOrder = 30;
+      scene.add(runtime.rulerGroup);
+    }
+    const rulerGroup = runtime.rulerGroup;
+    const labelLayer = rulerLabelLayerRef.current;
+    clearOverlayGroup(runtime, rulerGroup);
+    rulerGroup.visible = true;
+    if (labelLayer) {
+      labelLayer.replaceChildren();
+    }
+
+    const labelEntries = [];
+    const measurements = rulerVisible && Array.isArray(rulerMeasurements) ? rulerMeasurements : [];
+    const lineWidth = Math.max(getEdgeThickness(displayEdgeSettings, viewerTheme) * 1.4, 2);
+
+    for (const measurement of measurements) {
+      for (const object of buildMeasurementObjects(runtime, measurement, { lineWidth })) {
+        if (object) {
+          rulerGroup.add(object);
+        }
+      }
+      const anchor = measurementLabelAnchor(measurement);
+      if (anchor && labelLayer) {
+        const label = document.createElement("div");
+        label.style.cssText = RULER_LABEL_STYLE;
+        label.textContent = formatMeasurementLabel(measurement, rulerUnit);
+        labelLayer.appendChild(label);
+        labelEntries.push({ el: label, anchor });
+      }
+    }
+
+    if (Array.isArray(rulerDraft?.points) && rulerDraft.points.length) {
+      for (const marker of buildPointMarkers(runtime, rulerDraft.points)) {
+        if (marker) {
+          rulerGroup.add(marker);
+        }
+      }
+    }
+
+    rulerGroup.visible = rulerGroup.children.length > 0;
+    rulerLabelEntriesRef.current = labelEntries;
+    repositionRulerLabels();
+    runtime.requestRender?.();
+
+    return () => {
+      clearOverlayGroup(runtime, rulerGroup);
+      if (rulerLabelLayerRef.current) {
+        rulerLabelLayerRef.current.replaceChildren();
+      }
+      rulerLabelEntriesRef.current = [];
+    };
+  }, [
+    displayEdgeSettings,
+    repositionRulerLabels,
+    rulerDraft,
+    rulerMeasurements,
+    rulerUnit,
+    rulerVisible,
+    viewerReadyTick,
+    viewerTheme
+  ]);
+
+  // Keep ruler labels glued to their anchors as the camera moves or the viewport
+  // resizes (the viewer renders on demand, so there is no continuous frame loop).
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime?.controls) {
+      return undefined;
+    }
+    const handleReposition = () => repositionRulerLabels();
+    runtime.controls.addEventListener("change", handleReposition);
+    window.addEventListener("resize", handleReposition);
+    repositionRulerLabels();
+    return () => {
+      runtime.controls.removeEventListener("change", handleReposition);
+      window.removeEventListener("resize", handleReposition);
+    };
+  }, [repositionRulerLabels, viewerReadyTick]);
+
   useEffect(() => {
     const runtime = runtimeRef.current;
     if (!runtime?.THREE || !runtime?.edgesGroup) {
@@ -3026,6 +3228,10 @@ const CadViewer = forwardRef(function CadViewer({
     if (normalizedHoveredReferenceId && !seenReferenceIds.has(normalizedHoveredReferenceId)) {
       orderedReferenceIds.push(normalizedHoveredReferenceId);
     }
+    const normalizedRulerLockedReferenceId = String(rulerLockedReferenceId || "").trim();
+    if (normalizedRulerLockedReferenceId && !seenReferenceIds.has(normalizedRulerLockedReferenceId)) {
+      orderedReferenceIds.push(normalizedRulerLockedReferenceId);
+    }
 
     for (const referenceId of orderedReferenceIds) {
       const topologyReference = pickableReferenceMap.get(referenceId) || activeSelectorRuntime?.referenceMap?.get(referenceId) || null;
@@ -3038,9 +3244,10 @@ const CadViewer = forwardRef(function CadViewer({
       }
 
       const isHovered = referenceId === normalizedHoveredReferenceId;
+      const isRulerLocked = referenceId === normalizedRulerLockedReferenceId;
       if (selectorType === "vertex") {
         const marker = buildVertexMarkerMesh(runtime, THREE, topologyReference, {
-          color: REFERENCE_CORNER_COLOR,
+          color: isRulerLocked ? RULER_FEATURE_HIGHLIGHT_COLOR : REFERENCE_CORNER_COLOR,
           opacity: isHovered ? 0.96 : 0.88,
         });
         if (marker) {
@@ -3049,7 +3256,7 @@ const CadViewer = forwardRef(function CadViewer({
         continue;
       }
 
-      const highlightColor = highlightEdgeColor;
+      const highlightColor = isRulerLocked ? RULER_FEATURE_HIGHLIGHT_COLOR : highlightEdgeColor;
 
       const linePositions = selectorType === "edge"
         ? buildEdgeLinePositionsFromProxy(activeSelectorRuntime, topologyReference)
@@ -3104,7 +3311,7 @@ const CadViewer = forwardRef(function CadViewer({
       clearOverlayGroup(runtime, highlightGroup);
       clearOverlayGroup(runtime, faceFillGroup);
     };
-  }, [activeSelectorRuntime, hoveredReferenceId, pickableReferenceMap, selectedReferenceIds, viewerReadyTick, viewerTheme, displayEdgeSettings]);
+  }, [activeSelectorRuntime, hoveredReferenceId, pickableReferenceMap, rulerLockedReferenceId, selectedReferenceIds, viewerReadyTick, viewerTheme, displayEdgeSettings]);
 
   useViewerDrawingOverlay({
     drawingCanvasRef,
@@ -3131,6 +3338,120 @@ const CadViewer = forwardRef(function CadViewer({
     drawingMinStrokeLengthPx: DRAWING_MIN_STROKE_LENGTH_PX
   });
 
+  // OrcaSlicer-style feature measurement (STEP): hover-highlight a face/edge,
+  // click two features, infer the measurement. Runs through the topology picking
+  // pipeline (pickMode stays AUTO; CadRenderPane routes the click here), so the
+  // free-point overlay is disabled in this mode to avoid double-handling clicks.
+  const rulerFeatureMode = rulerEnabled && rulerTool === RULER_TOOL.FEATURES && renderFormat === RENDER_FORMAT.STEP;
+  const rulerFreePointEnabled = rulerEnabled && !rulerFeatureMode;
+
+  const lookupReferenceFeature = (referenceId) => {
+    const reference = pickableReferenceMap.get(referenceId) ||
+      activeSelectorRuntime?.referenceMap?.get?.(referenceId) || null;
+    if (!reference) {
+      return null;
+    }
+    const edgePolyline = String(reference.selectorType || "") === "edge"
+      ? buildEdgeLinePositionsFromProxy(activeSelectorRuntime, reference)
+      : null;
+    const feature = extractFeature(reference, edgePolyline);
+    return feature ? { reference, feature } : null;
+  };
+
+  const commitRulerFeatureMeasurement = (result) => {
+    if (!result || !Array.isArray(result.points)) {
+      return;
+    }
+    const position = runtimeRef.current?.modelGroup?.position;
+    const offset = position ? [position.x, position.y, position.z] : [0, 0, 0];
+    const worldPoints = result.points.map((point) => [
+      point[0] + offset[0],
+      point[1] + offset[1],
+      point[2] + offset[2]
+    ]);
+    const current = Array.isArray(rulerMeasurementsRef.current) ? rulerMeasurementsRef.current : [];
+    rulerChangeRef.current?.([
+      ...current,
+      {
+        id: `measure-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9).toString(36)}`,
+        tool: result.tool,
+        points: worldPoints,
+        value: result.value,
+        components: result.components || [],
+        partId: String(result.partId || "")
+      }
+    ]);
+  };
+
+  const clearRulerLockedFeature = () => {
+    rulerLockedFeatureRef.current = null;
+    setRulerLockedReferenceId("");
+  };
+
+  const handleRulerFeatureActivate = (referenceId) => {
+    const hit = lookupReferenceFeature(referenceId);
+    if (!hit) {
+      return;
+    }
+    const locked = rulerLockedFeatureRef.current;
+    if (!locked) {
+      rulerLockedFeatureRef.current = { id: referenceId, feature: hit.feature };
+      setRulerLockedReferenceId(referenceId);
+      return;
+    }
+    if (locked.id === referenceId) {
+      commitRulerFeatureMeasurement(measureFeatureIntrinsic(hit.feature));
+      clearRulerLockedFeature();
+      return;
+    }
+    commitRulerFeatureMeasurement(measureFeaturePair(locked.feature, hit.feature));
+    clearRulerLockedFeature();
+  };
+
+  const handleRulerFeatureDoubleActivate = (referenceId) => {
+    const hit = lookupReferenceFeature(referenceId);
+    if (hit) {
+      commitRulerFeatureMeasurement(measureFeatureIntrinsic(hit.feature));
+    }
+    clearRulerLockedFeature();
+  };
+
+  useEffect(() => {
+    if (rulerFeatureMode) {
+      return undefined;
+    }
+    clearRulerLockedFeature();
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rulerFeatureMode]);
+
+  // Escape is two-stage: first cancel any in-progress measurement (a locked
+  // feature, or placed free-point draft), then — with nothing in progress —
+  // exit the Measure tool entirely. The free-point draft is cleared by the
+  // overlay hook's own Escape handler; here we just avoid exiting while it has
+  // points so a single press never both cancels and deactivates.
+  useEffect(() => {
+    if (!rulerEnabled || previewMode) {
+      return undefined;
+    }
+    const handleKeyDown = (event) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      if (rulerLockedFeatureRef.current) {
+        clearRulerLockedFeature();
+        return;
+      }
+      if (Array.isArray(rulerDraft?.points) && rulerDraft.points.length) {
+        return;
+      }
+      onDeactivateRuler?.();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rulerEnabled, previewMode, rulerDraft, onDeactivateRuler]);
+
   useViewerPicking({
     runtimeRef,
     mountRef: interactionHostRef,
@@ -3144,8 +3465,26 @@ const CadViewer = forwardRef(function CadViewer({
     pickableVertices: filteredPickableVertices,
     focusedPartId: focusedPartIds,
     onHoverReferenceChange,
-    onActivateReference,
-    onDoubleActivateReference,
+    onActivateReference: rulerFeatureMode
+      ? handleRulerFeatureActivate
+      : onActivateReference,
+    onDoubleActivateReference: rulerFeatureMode
+      ? handleRulerFeatureDoubleActivate
+      : onDoubleActivateReference,
+    viewerReadyTick
+  });
+
+  useViewerRulerOverlay({
+    runtimeRef,
+    hostRef: interactionHostRef,
+    sceneMountRef: mountRef,
+    rulerEnabled: rulerFreePointEnabled,
+    rulerTool,
+    previewMode,
+    selectorRuntime: activeSelectorRuntime,
+    rulerMeasurementsRef,
+    rulerChangeRef,
+    rulerDraftChangeRef,
     viewerReadyTick
   });
 
@@ -3170,6 +3509,11 @@ const CadViewer = forwardRef(function CadViewer({
             ? (drawingTool === DRAWING_TOOL.ERASE ? "cell" : drawingTool === DRAWING_TOOL.FILL ? "copy" : "crosshair")
             : "default"
         }}
+        aria-hidden="true"
+      />
+      <div
+        ref={rulerLabelLayerRef}
+        className="pointer-events-none absolute inset-0 z-10 overflow-hidden"
         aria-hidden="true"
       />
       <ViewPlaneControl

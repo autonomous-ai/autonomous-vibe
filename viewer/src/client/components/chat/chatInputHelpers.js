@@ -24,3 +24,9 @@ export const PLACEHOLDER_PROJECT_NAME = "New project";
 // textarea — the textarea's mount-time autoFocus doesn't re-fire when the
 // active project switches in place (e.g. new project from an already-empty one).
 export const FOCUS_CHAT_INPUT_EVENT = "panda:focus-chat-input";
+
+// Window CustomEvent ({ detail: { text } }) the viewer fires when sending a
+// drawing to the AI, to pre-fill the composer with a suggested instruction
+// (e.g. "Improve the detail inside the circle."). ChatInput fills only when the
+// box is empty, so it never clobbers something the user already typed.
+export const PREFILL_CHAT_INPUT_EVENT = "panda:prefill-chat-input";

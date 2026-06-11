@@ -43,6 +43,7 @@ function DesktopFloatingToolBar({
   handleUndoDrawing,
   handleRedoDrawing,
   handleClearDrawings,
+  handleSendDrawingToChat,
   canUndoDrawing,
   canRedoDrawing,
   drawingStrokes,
@@ -97,28 +98,33 @@ function DesktopFloatingToolBar({
     >
       <TooltipProvider delayDuration={250}>
         <div className={`pointer-events-auto inline-flex w-fit items-center gap-1 self-end rounded-md p-1 ${FLOATING_TOOL_BAR_SURFACE_CLASS}`}>
+          {/* Select needs B-rep topology, so it stays STEP-only (non-mesh). */}
           {!dxfMode && !robotMode && !meshOnlyMode && !gcodeMode ? (
-            <>
-              <ToolbarButton
-                label={selectLabel}
-                active={referenceSelectionDeferred ? false : selectionToolActive}
-                onClick={() => handleSelectTabToolMode("references")}
-                disabled={selectDisabled}
-                aria-pressed={referenceSelectionDeferred ? false : selectionToolActive}
-              >
-                <MousePointer2 className="size-3.5" strokeWidth={2} aria-hidden="true" />
-              </ToolbarButton>
+            <ToolbarButton
+              label={selectLabel}
+              active={referenceSelectionDeferred ? false : selectionToolActive}
+              onClick={() => handleSelectTabToolMode("references")}
+              disabled={selectDisabled}
+              aria-pressed={referenceSelectionDeferred ? false : selectionToolActive}
+            >
+              <MousePointer2 className="size-3.5" strokeWidth={2} aria-hidden="true" />
+            </ToolbarButton>
+          ) : null}
 
-              <ToolbarButton
-                label="Draw"
-                active={drawToolActive}
-                onClick={() => handleSelectTabToolMode("draw")}
-                disabled={viewerLoading || !selectedMeshData}
-                aria-pressed={drawToolActive}
-              >
-                <PenTool className="size-3.5" strokeWidth={2} aria-hidden="true" />
-              </ToolbarButton>
-            </>
+          {/* Draw is a screen-space overlay — works on STEP parts and raw
+              meshes (STL/OBJ/GLB), just not DXF / G-code / robot views. Toggles:
+              click again to leave draw mode (the only exit on meshes, where the
+              Select button is hidden). */}
+          {!dxfMode && !robotMode && !gcodeMode ? (
+            <ToolbarButton
+              label={drawToolActive ? "Done drawing" : "Draw"}
+              active={drawToolActive}
+              onClick={() => handleSelectTabToolMode(drawToolActive ? "references" : "draw")}
+              disabled={viewerLoading || !selectedMeshData}
+              aria-pressed={drawToolActive}
+            >
+              <PenTool className="size-3.5" strokeWidth={2} aria-hidden="true" />
+            </ToolbarButton>
           ) : null}
 
           {!dxfMode && !robotMode && !gcodeMode ? (
@@ -222,7 +228,7 @@ function DesktopFloatingToolBar({
         </div>
       ) : null}
 
-      {!dxfMode && !meshOnlyMode && drawToolActive ? (
+      {!dxfMode && !robotMode && !gcodeMode && drawToolActive ? (
         <DrawingToolbar
           className={CAD_WORKSPACE_TOOLBAR_DESKTOP_WIDTH_CLASS}
           drawingToolOptions={drawingToolOptions}
@@ -231,6 +237,7 @@ function DesktopFloatingToolBar({
           handleUndoDrawing={handleUndoDrawing}
           handleRedoDrawing={handleRedoDrawing}
           handleClearDrawings={handleClearDrawings}
+          handleSendDrawingToChat={handleSendDrawingToChat}
           canUndoDrawing={canUndoDrawing}
           canRedoDrawing={canRedoDrawing}
           drawingStrokes={drawingStrokes}

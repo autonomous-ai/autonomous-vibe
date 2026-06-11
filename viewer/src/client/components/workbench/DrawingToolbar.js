@@ -1,4 +1,4 @@
-import { Redo2, Trash2, Undo2 } from "lucide-react";
+import { Redo2, Sparkles, Trash2, Undo2 } from "lucide-react";
 import { cn } from "@/ui/utils";
 import { ScrollArea } from "../ui/scroll-area";
 import { TooltipProvider } from "../ui/tooltip";
@@ -14,6 +14,7 @@ export default function DrawingToolbar({
   handleUndoDrawing,
   handleRedoDrawing,
   handleClearDrawings,
+  handleSendDrawingToChat,
   canUndoDrawing,
   canRedoDrawing,
   drawingStrokes
@@ -24,6 +25,10 @@ export default function DrawingToolbar({
   const canUndo = canUndoDrawing;
   const canRedo = canRedoDrawing;
   const actionCount = drawingStrokes.length;
+  // Only meaningful once something is drawn: the button captures the annotated
+  // view and attaches it to the chat composer (wired in CadWorkspace). Hidden
+  // entirely when no send handler is supplied (e.g. the DXF/mesh toolbars).
+  const canSendToChat = typeof handleSendDrawingToChat === "function";
   const scrollLayout = layout === "scroll";
   const toolbarButtons = (
     <div
@@ -70,6 +75,16 @@ export default function DrawingToolbar({
       >
         <Trash2 className="size-3.5" strokeWidth={2} aria-hidden="true" />
       </ToolbarButton>
+
+      {canSendToChat ? (
+        <ToolbarButton
+          label="Send to AI"
+          onClick={handleSendDrawingToChat}
+          disabled={!actionCount}
+        >
+          <Sparkles className="size-3.5" strokeWidth={2} aria-hidden="true" />
+        </ToolbarButton>
+      ) : null}
     </div>
   );
 

@@ -14,7 +14,7 @@ import {
   useChatStore,
 } from "@/store/chat";
 import { useProjectsStore } from "@/store/projects.ts";
-import { buildSendValue, PLACEHOLDER_PROJECT_NAME } from "./chatInputHelpers";
+import { buildSendValue, PLACEHOLDER_PROJECT_NAME, PREFILL_CHAT_INPUT_EVENT } from "./chatInputHelpers";
 import { blobToAttachment, imageFilesFromDataTransfer, MAX_ATTACHMENTS } from "./attachments";
 
 export { buildSendValue };
@@ -194,6 +194,20 @@ function ChatInput({ className }, ref) {
       textareaRef.current?.focus();
     }
   }, [turnInProgress]);
+
+  // Pre-fill the composer with a suggested instruction when a drawing is sent to
+  // the AI — but only when the box is empty, so it never clobbers the user's own
+  // text. Then focus so they can edit or send straight away.
+  useEffect(() => {
+    const handlePrefill = (event) => {
+      const text = String(event?.detail?.text || "").trim();
+      if (!text) return;
+      setValue((prev) => (prev.trim() ? prev : text));
+      window.requestAnimationFrame?.(() => textareaRef.current?.focus());
+    };
+    window.addEventListener(PREFILL_CHAT_INPUT_EVENT, handlePrefill);
+    return () => window.removeEventListener(PREFILL_CHAT_INPUT_EVENT, handlePrefill);
+  }, []);
 
   const hasStrip = pendingTokens.length > 0 || pendingAttachments.length > 0;
 

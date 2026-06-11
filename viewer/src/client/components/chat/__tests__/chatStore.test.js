@@ -72,6 +72,103 @@ test("startTurn dispatches the user turn and consumes pending tokens", async () 
   }
 });
 
+test("startTurn appends the view-context note to the sent message but not the bubble", async () => {
+  resetChatStore();
+  setProject("proj-1");
+  dispatch({ type: "set_pending_view_context", note: "[Highlighted-view context: center.]" });
+
+  const calls = [];
+  const restore = __setTransportForTesting({
+    async chat_start_turn(req) {
+      calls.push(req);
+      return { turnId: "turn-ctx" };
+    },
+  });
+
+  try {
+    await startTurn("add vents here");
+    // Model sees text + context; the echoed user bubble keeps just the text.
+    assert.equal(
+      calls[0].userMessage,
+      "add vents here\n\n[Highlighted-view context: center.]",
+    );
+    const state = getChatState();
+    assert.equal(state.history[0].userText, "add vents here");
+    // Consumed on send so it can't leak into the next turn.
+    assert.equal(state.pendingViewContext, "");
+  } finally {
+    restore();
+    resetChatStore();
+  }
+});
+
+test("removing the last attachment clears a stale view-context note", () => {
+  resetChatStore();
+  dispatch({ type: "set_pending_view_context", note: "[ctx]" });
+  dispatch({ type: "add_pending_attachment", attachment: { id: "a1", name: "x.png" } });
+  dispatch({ type: "add_pending_attachment", attachment: { id: "a2", name: "y.png" } });
+
+  // Removing one of two attachments keeps the note (a highlight may remain).
+  dispatch({ type: "remove_pending_attachment", id: "a1" });
+  assert.equal(getChatState().pendingViewContext, "[ctx]");
+
+  // Removing the last one drops the now-orphaned note.
+  dispatch({ type: "remove_pending_attachment", id: "a2" });
+  assert.equal(getChatState().pendingViewContext, "");
+  resetChatStore();
+});
+
+test("startTurn injects the suggestion directive for a highlight sent with no text", async () => {
+  resetChatStore();
+  setProject("proj-1");
+  dispatch({ type: "set_pending_view_context", note: "[ctx]" });
+
+  const calls = [];
+  const restore = __setTransportForTesting({
+    async chat_start_turn(req) {
+      calls.push(req);
+      return { turnId: "turn-suggest" };
+    },
+  });
+
+  try {
+    // Empty composer + an attached highlight: the image satisfies the send guard.
+    await startTurn("", {
+      attachments: [{ name: "h.png", mediaType: "image/png", dataBase64: "AA==" }],
+    });
+    assert.match(calls[0].userMessage, /improvement options for/);
+    assert.match(calls[0].userMessage, /\[ctx\]/);
+  } finally {
+    restore();
+    resetChatStore();
+  }
+});
+
+test("startTurn omits the suggestion directive when the user typed an instruction", async () => {
+  resetChatStore();
+  setProject("proj-1");
+  dispatch({ type: "set_pending_view_context", note: "[ctx]" });
+
+  const calls = [];
+  const restore = __setTransportForTesting({
+    async chat_start_turn(req) {
+      calls.push(req);
+      return { turnId: "turn-typed" };
+    },
+  });
+
+  try {
+    await startTurn("add a fillet", {
+      attachments: [{ name: "h.png", mediaType: "image/png", dataBase64: "AA==" }],
+    });
+    assert.doesNotMatch(calls[0].userMessage, /improvement options for/);
+    assert.equal(calls[0].userMessage, "add a fillet\n\n[ctx]");
+  } finally {
+    restore();
+    resetChatStore();
+  }
+});
+
 test("startTurn refuses to dispatch when no project is selected", async () => {
   resetChatStore();
   const calls = [];

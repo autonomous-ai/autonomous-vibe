@@ -17,7 +17,8 @@ export { RENDER_FORMAT } from "cadjs/lib/fileFormats.js";
 
 export const TAB_TOOL_MODE = {
   REFERENCES: "references",
-  DRAW: "draw"
+  DRAW: "draw",
+  RULER: "ruler"
 };
 
 export const DRAWING_TOOL = {
@@ -30,4 +31,19 @@ export const DRAWING_TOOL = {
   CIRCLE: "circle",
   FILL: "fill",
   ERASE: "erase"
+};
+
+export const RULER_TOOL = {
+  FEATURES: "features",
+  DISTANCE: "distance",
+  ANGLE: "angle",
+  DIAMETER: "diameter",
+  WALL_THICKNESS: "wall-thickness",
+  BOUNDING_BOX: "bounding-box"
+};
+
+export const RULER_UNIT = {
+  MM: "mm",
+  CM: "cm",
+  INCH: "inch"
 };

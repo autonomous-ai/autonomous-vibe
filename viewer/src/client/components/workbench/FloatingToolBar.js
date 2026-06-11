@@ -4,7 +4,8 @@ import {
   Layers,
   MousePointer2,
   PenTool,
-  Printer
+  Printer,
+  Ruler
 } from "lucide-react";
 import { RENDER_FORMAT } from "@/workbench/constants";
 import {
@@ -13,6 +14,7 @@ import {
 } from "cadjs/lib/fileFormats";
 import { TooltipProvider } from "../ui/tooltip";
 import DrawingToolbar from "./DrawingToolbar";
+import RulerToolbar from "./RulerToolbar";
 import { ToolbarButton } from "./ToolbarButton";
 import { CAD_WORKSPACE_TOOLBAR_DESKTOP_WIDTH_CLASS } from "./ToolbarShell";
 
@@ -43,6 +45,18 @@ function DesktopFloatingToolBar({
   canUndoDrawing,
   canRedoDrawing,
   drawingStrokes,
+  rulerToolActive = false,
+  rulerToolOptions = [],
+  rulerTool,
+  rulerUnit,
+  rulerMeasurements = [],
+  rulerVisible = true,
+  handleSelectRulerTool,
+  handleSelectRulerUnit,
+  handleToggleRulerVisible,
+  handleClearRulerMeasurements,
+  handleRemoveRulerMeasurement,
+  handleCopyRulerMeasurement,
   canSlice = false,
   slicing = false,
   sliceLabel = "Slice plate",
@@ -62,6 +76,7 @@ function DesktopFloatingToolBar({
   const robotMode = isRobotRenderFormat(renderFormat);
   const meshOnlyMode = isMeshRenderFormat(renderFormat);
   const gcodeMode = renderFormat === RENDER_FORMAT.GCODE;
+  const stepMode = renderFormat === RENDER_FORMAT.STEP;
   const captureDisabled = viewerLoading || (dxfMode ? !selectedDxfData : !selectedMeshData);
   const selectDisabled = viewerLoading ||
     !selectedMeshData ||
@@ -100,6 +115,18 @@ function DesktopFloatingToolBar({
                 <PenTool className="size-3.5" strokeWidth={2} aria-hidden="true" />
               </ToolbarButton>
             </>
+          ) : null}
+
+          {!dxfMode && !robotMode && !gcodeMode ? (
+            <ToolbarButton
+              label="Measure"
+              active={rulerToolActive}
+              onClick={() => handleSelectTabToolMode("ruler")}
+              disabled={viewerLoading || !selectedMeshData}
+              aria-pressed={rulerToolActive}
+            >
+              <Ruler className="size-3.5" strokeWidth={2} aria-hidden="true" />
+            </ToolbarButton>
           ) : null}
 
           {!dxfMode && urdfMode ? (
@@ -187,6 +214,24 @@ function DesktopFloatingToolBar({
           canUndoDrawing={canUndoDrawing}
           canRedoDrawing={canRedoDrawing}
           drawingStrokes={drawingStrokes}
+        />
+      ) : null}
+
+      {!dxfMode && !robotMode && !gcodeMode && rulerToolActive ? (
+        <RulerToolbar
+          className={CAD_WORKSPACE_TOOLBAR_DESKTOP_WIDTH_CLASS}
+          rulerToolOptions={rulerToolOptions}
+          rulerTool={rulerTool}
+          rulerUnit={rulerUnit}
+          rulerMeasurements={rulerMeasurements}
+          rulerVisible={rulerVisible}
+          isStepView={stepMode}
+          handleSelectRulerTool={handleSelectRulerTool}
+          handleSelectRulerUnit={handleSelectRulerUnit}
+          handleToggleRulerVisible={handleToggleRulerVisible}
+          handleClearRulerMeasurements={handleClearRulerMeasurements}
+          handleRemoveRulerMeasurement={handleRemoveRulerMeasurement}
+          handleCopyRulerMeasurement={handleCopyRulerMeasurement}
         />
       ) : null}
     </div>

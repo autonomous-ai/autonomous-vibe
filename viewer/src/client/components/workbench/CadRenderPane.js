@@ -7,7 +7,7 @@ import { CircleAlert, X } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
 import { cn } from "@/ui/utils";
-import { RENDER_FORMAT } from "@/workbench/constants";
+import { RENDER_FORMAT, RULER_TOOL } from "@/workbench/constants";
 import {
   isMeshRenderFormat,
   isRobotRenderFormat,
@@ -93,6 +93,13 @@ export default function CadRenderPane({
   drawingTool,
   drawingStrokes,
   handleDrawingStrokesChange,
+  rulerToolActive = false,
+  rulerTool,
+  rulerUnit,
+  rulerMeasurements,
+  rulerVisible = true,
+  handleRulerMeasurementsChange,
+  handleDeactivateRulerTool,
   handlePerspectiveChange,
   handleModelHoverChange,
   handleModelReferenceActivate,
@@ -130,6 +137,16 @@ export default function CadRenderPane({
   const topologySelectionPending = Boolean(referenceSelectionPending && !dxfMode && !urdfMode && !pathPreviewMode);
   const topologySelectionUnavailable = Boolean(referenceSelectionUnavailable && !dxfMode && !urdfMode && !pathPreviewMode);
   const topologySelectionDeferred = Boolean(referenceSelectionDeferred && activeMeshData && !dxfMode && !urdfMode && !pathPreviewMode);
+  // Ruler works on STEP topology and raw meshes (STL); it is off for DXF, gcode,
+  // robot and implicit views. When active it suppresses topology selection so a
+  // measurement click does not also select/deselect a face.
+  const rulerActive = Boolean(rulerToolActive && !dxfMode && !gcodeMode && !urdfMode && !implicitMode);
+  // Feature mode keeps topology hover/pick ON (pickMode AUTO) and routes the click
+  // to the ruler; the free-point modes suppress picking entirely (pickMode NONE).
+  // Feature mode needs B-rep topology, so it is STEP-only.
+  const stepMode = renderFormat === RENDER_FORMAT.STEP;
+  const rulerFeatureMode = rulerActive && rulerTool === RULER_TOOL.FEATURES && stepMode;
+  const rulerFreePointMode = rulerActive && !rulerFeatureMode;
   const urdfPosePickerActive = Boolean(urdfPosePicker?.active);
   const urdfPosePickerPrompt = "Select target";
   const posePickerExitStyle = {
@@ -255,7 +272,7 @@ export default function CadRenderPane({
           viewportFrameInsets={viewportFrameInsets}
           isLoading={viewerLoading}
           pickMode={
-            urdfMode || pathPreviewMode || topologySelectionPending || topologySelectionUnavailable || topologySelectionDeferred
+            rulerFreePointMode || urdfMode || pathPreviewMode || topologySelectionPending || topologySelectionUnavailable || topologySelectionDeferred
               ? VIEWER_PICK_MODE.NONE
               : (!dxfMode && viewerMode === "assembly" ? VIEWER_PICK_MODE.ASSEMBLY : VIEWER_PICK_MODE.AUTO)
           }
@@ -277,10 +294,17 @@ export default function CadRenderPane({
           drawingTool={drawingTool}
           drawingStrokes={dxfMode || pathPreviewMode ? [] : drawingStrokes}
           onDrawingStrokesChange={handleDrawingStrokesChange}
+          rulerEnabled={rulerActive}
+          rulerTool={rulerTool}
+          rulerUnit={rulerUnit}
+          rulerMeasurements={dxfMode || gcodeMode || urdfMode ? EMPTY_LIST : rulerMeasurements}
+          rulerVisible={rulerVisible}
+          onRulerMeasurementsChange={handleRulerMeasurementsChange}
+          onDeactivateRuler={handleDeactivateRulerTool}
           onPerspectiveChange={handlePerspectiveChange}
           onHoverReferenceChange={handleModelHoverChange}
-          onActivateReference={handleModelReferenceActivate}
-          onDoubleActivateReference={handleModelReferenceDoubleActivate}
+          onActivateReference={rulerFreePointMode ? undefined : handleModelReferenceActivate}
+          onDoubleActivateReference={rulerFreePointMode ? undefined : handleModelReferenceDoubleActivate}
           onViewerAlertChange={handleViewerAlertChange}
           onStepModuleTransformDetectedChange={handleStepModuleTransformDetectedChange}
           urdfPosePicker={urdfPosePicker}

@@ -7,7 +7,7 @@ import { Input } from "../ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { getTransport } from "../../lib/transport.ts";
-import { noteRevert, useChatStore } from "../../store/chat.js";
+import { hydrateSession, noteRevert, useChatStore } from "../../store/chat.js";
 
 // Friendly "3m ago" / "2h ago" / date for older saves. Kept tiny + local — the
 // list is short and only ever shows a project's own save-states.
@@ -104,10 +104,17 @@ export default function SavedStates({ projectId }) {
       setBusyId(id);
       setError("");
       try {
-        const summary = await transport.snapshot_restore(projectId, id);
-        // Reload the viewer from the reverted files, then mark the chat.
+        const result = await transport.snapshot_restore(projectId, id);
+        // Reload the viewer from the reverted files.
         await refreshCadCatalog({ markRefreshing: true }).catch(() => {});
-        noteRevert(summary?.label || "saved state");
+        // If the save captured the conversation, the backend rewound the live
+        // Claude session to it — reload the chat panel from the restored
+        // transcript so it matches the reverted model. Then drop the marker so
+        // the rewound conversation ends with a clear "↩ Reverted to …" line.
+        if (result?.chatRewound) {
+          await hydrateSession(projectId).catch(() => {});
+        }
+        noteRevert(result?.summary?.label || "saved state");
         setConfirmingId("");
         setOpen(false);
       } catch (err) {

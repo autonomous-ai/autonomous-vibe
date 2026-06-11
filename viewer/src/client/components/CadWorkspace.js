@@ -5706,6 +5706,26 @@ export default function CadWorkspace({
     }
   }, [activateEntryTab, entryMap, isDesktop, writeCadParam]);
 
+  // The catalog entry whose model produced the currently-viewed `.gcode`, or null
+  // when the selection isn't a sliced toolpath (or its source model is gone).
+  // `gcodeSourceStl` maps the gcode back to its workspace-relative `.stl`; we
+  // re-find the entry that owns that STL — an STL entry (its own file) or a STEP
+  // entry whose sibling preview STL matches — so selecting it renders the model.
+  const gcodeSourceModelEntry = useMemo(() => {
+    const sourceStl = gcodeSourceStl(selectedEntry, catalogEntries);
+    if (!sourceStl) {
+      return null;
+    }
+    return catalogEntries.find((entry) => entryStlFile(entry) === sourceStl) ?? null;
+  }, [selectedEntry, catalogEntries]);
+
+  // Switch the viewer from a sliced gcode back to the model it was sliced from.
+  const handleViewSourceModel = useCallback(() => {
+    if (gcodeSourceModelEntry) {
+      handleSelectEntry(fileKey(gcodeSourceModelEntry));
+    }
+  }, [gcodeSourceModelEntry, handleSelectEntry]);
+
   // Clicking a file in the sidebar may target a NON-active project. Switch the
   // active project (chat session + 3D viewer follow it), then select the file
   // once that project's catalog has loaded. File keys are project-relative, so
@@ -7157,6 +7177,8 @@ export default function CadWorkspace({
                 printing={printing || Boolean(monitoredPrinterId)}
                 printLabel={printButtonLabel(printing, printJob, bambuStudioSelected, openTargetAppLabel(openTarget))}
                 handlePrint={handlePrint}
+                canViewSourceModel={Boolean(gcodeSourceModelEntry)}
+                handleViewSourceModel={handleViewSourceModel}
                 canOpenInStudio={selectedEntrySourceFormat === RENDER_FORMAT.STL}
                 openingInStudio={openingInStudio}
                 openInStudioLabel={openingInStudio ? "Opening…" : `Open in ${openTargetAppLabel(openTarget)}`}

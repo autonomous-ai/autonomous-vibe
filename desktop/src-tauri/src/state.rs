@@ -64,6 +64,13 @@ pub struct AppState {
     /// `app_panda_login`; consumed by the deep-link handler. `None` when no
     /// Panda sign-in is in progress.
     pending_panda_login: Mutex<Option<PendingPandaLogin>>,
+
+    /// Per-project "the model was reverted to <label>" notes. Set by
+    /// `snapshot_restore`, drained by the next `chat_start_turn` so the turn can
+    /// tell the model its files went back to a saved state — the append-only
+    /// Claude session otherwise still "remembers" the edits made after that
+    /// snapshot. Keyed by `projectId`.
+    pending_revert_notes: Mutex<HashMap<String, String>>,
 }
 
 impl AppState {
@@ -78,6 +85,7 @@ impl AppState {
             active_project: Mutex::new(None),
             login_pty_writer: Mutex::new(None),
             pending_panda_login: Mutex::new(None),
+            pending_revert_notes: Mutex::new(HashMap::new()),
         }
     }
 
@@ -183,6 +191,21 @@ impl AppState {
     /// fires for the matching arming.
     pub fn take_pending_panda_login(&self) -> Option<PendingPandaLogin> {
         self.pending_panda_login.lock().take()
+    }
+
+    /// Record that `project_id`'s model was reverted to the saved state `label`
+    /// (see [`pending_revert_notes`]). Overwrites any prior un-consumed note for
+    /// the project — the most recent revert is the one the next turn describes.
+    pub fn set_pending_revert_note(&self, project_id: &str, label: &str) {
+        self.pending_revert_notes
+            .lock()
+            .insert(project_id.to_string(), label.to_string());
+    }
+
+    /// Take and clear the pending revert note for `project_id`, if any. Called
+    /// once at the start of a chat turn.
+    pub fn take_pending_revert_note(&self, project_id: &str) -> Option<String> {
+        self.pending_revert_notes.lock().remove(project_id)
     }
 }
 

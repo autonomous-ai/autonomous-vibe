@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, Undo2 } from "lucide-react";
 import { cn } from "@/ui/utils";
 import ToolUseBlock from "./ToolUseBlock";
 import ArtifactBadge from "./ArtifactBadge";
@@ -103,6 +103,27 @@ function StatusLine({ turn }) {
 }
 
 export default memo(function ChatTurn({ turn, onOpenArtifact }) {
+  // A revert marker is its own kind of turn: a single centered, self-explaining
+  // line ("↩ Reverted to <label>"), not an assistant message bubble. Render it
+  // before the normal turn chrome so it stays visually distinct in the thread.
+  if (
+    turn.role === "assistant" &&
+    turn.blocks.length === 1 &&
+    turn.blocks[0].kind === "revert"
+  ) {
+    return (
+      <div
+        data-slot="chat-revert-marker"
+        className="flex items-center justify-center gap-1.5 py-0.5 text-xs text-muted-foreground"
+      >
+        <Undo2 className="size-3.5 shrink-0" aria-hidden />
+        <span>
+          Reverted to{" "}
+          <span className="font-medium text-foreground/80">{turn.blocks[0].label}</span>
+        </span>
+      </div>
+    );
+  }
   const isUser = turn.role === "user";
   const showModifyHint =
     !isUser &&

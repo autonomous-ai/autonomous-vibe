@@ -12,4 +12,5 @@ pub mod slicer;
 pub mod printer;
 pub mod cloud;
 pub mod project;
+pub mod snapshot;
 pub mod update;

@@ -1,10 +1,16 @@
-# Future work: model version control (deferred)
+# Model version control
 
-**Status:** deferred / removed (2026-06). A first implementation (per-build
-checkpoints + a "Start from here" restore that forked the Claude session) was
-built and then removed because it added more complexity than it was worth at
-this stage and didn't sit cleanly on top of Claude Code sessions. The auto-reload
-fix that shipped alongside it (versioned `?v=` mesh asset URLs, see
+**Status:** implemented (2026-06) as option 1 below — manual, git-tag-style
+"saved states." See `desktop/src-tauri/src/commands/snapshot.rs`, the
+`snapshot_*` IPC commands in `docs/panda-interfaces.md` §2, and the
+`SavedStates` floating control over the 3D view. The notes below are retained as
+the design rationale and a record of what was tried before.
+
+**Earlier status:** deferred / removed (2026-06). A first implementation
+(per-build checkpoints + a "Start from here" restore that forked the Claude
+session) was built and then removed because it added more complexity than it was
+worth at this stage and didn't sit cleanly on top of Claude Code sessions. The
+auto-reload fix that shipped alongside it (versioned `?v=` mesh asset URLs, see
 `docs/panda-interfaces.md` §2) is unrelated and was kept.
 
 ## The goal
@@ -32,7 +38,7 @@ were trying to remove.
 
 ## Design options for when we revisit
 
-1. **Linear "undo marker" (most promising).** Versions snapshot only the model.
+1. **Linear "undo marker" (IMPLEMENTED).** Versions snapshot only the model.
    Restore reverts the files and appends one clear line to the *same* ongoing
    conversation ("↩ Reverted to version N"); nothing is reloaded or hidden, and
    the session stays linear and append-only. All model versions remain

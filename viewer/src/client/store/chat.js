@@ -41,7 +41,11 @@ import { __setTransportForTesting, getTransport } from "../lib/transport.ts";
  * @property {string} plan
  * @property {"proposed"|"approved"|"superseded"} status
  *
- * @typedef {ChatTextBlock | ChatThinkingBlock | ChatToolUseBlock | ChatArtifactBlock | ChatErrorBlock | ChatPlanBlock} ChatBlock
+ * @typedef {Object} ChatRevertBlock
+ * @property {"revert"} kind
+ * @property {string} label
+ *
+ * @typedef {ChatTextBlock | ChatThinkingBlock | ChatToolUseBlock | ChatArtifactBlock | ChatErrorBlock | ChatPlanBlock | ChatRevertBlock} ChatBlock
  *
  * @typedef {Object} ChatTurn
  * @property {string} id
@@ -609,6 +613,22 @@ export function chatReducer(state, action, now = Date.now()) {
         })),
       };
     }
+    case "note_revert": {
+      // A model revert (snapshot restore) drops one self-explaining marker into
+      // the *same* linear conversation — nothing is reloaded or hidden. The
+      // backend already stashed a note so the next turn tells the model its
+      // files went back; this is the user-facing half. (Transient: it isn't in
+      // the session JSONL, so it won't reappear after a reload — by design.)
+      const marker = {
+        id: action.id,
+        role: "assistant",
+        blocks: [{ kind: "revert", label: action.label }],
+        status: "complete",
+        startedAt: action.at,
+        endedAt: action.at,
+      };
+      return { ...state, history: [...state.history, marker] };
+    }
     case "set_error":
       return { ...state, lastError: action.message };
     case "clear_panda_reauth":
@@ -931,6 +951,21 @@ export function setSelectedMeshFile(file) {
  */
 export function recordSlice(gcodeFile, gcode3mfFile = "") {
   dispatch({ type: "set_last_slice", gcodeFile, gcode3mfFile });
+}
+
+/**
+ * Drop a "↩ Reverted to <label>" marker into the active project's chat after a
+ * model save-state is restored. Keeps the conversation linear (see the
+ * `note_revert` reducer case and `docs/future-work-version-control.md`).
+ */
+export function noteRevert(label) {
+  const now = Date.now();
+  dispatch({
+    type: "note_revert",
+    label: String(label || "saved state"),
+    id: `revert-${now}`,
+    at: now,
+  });
 }
 
 export function setPendingTokens(tokens) {

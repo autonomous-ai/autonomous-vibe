@@ -2146,6 +2146,7 @@ export default function CadWorkspace({
   const drawingUndoStackRef = useRef(drawingUndoStack);
   const drawingRedoStackRef = useRef(drawingRedoStack);
   const rulerMeasurementsRef = useRef(rulerMeasurements);
+  const tabToolModeRef = useRef(tabToolMode);
   const viewerRef = useRef(null);
   const previewUiStateRef = useRef(null);
   const panelResizeStateRef = useRef(null);
@@ -3313,6 +3314,10 @@ export default function CadWorkspace({
   useEffect(() => {
     rulerMeasurementsRef.current = rulerMeasurements;
   }, [rulerMeasurements]);
+
+  useEffect(() => {
+    tabToolModeRef.current = tabToolMode;
+  }, [tabToolMode]);
 
   // Feature mode needs B-rep topology (STEP only); fall back to free-point
   // distance when the active model has none, so the ruler stays usable.
@@ -6119,13 +6124,25 @@ export default function CadWorkspace({
         : TAB_TOOL_MODE.REFERENCES;
     // The ruler has no Select button on mesh-only views, so clicking the active
     // Measure button must turn it back off — otherwise there is no way out.
-    setTabToolMode((current) =>
-      normalizedMode === TAB_TOOL_MODE.RULER && current === TAB_TOOL_MODE.RULER
+    const wasRulerActive = tabToolModeRef.current === TAB_TOOL_MODE.RULER;
+    const nextMode =
+      normalizedMode === TAB_TOOL_MODE.RULER && wasRulerActive
         ? TAB_TOOL_MODE.REFERENCES
-        : normalizedMode
-    );
+        : normalizedMode;
+    setTabToolMode(nextMode);
     if (normalizedMode === TAB_TOOL_MODE.DRAW && drawingTool === DRAWING_TOOL.SURFACE_LINE) {
       setDrawingTool(DRAWING_TOOL.FREEHAND);
+    }
+    // Deselecting the measure tool wipes its measurements (mirroring the draw
+    // cleanup below) so the viewer is clean. Only the explicit deselect actions
+    // (Measure toggle, Select) reach here; part/tab switches use setTabToolMode
+    // directly and keep their saved measurements.
+    if (
+      wasRulerActive &&
+      nextMode !== TAB_TOOL_MODE.RULER &&
+      rulerMeasurementsRef.current.length
+    ) {
+      setRulerMeasurements([]);
     }
     // Deselecting the draw tool wipes the marks (and their history + any open
     // popover) so the viewer is clean. Only the explicit deselect actions (Draw
@@ -6425,6 +6442,10 @@ export default function CadWorkspace({
 
   const handleDeactivateRulerTool = useCallback(() => {
     setTabToolMode(TAB_TOOL_MODE.REFERENCES);
+    // Leaving the measure tool clears every measurement it created.
+    if (rulerMeasurementsRef.current.length) {
+      setRulerMeasurements([]);
+    }
   }, []);
 
   const handleRulerMeasurementsChange = useCallback((nextMeasurements) => {

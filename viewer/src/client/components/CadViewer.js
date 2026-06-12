@@ -127,6 +127,7 @@ import {
   THEME_FLOOR_MODES,
   resolveThemeSettingsDisplayEdgeSettings
 } from "cadjs/lib/themeSettings";
+import { materializeRecordEffect } from "./viewer/materializeEffect";
 import ViewPlaneControl from "./viewer/ViewPlaneControl";
 import { useViewerDrawingOverlay } from "./viewer/hooks/useViewerDrawingOverlay";
 import { useViewerPicking } from "./viewer/hooks/useViewerPicking";
@@ -764,6 +765,135 @@ function stepCameraTransition(runtime, timestamp) {
   return true;
 }
 
+// Live build stage — "watch it take shape". When a freshly generated model is
+// applied to the scene during a build, it doesn't snap in: it sketches in as a
+// glowing wireframe (phase A) then skins over into the solid surface (phase B).
+// Driven per-frame from renderFrame, mirroring stepCameraTransition. Reuses the
+// existing per-record materials; the canonical applyPartVisualState restore at
+// completion returns everything to base, so the effect never leaves residue.
+const MATERIALIZE_DURATION_MS = 900;
+const MATERIALIZE_GLOW_COLOR = 0x5b9dff;
+const MATERIALIZE_GLOW_INTENSITY = 0.55;
+const MATERIALIZE_GHOST_OPACITY = 0.06;
+
+function startMaterialize(runtime, restoreState) {
+  const records = runtime?.displayRecords;
+  if (!runtime?.THREE || !Array.isArray(records) || records.length === 0) {
+    return false;
+  }
+  // Flip transparency once up front (a transparent-flag change forces a shader
+  // recompile) so the per-frame step only touches cheap opacity/emissive.
+  for (const record of records) {
+    if (record?.material) {
+      record.material.transparent = true;
+      record.material.needsUpdate = true;
+    }
+    if (record?.edgeMaterial) {
+      record.edgeMaterial.transparent = true;
+    }
+  }
+  runtime.materializeAnim = { startTime: performance.now(), durationMs: MATERIALIZE_DURATION_MS };
+  runtime.materializeRestoreState = restoreState || null;
+  // Deliberately NOT beginInteraction(): that would swap in the edgeless LOD
+  // proxy and hide the wireframe. Just schedule frames.
+  runtime.requestRender?.();
+  return true;
+}
+
+function stepMaterializeAnim(runtime, timestamp) {
+  const anim = runtime?.materializeAnim;
+  const records = runtime?.displayRecords;
+  if (!anim || !runtime?.THREE || !Array.isArray(records) || records.length === 0) {
+    if (anim) runtime.materializeAnim = null;
+    return false;
+  }
+  const durationMs = Math.max(anim.durationMs, 1);
+  const progress = clamp((timestamp - anim.startTime) / durationMs, 0, 1);
+  const glowColor = runtime.materializeGlowColor
+    || (runtime.materializeGlowColor = new runtime.THREE.Color(MATERIALIZE_GLOW_COLOR));
+
+  for (const record of records) {
+    if (!record?.mesh || !record?.material) {
+      continue;
+    }
+    const baseOpacity = Number.isFinite(Number(record.baseOpacity)) ? Number(record.baseOpacity) : 1;
+    const { glow, surfaceOpacity, edgeOpacity } = materializeRecordEffect(
+      progress,
+      baseOpacity,
+      MATERIALIZE_GHOST_OPACITY
+    );
+    record.material.opacity = surfaceOpacity;
+    if ("emissive" in record.material && record.material.emissive) {
+      record.material.emissive.copy(glowColor);
+      record.material.emissiveIntensity = MATERIALIZE_GLOW_INTENSITY * glow;
+    }
+    if (record.edges && record.edgeMaterial) {
+      // Edges read strongest during the sketch phase, then fade as the surface
+      // fills; the restore re-applies the real showEdges policy at the end.
+      record.edges.visible = true;
+      record.edgeMaterial.color?.set?.(glowColor);
+      if (Number.isFinite(record.edgeMaterial.opacity)) {
+        record.edgeMaterial.opacity = edgeOpacity;
+      }
+    }
+  }
+
+  if (progress >= 1) {
+    runtime.materializeAnim = null;
+    // Canonical restore: surfaces/edges return to base, edge visibility follows
+    // the real showEdges policy, transparency is re-derived. Same call the
+    // viewer already uses to re-sync part visuals elsewhere.
+    if (runtime.materializeRestoreState) {
+      applyPartVisualState(runtime.THREE, records, runtime.materializeRestoreState);
+    }
+    runtime.materializeRestoreState = null;
+    runtime.scheduleIdleQuality?.();
+    return false;
+  }
+  return true;
+}
+
+// Live build stage — "breathing glow". While a build turn is still running and
+// a model is on screen, its surfaces gently pulse an emissive cyan so the model
+// visibly reads as "being worked on" the whole time, not just at the moment it
+// landed. Continuous and edge-independent (works on plain STL). Hands off with
+// the one-shot materialize: while a materialize is mid-flight it owns the
+// materials and the pulse stands down, then resumes.
+const BUILD_PULSE_COLOR = 0x5b9dff;
+const BUILD_PULSE_PERIOD_MS = 1800;
+const BUILD_PULSE_MIN = 0.04;
+const BUILD_PULSE_MAX = 0.24;
+
+function stepBuildPulse(runtime, timestamp) {
+  if (!runtime?.buildPulseActive) {
+    return false;
+  }
+  const records = runtime?.displayRecords;
+  if (!runtime?.THREE || !Array.isArray(records) || records.length === 0) {
+    // No model yet (pre-artifact blueprint phase) — idle, don't burn frames.
+    return false;
+  }
+  // Materialize owns the materials during its window; keep the loop alive so the
+  // pulse resumes the instant it finishes.
+  if (runtime.materializeAnim) {
+    return true;
+  }
+  const glow = runtime.buildPulseColor
+    || (runtime.buildPulseColor = new runtime.THREE.Color(BUILD_PULSE_COLOR));
+  const phase = (timestamp % BUILD_PULSE_PERIOD_MS) / BUILD_PULSE_PERIOD_MS;
+  const wave = 0.5 - 0.5 * Math.cos(2 * Math.PI * phase); // smooth 0→1→0 breathing
+  const intensity = BUILD_PULSE_MIN + ((BUILD_PULSE_MAX - BUILD_PULSE_MIN) * wave);
+  for (const record of records) {
+    const mat = record?.material;
+    if (!mat || !("emissive" in mat) || !mat.emissive) {
+      continue;
+    }
+    mat.emissive.copy(glow);
+    mat.emissiveIntensity = intensity;
+  }
+  return true;
+}
+
 function transitionCameraToViewPreset(runtime, preset) {
   if (
     !runtime?.THREE ||
@@ -1026,6 +1156,8 @@ const CadViewer = forwardRef(function CadViewer({
   themeSettings = null,
   floorModeOverride = "",
   previewMode = false,
+  materializeOnModelChange = false,
+  buildActive = false,
   showViewPlane = true,
   viewPlaneOffsetRight = 16,
   viewPlaneOffsetBottom = 16,
@@ -1110,6 +1242,11 @@ const CadViewer = forwardRef(function CadViewer({
   const runtimeRef = useRef(null);
   const viewportFrameInsetsRef = useRef(normalizedViewportFrameInsets);
   const framedModelKeyRef = useRef("");
+  // Geometry identity of the model last animated by the live-build materialize.
+  // Gating on geometry (not modelKey) means regenerating the same-named file
+  // across build iterations still animates, while pure theme/setting re-renders
+  // of unchanged geometry do not.
+  const lastMaterializedGeometryRef = useRef(null);
   const modelTransformRef = useRef({
     modelKey: "",
     offset: null
@@ -1854,6 +1991,8 @@ const CadViewer = forwardRef(function CadViewer({
     setActiveViewPlaneFace,
     activeViewPlaneFaceRef,
     stepCameraTransition,
+    stepMaterializeAnim,
+    stepBuildPulse,
     stepKeyboardOrbit,
     getActiveViewPlaneFaceId,
     cancelCameraTransition,
@@ -2129,6 +2268,38 @@ const CadViewer = forwardRef(function CadViewer({
     runtime.requestRender();
   }, [previewMode, viewerReadyTick]);
 
+  // Live build stage — ambient life: while the active project is mid-build,
+  // gently auto-rotate the current model so the viewport never feels frozen
+  // between intermediate artifacts. Reuses the same autoRotate/previewOrbit
+  // machinery as presentation previewMode but at a slower speed; previewMode
+  // owns the controls when both are on. Auto-rotate keeps full detail (it does
+  // not trigger the LOD-proxy interaction swap).
+  // Live build stage — breathing glow. While the active project is building and
+  // a model is on screen, run a continuous emissive pulse so it reads as "being
+  // worked on". The camera is intentionally NOT auto-rotated during a build (it
+  // induces motion sickness); all the life comes from the glow + the per-artifact
+  // materialize. Restores base materials when the build ends.
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime) {
+      return;
+    }
+    if (buildActive && !previewMode) {
+      runtime.buildPulseActive = true;
+      runtime.buildPulseRestoreState = partVisualStateRef.current;
+      runtime.requestRender();
+    } else if (runtime.buildPulseActive) {
+      runtime.buildPulseActive = false;
+      // Re-apply the normal part-visual state so emissive returns to base.
+      if (Array.isArray(runtime.displayRecords) && runtime.displayRecords.length > 0) {
+        applyPartVisualState(runtime.THREE, runtime.displayRecords, partVisualStateRef.current);
+      }
+      runtime.buildPulseRestoreState = null;
+      runtime.scheduleIdleQuality?.();
+      runtime.requestRender();
+    }
+  }, [buildActive, previewMode, viewerReadyTick]);
+
   const urdfPosePickerInteractionActive = Boolean(urdfPosePicker?.active && !previewMode);
   const urdfPosePickerCursor = urdfPosePickerInteractionActive
     ? (urdfPosePickerHoverActive ? "pointer" : "crosshair")
@@ -2197,6 +2368,10 @@ const CadViewer = forwardRef(function CadViewer({
       runtime.topologyDisplayEdgeLine = null;
       runtime.topologyDisplayEdgeTransformByRecord = false;
       runtime.displayRecords = [];
+      // Kill any in-flight materialize clock so it can't write opacity/emissive
+      // into the next model's fresh records.
+      runtime.materializeAnim = null;
+      runtime.materializeRestoreState = null;
       // Drop stale LOD-proxy refs; the proxy mesh itself is a modelGroup child
       // and is disposed by clearSceneGroup(modelGroup) above.
       runtime.lodProxy = null;
@@ -2501,6 +2676,18 @@ const CadViewer = forwardRef(function CadViewer({
 
     setError("");
     runtime.requestRender();
+
+    // Live build stage: when a new model geometry is applied while the active
+    // project is mid-build, play the wireframe→solid materialize. Gated on the
+    // geometry identity so regenerating the same-named file across build
+    // iterations animates, while theme/setting re-renders of unchanged geometry
+    // don't. Skipped for STEP-parameter models (they own the effectStyle channel)
+    // and when the materialize would have nothing to animate.
+    const geometryChanged = lastMaterializedGeometryRef.current !== meshGeometrySource;
+    if (materializeOnModelChange && !modelStepParameters && geometryChanged) {
+      startMaterialize(runtime, partVisualStateRef.current);
+    }
+    lastMaterializedGeometryRef.current = meshGeometrySource;
   }, [
     meshGeometrySource,
     modelKey,

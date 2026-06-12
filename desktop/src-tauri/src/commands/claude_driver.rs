@@ -320,6 +320,27 @@ pub enum DriverError {
     Io(#[source] std::io::Error),
 }
 
+/// Appended to every phase's `--append-system-prompt` so the model knows the one
+/// absolute directory this project lives in. The cadcode skill instructs the
+/// model to write with absolute paths and warns that its cwd "may not be the
+/// user's workspace" — but never says what the workspace IS. Given no target, the
+/// model invents an absolute dir (observed in the wild: an unrelated sibling Git
+/// repo) and the artifacts land outside the tree Panda's mtime-snapshotter
+/// watches, so the catalog never sees them and the project reads "No models yet".
+/// Naming the path here closes that gap.
+fn workspace_directive(workspace: &Path) -> String {
+    format!(
+        "PROJECT WORKSPACE. This project lives in the single absolute directory \
+         below. Every file you create — the source (`main.py` and sibling modules) \
+         and the STEP/STL/JSON artifacts the cadcode generator produces — MUST live \
+         inside it, and you MUST pass this absolute path to the cadcode tools \
+         (`scripts/cad`). Do not create the project or write artifacts anywhere \
+         else: Panda only detects models inside this directory, so anything written \
+         outside it is invisible to the app.\n{}",
+        workspace.display()
+    )
+}
+
 /// Build the argv for `claude -p` from a [`ClaudeRunConfig`]. The shape
 /// matches cadcode's `build_command` (with model defaulting to `opus`).
 pub fn build_command(cfg: &ClaudeRunConfig) -> Vec<String> {
@@ -337,7 +358,11 @@ pub fn build_command(cfg: &ClaudeRunConfig) -> Vec<String> {
         "--add-dir".into(),
         cfg.workspace.display().to_string(),
         "--append-system-prompt".into(),
-        cfg.phase.system_prompt().into(),
+        format!(
+            "{}\n\n{}",
+            cfg.phase.system_prompt(),
+            workspace_directive(&cfg.workspace)
+        ),
     ];
     // Grant read access to the installed skills tree (`~/.claude/skills`).
     // The cadcode skill loads its own reference docs by absolute path
@@ -1409,6 +1434,11 @@ where
     let mut state = StreamState::default();
     let mut cancelled = false;
     let mut saw_output = false;
+    // Running snapshot for incremental artifact emission (Layer 1 of the live
+    // build stage): advanced past every mid-turn emission so the final
+    // post-turn diff only reports whatever the incremental passes missed.
+    let mut running_snapshot = pre_snapshot.clone();
+    let mut artifacts_changed = false;
 
     let mut line = String::new();
     loop {
@@ -1448,8 +1478,12 @@ where
                 // Either `ExitPlanMode` (plan ready) or `AskUserQuestion`
                 // (preference fork) ends the plan turn deterministically.
                 let stop_turn = state.plan_proposed || state.questions_asked;
+                let mut tool_just_ended = false;
                 for ev in events {
                     saw_output = true;
+                    if matches!(ev, ChatEvent::ToolUseEnd { .. }) {
+                        tool_just_ended = true;
+                    }
                     // A `PlanProposed` with an empty plan means the model exited
                     // plan mode without restating it (typical on resume) — and
                     // there was no `planFilePath` to read either. Recover the
@@ -1467,6 +1501,23 @@ where
                         other => other,
                     };
                     on_event(ev);
+                }
+                // Incremental artifact emission: when a tool just finished, diff
+                // the workspace against the running snapshot and emit any new or
+                // modified artifacts now, so intermediate models materialize in
+                // the viewer mid-build instead of only at turn end. Advancing the
+                // running snapshot past each emission keeps the final post-turn
+                // diff from re-emitting the same files.
+                if tool_just_ended {
+                    let now_snapshot = snapshot_workspace(workspace_dir);
+                    let inc = diff_snapshots(&running_snapshot, &now_snapshot, turn_id);
+                    if !inc.is_empty() {
+                        artifacts_changed = true;
+                        for ev in inc {
+                            on_event(ev);
+                        }
+                    }
+                    running_snapshot = now_snapshot;
                 }
                 // Kill the child rather than relying on headless `-p` exiting on
                 // its own after the tool call. The post-turn diff finds nothing
@@ -1519,8 +1570,10 @@ where
     // new or with bumped mtime. We do this even when cancelled — the
     // user still wants to see any artifacts produced before cancel.
     let post_snapshot = snapshot_workspace(workspace_dir);
-    let diff_events = diff_snapshots(&pre_snapshot, &post_snapshot, turn_id);
-    let artifacts_changed = !diff_events.is_empty();
+    let diff_events = diff_snapshots(&running_snapshot, &post_snapshot, turn_id);
+    if !diff_events.is_empty() {
+        artifacts_changed = true;
+    }
     for ev in diff_events {
         on_event(ev);
     }
@@ -2291,6 +2344,56 @@ mod tests {
         assert!(kinds.contains(&("a.py".into(), "modified".into())));
     }
 
+    // Mirrors the live-build-stage running-snapshot loop: seed the running
+    // snapshot from a pre-turn snapshot, diff after each tool finishes while
+    // advancing the running snapshot past every emission, then a final diff.
+    // Each artifact must surface exactly once across the incremental passes and
+    // the final diff — never duplicated.
+    #[test]
+    fn running_snapshot_emits_each_artifact_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        let pre = snapshot_workspace(root);
+        let mut running = pre.clone();
+        let mut all: Vec<String> = Vec::new();
+
+        // First tool finishes: part_a.step lands.
+        touch(&root.join("part_a.step"));
+        let snap1 = snapshot_workspace(root);
+        let inc1 = diff_snapshots(&running, &snap1, "t-1");
+        all.extend(inc1.iter().map(file_of));
+        running = snap1;
+
+        // Second tool finishes: part_b.stl lands.
+        touch(&root.join("part_b.stl"));
+        let snap2 = snapshot_workspace(root);
+        let inc2 = diff_snapshots(&running, &snap2, "t-1");
+        all.extend(inc2.iter().map(file_of));
+        running = snap2;
+
+        // Final post-turn diff against the advanced running snapshot: nothing
+        // new since the last incremental pass, so it must be empty.
+        let post = snapshot_workspace(root);
+        let final_diff = diff_snapshots(&running, &post, "t-1");
+        all.extend(final_diff.iter().map(file_of));
+
+        assert!(final_diff.is_empty(), "final diff should not re-emit already-emitted artifacts");
+        let mut sorted = all.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec!["part_a.step".to_string(), "part_b.stl".to_string()]);
+        // No duplicates: deduped length equals total length.
+        sorted.dedup();
+        assert_eq!(sorted.len(), all.len(), "each artifact must be emitted exactly once");
+    }
+
+    fn file_of(ev: &ChatEvent) -> String {
+        match ev {
+            ChatEvent::ArtifactChanged { file, .. } => file.clone(),
+            _ => unreachable!(),
+        }
+    }
+
     #[test]
     fn build_command_includes_workspace_and_prompt() {
         let cfg = ClaudeRunConfig {
@@ -2439,8 +2542,12 @@ mod tests {
         assert_eq!(cmd[pm + 1], "bypassPermissions");
         // append-system-prompt is the planning prompt
         let sp = cmd.iter().position(|a| a == "--append-system-prompt").unwrap();
-        assert_eq!(cmd[sp + 1], PLAN_SYSTEM_PROMPT);
+        assert!(cmd[sp + 1].starts_with(PLAN_SYSTEM_PROMPT));
         assert!(cmd[sp + 1].contains("PLANNING mode"));
+        // The absolute workspace path is named so the model writes the project
+        // INTO the dir Panda watches, not an invented one.
+        assert!(cmd[sp + 1].contains("PROJECT WORKSPACE"));
+        assert!(cmd[sp + 1].contains("/tmp/proj"));
         // The plan must carry the premium-design bar and a per-part Form clause.
         assert!(cmd[sp + 1].contains("AESTHETIC BAR"));
         assert!(cmd[sp + 1].contains("industrial-design"));
@@ -2465,8 +2572,13 @@ mod tests {
         // which blocks the cadcode generator (a `python … cad` Bash command).
         assert_eq!(cmd[pm + 1], "bypassPermissions");
         let sp = cmd.iter().position(|a| a == "--append-system-prompt").unwrap();
-        assert_eq!(cmd[sp + 1], IMPLEMENT_SYSTEM_PROMPT);
+        assert!(cmd[sp + 1].starts_with(IMPLEMENT_SYSTEM_PROMPT));
         assert!(cmd[sp + 1].contains("APPROVED"));
+        // The build must write the project INTO the watched workspace dir, named
+        // by its absolute path — otherwise artifacts land where Panda can't see
+        // them and the project reads "No models yet".
+        assert!(cmd[sp + 1].contains("PROJECT WORKSPACE"));
+        assert!(cmd[sp + 1].contains("/tmp/proj"));
         // Build must hit the premium look and run a render-and-self-critique pass.
         assert!(cmd[sp + 1].contains("industrial-design"));
         assert!(cmd[sp + 1].contains("scripts/review"));

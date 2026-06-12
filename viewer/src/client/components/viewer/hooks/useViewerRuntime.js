@@ -31,6 +31,8 @@ export function useViewerRuntime({
   setActiveViewPlaneFace,
   activeViewPlaneFaceRef,
   stepCameraTransition,
+  stepMaterializeAnim,
+  stepBuildPulse,
   stepKeyboardOrbit,
   getActiveViewPlaneFaceId,
   cancelCameraTransition,
@@ -307,6 +309,12 @@ export function useViewerRuntime({
       function renderFrame(timestamp) {
         interactionState.renderQueued = false;
         const cameraTransitionActive = stepCameraTransition(runtimeRef.current, timestamp);
+        const materializeActive = stepMaterializeAnim
+          ? stepMaterializeAnim(runtimeRef.current, timestamp)
+          : false;
+        const buildPulseActive = stepBuildPulse
+          ? stepBuildPulse(runtimeRef.current, timestamp)
+          : false;
         const keyboardOrbitMoved = stepKeyboardOrbit(runtimeRef.current, timestamp);
         const needsMoreFrames = controls.update();
         if (cameraTransitionActive || keyboardOrbitMoved) {
@@ -322,6 +330,8 @@ export function useViewerRuntime({
         syncViewPlaneOrientation(runtimeRef.current);
         if (
           cameraTransitionActive ||
+          materializeActive ||
+          buildPulseActive ||
           keyboardOrbitMoved ||
           needsMoreFrames ||
           interactionState.active ||

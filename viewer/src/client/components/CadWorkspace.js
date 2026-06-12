@@ -14,6 +14,7 @@ import StatusToast from "./workbench/StatusToast";
 import UrdfFileSheet from "./workbench/UrdfFileSheet";
 import ViewerAlertDialog from "./workbench/ViewerAlertDialog";
 import ViewerLoadingOverlay from "./workbench/ViewerLoadingOverlay";
+import BuildBlueprintOverlay from "./viewer/BuildBlueprintOverlay";
 import FloatingToolBar from "./workbench/FloatingToolBar";
 import RegionNotePopover from "./workbench/RegionNotePopover";
 import { isRegionStroke, regionStrokes } from "cadjs/lib/viewer/drawingTools";
@@ -271,7 +272,7 @@ import {
 import { emitCadRefSelection } from "@/components/chat/cadRefEvents";
 import { basename, pickPrinterForSlice, PRINT_CONFIG_CHANGED_EVENT } from "@/components/chat/actionButtonsHelpers";
 import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
-import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, selectSliceTargetStl, getChatState, addPendingAttachment, setPendingViewContext, useChatStore } from "@/store/chat";
+import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, selectSliceTargetStl, getChatState, addPendingAttachment, setPendingViewContext, useChatStore, selectAwaitingAnswerProjectIds } from "@/store/chat";
 import { useProjectsStore } from "@/store/projects.ts";
 import { sortProjects } from "@/components/library/projectListHelpers.js";
 import { PLACEHOLDER_PROJECT_NAME, FOCUS_CHAT_INPUT_EVENT, PREFILL_CHAT_INPUT_EVENT } from "@/components/chat/chatInputHelpers";
@@ -606,6 +607,10 @@ export default function CadWorkspace({
   ), [generationStatus]);
   const catalogRootDir = catalogRootDirFromEnv();
   const currentProjectId = useProjectsStore((state) => state.currentProjectId);
+  // Name of the active project, for the build blueprint's title block.
+  const currentProjectName = useProjectsStore(
+    (state) => state.projects.find((p) => p.id === state.currentProjectId)?.name || "",
+  );
   // Projects with an in-flight chat turn (the chat store tracks turn→project in
   // `turnOwners`). Drives the sidebar "generating" spinner so a turn that keeps
   // running after you switch away still shows visible activity on its project.
@@ -613,6 +618,23 @@ export default function CadWorkspace({
   const generatingProjectIds = useMemo(
     () => new Set(Object.values(turnOwners || {})),
     [turnOwners],
+  );
+  // Projects whose session is paused waiting for a user answer (proposed plan or
+  // unanswered preference questions). Drives the sidebar "needs your answer" dot.
+  // Independent of `generatingProjectIds` — a paused turn has already ended, so a
+  // project is never in both sets at once.
+  const awaitingAnswerMap = useChatStore(selectAwaitingAnswerProjectIds);
+  const awaitingAnswerProjectIds = useMemo(
+    () => new Set(Object.keys(awaitingAnswerMap || {})),
+    [awaitingAnswerMap],
+  );
+  // True while the *active* project has an in-flight chat turn — drives the
+  // live build stage (select-on-arrival, ambient spin, wireframe→solid
+  // materialize). Scoped to the active project so a background build never
+  // animates the current viewport.
+  const buildLive = useMemo(
+    () => generatingProjectIds.has(currentProjectId),
+    [generatingProjectIds, currentProjectId],
   );
   const openProject = useProjectsStore((state) => state.open);
   const createProject = useProjectsStore((state) => state.create);
@@ -5917,6 +5939,13 @@ export default function CadWorkspace({
   const pendingPrintableStemsRef = useRef([]);
   const [autoSelectStem, setAutoSelectStem] = useState("");
 
+  // Mirror `buildLive` into a ref so the once-mounted `chat_event` subscription
+  // below can read the latest value without re-subscribing.
+  const buildLiveRef = useRef(buildLive);
+  useEffect(() => {
+    buildLiveRef.current = buildLive;
+  }, [buildLive]);
+
   useEffect(() => {
     const transport = getTransport();
     if (!transport?.events?.subscribe) {
@@ -5927,7 +5956,15 @@ export default function CadWorkspace({
       if (event.kind === "artifact_changed") {
         const file = String(event.file || "");
         if (/\.(stl|3mf|glb)$/i.test(file)) {
-          pendingPrintableStemsRef.current.push(file.replace(/\.(stl|3mf|glb)$/i, ""));
+          const stem = file.replace(/\.(stl|3mf|glb)$/i, "");
+          pendingPrintableStemsRef.current.push(stem);
+          // Select-on-arrival: while the active project is mid-build, open each
+          // intermediate model the moment it lands so the viewer "takes shape"
+          // live instead of only revealing the final model at turn end. The
+          // `turn_end` flush below stays as a fallback for the last artifact.
+          if (buildLiveRef.current) {
+            setAutoSelectStem(stem);
+          }
         }
       } else if (event.kind === "turn_end") {
         const stems = pendingPrintableStemsRef.current;
@@ -7207,6 +7244,8 @@ export default function CadWorkspace({
           themeSettings={resolvedThemeSettings}
           displaySettings={renderDisplaySettings}
           previewMode={previewMode}
+          buildActive={buildLive}
+          materializeOnModelChange={buildLive}
           viewportFrameInsets={viewportFrameInsets}
           viewerLoading={viewerLoading}
           viewerAlert={viewerAlert}
@@ -7276,6 +7315,7 @@ export default function CadWorkspace({
               onSelectProject={handleSelectProject}
               onCreateProject={handleCreateProject}
               generatingProjectIds={generatingProjectIds}
+              awaitingAnswerProjectIds={awaitingAnswerProjectIds}
               onRequestDeleteProject={handleRequestDeleteProject}
               onRenameProject={handleRenameProject}
               entrySourceFormat={entrySourceFormat}
@@ -7399,6 +7439,17 @@ export default function CadWorkspace({
                 viewerLoading={effectiveViewerLoading}
                 previewMode={previewMode}
               />
+
+              {/* Live build stage — pre-artifact phase: while the active project
+                  is building and no model is on screen yet, draft the blueprint.
+                  Kept mounted for the whole build so it can fade out (crossfade
+                  into the 3D materialize) the moment the first model is selected. */}
+              {buildLive && !previewMode ? (
+                <BuildBlueprintOverlay
+                  visible={!selectedKey}
+                  title={currentProjectName}
+                />
+              ) : null}
             </div>
 
             {selectedFileSheetKind === "dxf" ? (

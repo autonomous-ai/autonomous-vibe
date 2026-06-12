@@ -261,6 +261,31 @@ test("setProject rehydrates history from the persisted session", async () => {
     assert.equal(state.history[0].userText, "make a cup");
     assert.equal(state.history[1].role, "assistant");
     assert.equal(state.history[1].blocks[0].text, "Here is the plan.");
+    assert.equal(state.isHydratingSession, false);
+  } finally {
+    restore();
+    resetChatStore();
+  }
+});
+
+test("setProject marks the active project as hydrating until transcript load settles", async () => {
+  resetChatStore();
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const restore = __setTransportForTesting({
+    async chat_session_state() {
+      await gate;
+      return { sessionId: "empty", turnInProgress: false, history: [] };
+    },
+  });
+  try {
+    setProject("proj-loading");
+    assert.equal(getChatState().isHydratingSession, true);
+    release();
+    await tick();
+    assert.equal(getChatState().isHydratingSession, false);
   } finally {
     restore();
     resetChatStore();

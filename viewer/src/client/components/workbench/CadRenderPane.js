@@ -63,6 +63,8 @@ export default function CadRenderPane({
   viewerPerspectiveRef,
   themeSettings,
   previewMode,
+  buildActive = false,
+  materializeOnModelChange = false,
   viewportFrameInsets,
   viewerLoading,
   viewerAlert,
@@ -267,6 +269,8 @@ export default function CadRenderPane({
           themeSettings={themeSettings}
           displaySettings={dxfMode || pathPreviewMode ? null : displaySettings}
           previewMode={dxfMode ? false : previewMode}
+          buildActive={dxfMode || gcodeMode ? false : buildActive}
+          materializeOnModelChange={dxfMode || gcodeMode ? false : materializeOnModelChange}
           showViewPlane={dxfMode || gcodeMode ? true : !previewMode}
           scale={urdfMode ? VIEWER_SCENE_SCALE.URDF : VIEWER_SCENE_SCALE.CAD}
           viewPlaneOffsetRight={viewPlaneOffsetRight}

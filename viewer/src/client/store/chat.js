@@ -72,6 +72,7 @@ import { __setTransportForTesting, getTransport } from "../lib/transport.ts";
  * @property {string} selectedMeshFile
  * @property {boolean} awaitingApproval
  * @property {string} activePlanTurnId
+ * @property {boolean} isHydratingSession
  */
 
 /** @type {ChatState} */
@@ -107,6 +108,17 @@ export const INITIAL_CHAT_STATE = Object.freeze({
   // block, so the approve/request thunks can mark it.
   awaitingApproval: false,
   activePlanTurnId: "",
+  isHydratingSession: false,
+  // Project IDs whose session is paused waiting for a user answer — a proposed
+  // plan awaiting approval, or unanswered preference questions. Kept at the top
+  // level (keyed by projectId, like turnOwners) rather than in the per-session
+  // slice, so it survives project switches: a project that proposes a plan then
+  // is navigated away from would otherwise lose its retained slice (the retain
+  // condition is "turn in flight", and a paused turn has ended). Drives the
+  // sidebar "needs your answer" dot. Set when a turn ends in a paused state;
+  // cleared when the user responds. Not persisted — lost on a full reload, where
+  // the plan/question card is still visible in chat on reopen.
+  awaitingAnswerProjectIds: {},
   // Maps an in-flight turnId → the project that started it. Chat events carry
   // only a turnId, so this is how the reducer routes a streaming response back
   // to the chat it belongs to: events for a turn owned by a project other than
@@ -375,6 +387,68 @@ function sessionSlice(state) {
   };
 }
 
+function projectHasInFlightTurn(turnOwners, projectId) {
+  if (!projectId || !turnOwners) return false;
+  return Object.values(turnOwners).some((owner) => owner === projectId);
+}
+
+// The fence the driver emits (as a TextDelta) for both the AskUserQuestion tool
+// and a model-authored preference fork; the chat renders it as a QuestionCard.
+// Its presence in a finished turn means the model is waiting on the user.
+const PANDA_QUESTIONS_FENCE = "```panda-questions";
+
+function turnHasPendingQuestions(turn) {
+  if (!turn || !Array.isArray(turn.blocks)) return false;
+  return turn.blocks.some(
+    (b) => b.kind === "text" && typeof b.text === "string" && b.text.includes(PANDA_QUESTIONS_FENCE),
+  );
+}
+
+// Mark `projectId` as awaiting a user answer (value-stable: returns the same map
+// when already set, so the selector doesn't churn React subscribers).
+function setAwaiting(map, projectId) {
+  if (!projectId || map[projectId]) return map;
+  return { ...map, [projectId]: true };
+}
+
+// Clear `projectId` from the awaiting map (the user responded / the pause ended).
+function clearAwaiting(map, projectId) {
+  if (!projectId || !map[projectId]) return map;
+  const { [projectId]: _drop, ...rest } = map;
+  return rest;
+}
+
+// Evolve the awaiting-answer map for one chat event. `ownerProject` is the event's
+// resolved owner and `history` is the owner session's history (post-apply, where
+// the paused turn's blocks already hold any panda-questions fence text).
+function nextAwaitingMap(map, event, ownerProject, history) {
+  if (!ownerProject) return map;
+  switch (event.kind) {
+    case "plan_proposed":
+      return setAwaiting(map, ownerProject);
+    case "turn_end": {
+      const turn = history.find((t) => t.id === event.turnId && t.role === "assistant");
+      return turnHasPendingQuestions(turn) ? setAwaiting(map, ownerProject) : map;
+    }
+    case "turn_start":
+    case "error":
+    case "auth_expired":
+      return clearAwaiting(map, ownerProject);
+    default:
+      return map;
+  }
+}
+
+function withProjectTurnProgress(session, turnOwners, projectId) {
+  if (!projectId) return session;
+  const turnInProgress = projectHasInFlightTurn(turnOwners, projectId);
+  return {
+    ...session,
+    turnInProgress,
+    currentTurnId: turnInProgress ? session.currentTurnId : "",
+  };
+}
+
 // Pure: apply one chat event to a session slice and return the next slice.
 // Owner/turn-tracking (`turnOwners`) is handled by the caller — this only
 // evolves the conversation itself, so it works identically for the active
@@ -505,8 +579,21 @@ export function chatReducer(state, action, now = Date.now()) {
       // Stash the project we're leaving if a turn is still running there, so its
       // streamed-so-far chat survives the switch and background events keep it
       // current. (Completed projects reload cheaply from the backend on return.)
+      //
+      // Also retain a project that's paused waiting for the user (a proposed
+      // plan or unanswered questions). Its turn has ENDED, so the in-flight
+      // checks miss it — but its rich blocks (the plan/QuestionCard) only live
+      // in this slice: re-hydrating from the persisted transcript flattens them
+      // to plain text AND can't recover the driver-synthesized `panda-questions`
+      // fence at all, so the answer UI would vanish on return. Keeping the slice
+      // restores it intact (and skips the hydrate fetch — see `setProject`).
       let sessions = state.sessions;
-      if (state.currentProjectId && state.turnInProgress) {
+      if (
+        state.currentProjectId &&
+        (state.turnInProgress ||
+          projectHasInFlightTurn(state.turnOwners, state.currentProjectId) ||
+          state.awaitingAnswerProjectIds[state.currentProjectId])
+      ) {
         sessions = { ...sessions, [state.currentProjectId]: sessionSlice(state) };
       }
       // Restore a retained session for the project we're entering (consuming it
@@ -516,10 +603,15 @@ export function chatReducer(state, action, now = Date.now()) {
       const next = {
         ...INITIAL_CHAT_STATE,
         currentProjectId: action.projectId,
+        isHydratingSession: action.hydrating === true,
         pendingTokens: state.pendingTokens,
         // Keep tracking any turn still running elsewhere so its events keep
         // routing to its own (retained) session, not this project's chat.
         turnOwners: state.turnOwners,
+        // Per-project awaiting-answer flags are independent of which project is
+        // on screen, so carry them across the switch (this is the whole reason
+        // the map lives at the top level rather than in the session slice).
+        awaitingAnswerProjectIds: state.awaitingAnswerProjectIds,
         sessions: remaining,
       };
       return retained ? { ...next, ...retained } : next;
@@ -553,8 +645,12 @@ export function chatReducer(state, action, now = Date.now()) {
         history,
         turnInProgress: action.session.turnInProgress === true,
         currentTurnId: action.session.turnInProgress ? state.currentTurnId : "",
+        isHydratingSession: false,
       };
     }
+    case "hydrate_session_complete":
+      if (state.currentProjectId !== action.projectId) return state;
+      return { ...state, isHydratingSession: false };
     case "queue_user_message": {
       const userTurn = {
         id: `user-${action.turnId}`,
@@ -588,30 +684,44 @@ export function chatReducer(state, action, now = Date.now()) {
         history,
         currentTurnId: action.turnId,
         turnInProgress: true,
+        isHydratingSession: false,
         lastError: "",
         turnOwners: { ...state.turnOwners, [action.turnId]: state.currentProjectId },
+        // The user just responded (a fresh message, answered questions, or
+        // requested plan changes), so this project is no longer blocked on them.
+        awaitingAnswerProjectIds: clearAwaiting(
+          state.awaitingAnswerProjectIds,
+          state.currentProjectId,
+        ),
       };
     }
     case "chat_event": {
       const event = action.event;
       const turnId = event.turnId;
       const knownOwner = state.turnOwners[turnId];
-      // A turn with no recorded owner is adopted by the current project (it was
-      // just started here, possibly before `queue_user_message` ran).
+      // The backend stamps every event with its owning `projectId`, so routing
+      // never has to guess. Fall back to the recorded owner, then (only for a
+      // legacy/stub event that omits the id) to adopting the current project on
+      // a fresh `turn_start`.
       const ownerProject =
-        knownOwner || (event.kind === "turn_start" ? state.currentProjectId : undefined);
+        event.projectId ||
+        knownOwner ||
+        (event.kind === "turn_start" ? state.currentProjectId : undefined);
 
-      // Maintain the global turn→project map: register on start, prune on end.
+      // Maintain the global turn→project map: register the owner from ANY
+      // in-flight event (not just `turn_start`) so a turn whose start we missed
+      // — e.g. an HMR/Vite reload mid-build — still gets an owner, and thus a
+      // running indicator. Prune on end.
       let turnOwners = state.turnOwners;
-      if (event.kind === "turn_start" && !knownOwner && ownerProject) {
-        turnOwners = { ...turnOwners, [turnId]: ownerProject };
-      } else if (
+      if (
         event.kind === "turn_end" ||
         event.kind === "error" ||
         event.kind === "auth_expired"
       ) {
         const { [turnId]: _drop, ...rest } = turnOwners;
         turnOwners = rest;
+      } else if (ownerProject && knownOwner !== ownerProject) {
+        turnOwners = { ...turnOwners, [turnId]: ownerProject };
       }
 
       // The proxy key is app-wide, so a Panda auth rejection raises the re-auth
@@ -628,11 +738,19 @@ export function chatReducer(state, action, now = Date.now()) {
       // visible session. A new turn supersedes a stale toolbar slice — clear
       // it so a chat-produced gcode (arriving as an artifact) wins.
       if (!ownerProject || ownerProject === state.currentProjectId) {
+        const session = applyChatEventToSession(sessionSlice(state), event, now);
         return {
           ...state,
-          ...applyChatEventToSession(sessionSlice(state), event, now),
+          ...withProjectTurnProgress(session, turnOwners, state.currentProjectId),
           turnOwners,
+          awaitingAnswerProjectIds: nextAwaitingMap(
+            state.awaitingAnswerProjectIds,
+            event,
+            ownerProject,
+            session.history,
+          ),
           ...reauthPatch,
+          ...(event.kind === "turn_start" ? { isHydratingSession: false } : {}),
           ...(event.kind === "turn_start"
             ? { lastSlice: INITIAL_CHAT_STATE.lastSlice }
             : {}),
@@ -645,15 +763,35 @@ export function chatReducer(state, action, now = Date.now()) {
       // event — its result is persisted and reloaded on return.
       const stash = state.sessions[ownerProject];
       if (!stash) {
-        return { ...state, turnOwners, ...reauthPatch };
+        // No retained slice (the turn wasn't running when we left), but a
+        // paused-for-input event still needs its dot — these don't depend on the
+        // session history (turn_end question-detection does, and is moot here).
+        return {
+          ...state,
+          turnOwners,
+          awaitingAnswerProjectIds: nextAwaitingMap(
+            state.awaitingAnswerProjectIds,
+            event,
+            ownerProject,
+            [],
+          ),
+          ...reauthPatch,
+        };
       }
+      const stashed = applyChatEventToSession(stash, event, now);
       return {
         ...state,
         turnOwners,
+        awaitingAnswerProjectIds: nextAwaitingMap(
+          state.awaitingAnswerProjectIds,
+          event,
+          ownerProject,
+          stashed.history,
+        ),
         ...reauthPatch,
         sessions: {
           ...state.sessions,
-          [ownerProject]: applyChatEventToSession(stash, event, now),
+          [ownerProject]: withProjectTurnProgress(stashed, turnOwners, ownerProject),
         },
       };
     }
@@ -696,6 +834,12 @@ export function chatReducer(state, action, now = Date.now()) {
         ...state,
         awaitingApproval: stillProposed ? state.awaitingApproval : false,
         activePlanTurnId: stillProposed ? state.activePlanTurnId : "",
+        // Acting on the plan (approve/supersede) ends the pause. Plan actions
+        // only ever apply to the active project (approvePlan/requestPlanChanges
+        // gate on currentProjectId), so clear that one.
+        awaitingAnswerProjectIds: stillProposed
+          ? state.awaitingAnswerProjectIds
+          : clearAwaiting(state.awaitingAnswerProjectIds, state.currentProjectId),
         history: updateAssistantTurn(state.history, action.turnId, (turn) => ({
           ...turn,
           blocks: turn.blocks.map((b) =>
@@ -818,6 +962,19 @@ export function selectAnyTurnInProgress(state) {
   const sessions = state?.sessions;
   if (!sessions) return false;
   return Object.values(sessions).some((s) => s?.turnInProgress === true);
+}
+
+const EMPTY_AWAITING = Object.freeze({});
+
+/**
+ * The `{ projectId: true }` map of projects whose session is paused waiting for a
+ * user answer (proposed plan or unanswered questions). Drives the sidebar dot.
+ * Stable empty object when none, so memoized consumers don't churn.
+ *
+ * @param {ChatState} state
+ */
+export function selectAwaitingAnswerProjectIds(state) {
+  return state?.awaitingAnswerProjectIds || EMPTY_AWAITING;
 }
 
 // ---------------------------------------------------------------------------
@@ -1017,17 +1174,17 @@ export async function cancelTurn(transport = getTransport()) {
 
 export function setProject(projectId) {
   const previous = getChatState().currentProjectId;
-  // A retained session (a project we left mid-turn) is restored by the reducer
-  // with its live history; re-hydrating would clobber the still-streaming turn
-  // with the backend's not-yet-persisted snapshot, so skip the fetch for it.
+  // A retained session (a project we left mid-turn, or one paused waiting for an
+  // answer) is restored by the reducer with its live history; re-hydrating would
+  // clobber it with the backend's snapshot — which lacks the not-yet-persisted
+  // stream and the synthesized question/plan blocks — so skip the fetch for it.
   const hadRetained = Boolean(getChatState().sessions?.[projectId]);
-  dispatch({ type: "set_project", projectId });
+  const shouldHydrate = Boolean(projectId && projectId !== previous && !hadRetained);
+  dispatch({ type: "set_project", projectId, hydrating: shouldHydrate });
   // Switching into a real project pulls its persisted transcript back in so
   // chat history survives restarts and project switches. Same-project calls
   // (the reducer no-ops them) and clearing to "" skip the fetch.
-  if (projectId && projectId !== previous) {
-    if (!hadRetained) hydrateSession(projectId);
-  }
+  if (shouldHydrate) hydrateSession(projectId);
 }
 
 /**
@@ -1042,13 +1199,24 @@ export async function hydrateSession(projectId, transport = getTransport()) {
   try {
     const session = await transport.chat_session_state(projectId);
     const state = getChatState();
-    if (state.currentProjectId !== projectId || state.turnInProgress) return;
+    if (
+      state.currentProjectId !== projectId ||
+      state.turnInProgress ||
+      projectHasInFlightTurn(state.turnOwners, projectId)
+    ) {
+      return;
+    }
     if (!session || !Array.isArray(session.history) || session.history.length === 0) {
+      dispatch({ type: "hydrate_session_complete", projectId });
       return;
     }
     dispatch({ type: "hydrate_session", session });
   } catch {
-    // No transport / unreadable session → nothing to restore.
+    // No transport / unreadable session -> nothing to restore.
+    const state = getChatState();
+    if (state.currentProjectId === projectId) {
+      dispatch({ type: "hydrate_session_complete", projectId });
+    }
   }
 }
 

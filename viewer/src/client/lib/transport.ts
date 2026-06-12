@@ -128,7 +128,10 @@ export interface ChatSessionState {
 
 export type TurnPhase = "plan" | "implement";
 
-export type ChatEvent =
+// Every event carries `projectId` (the owning project) so the chat store routes
+// a turn's events to the right project's conversation regardless of which one is
+// on screen. Mirrors `ChatEventEnvelope` on the Rust side.
+export type ChatEvent = (
   | { kind: "turn_start"; turnId: string; phase: TurnPhase }
   | { kind: "plan_proposed"; turnId: string; plan: string }
   | { kind: "text_delta"; turnId: string; text: string }
@@ -140,7 +143,8 @@ export type ChatEvent =
   | { kind: "error"; turnId: string; message: string }
   // Panda proxy auth was rejected (revoked/expired key → BE 401). The chat UI
   // surfaces a "Sign in again" action. Ends the turn like `error`.
-  | { kind: "auth_expired"; turnId: string };
+  | { kind: "auth_expired"; turnId: string }
+) & { projectId: string };
 
 // Slicer ---------------------------------------------------------------------
 

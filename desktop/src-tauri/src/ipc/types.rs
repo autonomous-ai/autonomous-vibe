@@ -324,6 +324,21 @@ pub enum ChatEvent {
     },
 }
 
+/// Emission wrapper for a `chat_event`: a [`ChatEvent`]'s own fields
+/// (flattened in — `kind`, `turnId`, …) plus the `projectId` whose turn this
+/// is. The frontend routes a turn's events to the right project's chat by this
+/// id rather than guessing from whichever project is on screen, so concurrent
+/// multi-project turns — and turns whose `turn_start` was missed across a UI
+/// reload — land in the correct conversation. Every `chat_event` is emitted
+/// through this wrapper (see `commands::chat`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatEventEnvelope<'a> {
+    pub project_id: &'a str,
+    #[serde(flatten)]
+    pub event: &'a ChatEvent,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ArtifactReason {

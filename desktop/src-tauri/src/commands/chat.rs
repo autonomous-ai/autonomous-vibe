@@ -6,8 +6,8 @@
 use crate::commands::claude_driver;
 use crate::commands::claude_driver::TurnPhase;
 use crate::ipc::types::{
-    ApprovePlanRequest, ChatEvent, ChatHistoryEntry, ChatRole, ChatSessionState, ImageAttachment,
-    PlanChangesRequest, StartTurnRequest, StartTurnResponse,
+    ApprovePlanRequest, ChatEvent, ChatEventEnvelope, ChatHistoryEntry, ChatRole, ChatSessionState,
+    ImageAttachment, PlanChangesRequest, StartTurnRequest, StartTurnResponse,
 };
 use crate::ipc::{IpcError, IpcResult};
 use crate::paths;
@@ -123,10 +123,14 @@ fn spawn_chat_turn(app: AppHandle, project_id: &str, message: String, phase: Tur
     let app_clone = app.clone();
     let turn_id_for_task = turn_id.clone();
     let cancel_for_task = cancel.clone();
+    let project_id_for_task = project_id.to_string();
 
     tauri::async_runtime::spawn(async move {
         let emitter = app_clone.clone();
         let event_turn_id = turn_id_for_task.clone();
+        // Stamps every emitted event so the frontend routes it to this project's
+        // chat regardless of which project is on screen (see `ChatEventEnvelope`).
+        let event_project_id = project_id_for_task.clone();
         // Capture the plan the model proposes so autopilot can build from it.
         let captured_plan = std::sync::Arc::new(Mutex::new(String::new()));
         let plan_sink = captured_plan.clone();
@@ -136,7 +140,10 @@ fn spawn_chat_turn(app: AppHandle, project_id: &str, message: String, phase: Tur
             }
             // Best-effort emit. If the React side has unmounted (window
             // closed), emit fails — there's nothing useful to do here.
-            let _ = emitter.emit(CHAT_EVENT, &event);
+            let _ = emitter.emit(
+                CHAT_EVENT,
+                &ChatEventEnvelope { project_id: &event_project_id, event: &event },
+            );
         };
         let _ = claude_driver::spawn_turn(
             &workspace,
@@ -159,7 +166,8 @@ fn spawn_chat_turn(app: AppHandle, project_id: &str, message: String, phase: Tur
                     .map(|s| s.auto_build)
                     .unwrap_or(true);
                 if auto_build {
-                    run_auto_build_turn(app_clone, workspace, session_id, plan).await;
+                    run_auto_build_turn(app_clone, project_id_for_task, workspace, session_id, plan)
+                        .await;
                 }
             }
         }
@@ -175,6 +183,7 @@ fn spawn_chat_turn(app: AppHandle, project_id: &str, message: String, phase: Tur
 /// aesthetic) runs inside this turn.
 async fn run_auto_build_turn(
     app: AppHandle,
+    project_id: String,
     workspace: PathBuf,
     session_id: Uuid,
     plan: String,
@@ -184,7 +193,10 @@ async fn run_auto_build_turn(
     register_turn(&turn_id, cancel.clone());
     let emitter = app.clone();
     let on_event = move |event: ChatEvent| {
-        let _ = emitter.emit(CHAT_EVENT, &event);
+        let _ = emitter.emit(
+            CHAT_EVENT,
+            &ChatEventEnvelope { project_id: &project_id, event: &event },
+        );
     };
     let _ = claude_driver::spawn_turn(
         &workspace,
@@ -480,6 +492,25 @@ mod tests {
         assert_eq!(json["kind"], "text_delta");
         assert_eq!(json["turnId"], "t1");
         assert_eq!(json["text"], "hi");
+    }
+
+    #[test]
+    fn chat_event_envelope_flattens_event_and_adds_project_id() {
+        // The wire shape every `chat_event` is emitted as: the event's own
+        // fields (flattened) plus the owning `projectId` for frontend routing.
+        let event = ChatEvent::TextDelta {
+            turn_id: "t1".into(),
+            text: "hi".into(),
+        };
+        let json = serde_json::to_value(ChatEventEnvelope {
+            project_id: "proj-1",
+            event: &event,
+        })
+        .unwrap();
+        assert_eq!(json["kind"], "text_delta");
+        assert_eq!(json["turnId"], "t1");
+        assert_eq!(json["text"], "hi");
+        assert_eq!(json["projectId"], "proj-1");
     }
 
     #[test]

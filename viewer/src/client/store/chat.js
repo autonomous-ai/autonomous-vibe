@@ -72,6 +72,7 @@ import { __setTransportForTesting, getTransport } from "../lib/transport.ts";
  * @property {string} selectedMeshFile
  * @property {boolean} awaitingApproval
  * @property {string} activePlanTurnId
+ * @property {boolean} isHydratingSession
  */
 
 /** @type {ChatState} */
@@ -107,6 +108,7 @@ export const INITIAL_CHAT_STATE = Object.freeze({
   // block, so the approve/request thunks can mark it.
   awaitingApproval: false,
   activePlanTurnId: "",
+  isHydratingSession: false,
   // Maps an in-flight turnId → the project that started it. Chat events carry
   // only a turnId, so this is how the reducer routes a streaming response back
   // to the chat it belongs to: events for a turn owned by a project other than
@@ -375,6 +377,21 @@ function sessionSlice(state) {
   };
 }
 
+function projectHasInFlightTurn(turnOwners, projectId) {
+  if (!projectId || !turnOwners) return false;
+  return Object.values(turnOwners).some((owner) => owner === projectId);
+}
+
+function withProjectTurnProgress(session, turnOwners, projectId) {
+  if (!projectId) return session;
+  const turnInProgress = projectHasInFlightTurn(turnOwners, projectId);
+  return {
+    ...session,
+    turnInProgress,
+    currentTurnId: turnInProgress ? session.currentTurnId : "",
+  };
+}
+
 // Pure: apply one chat event to a session slice and return the next slice.
 // Owner/turn-tracking (`turnOwners`) is handled by the caller — this only
 // evolves the conversation itself, so it works identically for the active
@@ -506,7 +523,10 @@ export function chatReducer(state, action, now = Date.now()) {
       // streamed-so-far chat survives the switch and background events keep it
       // current. (Completed projects reload cheaply from the backend on return.)
       let sessions = state.sessions;
-      if (state.currentProjectId && state.turnInProgress) {
+      if (
+        state.currentProjectId &&
+        (state.turnInProgress || projectHasInFlightTurn(state.turnOwners, state.currentProjectId))
+      ) {
         sessions = { ...sessions, [state.currentProjectId]: sessionSlice(state) };
       }
       // Restore a retained session for the project we're entering (consuming it
@@ -516,6 +536,7 @@ export function chatReducer(state, action, now = Date.now()) {
       const next = {
         ...INITIAL_CHAT_STATE,
         currentProjectId: action.projectId,
+        isHydratingSession: action.hydrating === true,
         pendingTokens: state.pendingTokens,
         // Keep tracking any turn still running elsewhere so its events keep
         // routing to its own (retained) session, not this project's chat.
@@ -553,8 +574,12 @@ export function chatReducer(state, action, now = Date.now()) {
         history,
         turnInProgress: action.session.turnInProgress === true,
         currentTurnId: action.session.turnInProgress ? state.currentTurnId : "",
+        isHydratingSession: false,
       };
     }
+    case "hydrate_session_complete":
+      if (state.currentProjectId !== action.projectId) return state;
+      return { ...state, isHydratingSession: false };
     case "queue_user_message": {
       const userTurn = {
         id: `user-${action.turnId}`,
@@ -588,6 +613,7 @@ export function chatReducer(state, action, now = Date.now()) {
         history,
         currentTurnId: action.turnId,
         turnInProgress: true,
+        isHydratingSession: false,
         lastError: "",
         turnOwners: { ...state.turnOwners, [action.turnId]: state.currentProjectId },
       };
@@ -596,22 +622,29 @@ export function chatReducer(state, action, now = Date.now()) {
       const event = action.event;
       const turnId = event.turnId;
       const knownOwner = state.turnOwners[turnId];
-      // A turn with no recorded owner is adopted by the current project (it was
-      // just started here, possibly before `queue_user_message` ran).
+      // The backend stamps every event with its owning `projectId`, so routing
+      // never has to guess. Fall back to the recorded owner, then (only for a
+      // legacy/stub event that omits the id) to adopting the current project on
+      // a fresh `turn_start`.
       const ownerProject =
-        knownOwner || (event.kind === "turn_start" ? state.currentProjectId : undefined);
+        event.projectId ||
+        knownOwner ||
+        (event.kind === "turn_start" ? state.currentProjectId : undefined);
 
-      // Maintain the global turn→project map: register on start, prune on end.
+      // Maintain the global turn→project map: register the owner from ANY
+      // in-flight event (not just `turn_start`) so a turn whose start we missed
+      // — e.g. an HMR/Vite reload mid-build — still gets an owner, and thus a
+      // running indicator. Prune on end.
       let turnOwners = state.turnOwners;
-      if (event.kind === "turn_start" && !knownOwner && ownerProject) {
-        turnOwners = { ...turnOwners, [turnId]: ownerProject };
-      } else if (
+      if (
         event.kind === "turn_end" ||
         event.kind === "error" ||
         event.kind === "auth_expired"
       ) {
         const { [turnId]: _drop, ...rest } = turnOwners;
         turnOwners = rest;
+      } else if (ownerProject && knownOwner !== ownerProject) {
+        turnOwners = { ...turnOwners, [turnId]: ownerProject };
       }
 
       // The proxy key is app-wide, so a Panda auth rejection raises the re-auth
@@ -628,11 +661,13 @@ export function chatReducer(state, action, now = Date.now()) {
       // visible session. A new turn supersedes a stale toolbar slice — clear
       // it so a chat-produced gcode (arriving as an artifact) wins.
       if (!ownerProject || ownerProject === state.currentProjectId) {
+        const session = applyChatEventToSession(sessionSlice(state), event, now);
         return {
           ...state,
-          ...applyChatEventToSession(sessionSlice(state), event, now),
+          ...withProjectTurnProgress(session, turnOwners, state.currentProjectId),
           turnOwners,
           ...reauthPatch,
+          ...(event.kind === "turn_start" ? { isHydratingSession: false } : {}),
           ...(event.kind === "turn_start"
             ? { lastSlice: INITIAL_CHAT_STATE.lastSlice }
             : {}),
@@ -653,7 +688,11 @@ export function chatReducer(state, action, now = Date.now()) {
         ...reauthPatch,
         sessions: {
           ...state.sessions,
-          [ownerProject]: applyChatEventToSession(stash, event, now),
+          [ownerProject]: withProjectTurnProgress(
+            applyChatEventToSession(stash, event, now),
+            turnOwners,
+            ownerProject,
+          ),
         },
       };
     }
@@ -1021,13 +1060,12 @@ export function setProject(projectId) {
   // with its live history; re-hydrating would clobber the still-streaming turn
   // with the backend's not-yet-persisted snapshot, so skip the fetch for it.
   const hadRetained = Boolean(getChatState().sessions?.[projectId]);
-  dispatch({ type: "set_project", projectId });
+  const shouldHydrate = Boolean(projectId && projectId !== previous && !hadRetained);
+  dispatch({ type: "set_project", projectId, hydrating: shouldHydrate });
   // Switching into a real project pulls its persisted transcript back in so
   // chat history survives restarts and project switches. Same-project calls
   // (the reducer no-ops them) and clearing to "" skip the fetch.
-  if (projectId && projectId !== previous) {
-    if (!hadRetained) hydrateSession(projectId);
-  }
+  if (shouldHydrate) hydrateSession(projectId);
 }
 
 /**
@@ -1042,13 +1080,24 @@ export async function hydrateSession(projectId, transport = getTransport()) {
   try {
     const session = await transport.chat_session_state(projectId);
     const state = getChatState();
-    if (state.currentProjectId !== projectId || state.turnInProgress) return;
+    if (
+      state.currentProjectId !== projectId ||
+      state.turnInProgress ||
+      projectHasInFlightTurn(state.turnOwners, projectId)
+    ) {
+      return;
+    }
     if (!session || !Array.isArray(session.history) || session.history.length === 0) {
+      dispatch({ type: "hydrate_session_complete", projectId });
       return;
     }
     dispatch({ type: "hydrate_session", session });
   } catch {
-    // No transport / unreadable session → nothing to restore.
+    // No transport / unreadable session -> nothing to restore.
+    const state = getChatState();
+    if (state.currentProjectId === projectId) {
+      dispatch({ type: "hydrate_session_complete", projectId });
+    }
   }
 }
 

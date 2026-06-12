@@ -22,6 +22,7 @@ test("ChatSidebar empty state: store starts with no history and no in-flight tur
   assert.equal(state.turnInProgress, false);
   assert.equal(state.currentTurnId, "");
   assert.equal(state.lastError, "");
+  assert.equal(state.isHydratingSession, false);
 });
 
 test("ChatSidebar wiring: attaching to a fresh transport produces a working event subscription", () => {

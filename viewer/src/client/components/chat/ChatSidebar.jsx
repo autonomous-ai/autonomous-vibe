@@ -72,12 +72,14 @@ export default function ChatSidebar({
   const lastError = useChatStore((state) => state.lastError);
   const needsPandaReauth = useChatStore((state) => state.needsPandaReauth);
   const history = useChatStore((state) => state.history);
+  const isHydratingSession = useChatStore((state) => state.isHydratingSession);
   const projectId = useChatStore((state) => state.currentProjectId);
   const currentProjectName = useProjectsStore((state) => {
     const current = state.projects.find((project) => project.id === state.currentProjectId);
     return current?.name || "";
   });
   const isEmpty = history.length === 0;
+  const showCenteredEmpty = isEmpty && !isHydratingSession;
   const summaryTitle = currentProjectName.trim() || (history.length ? "Untitled chat" : "New chat");
 
   const resizeStateRef = useRef(null);
@@ -223,10 +225,10 @@ export default function ChatSidebar({
       </header>
 
       <div className="min-h-0 flex-1">
-        {isEmpty ? (
+        {showCenteredEmpty ? (
           <div
             data-slot="chat-empty-composer"
-            className="flex h-full flex-col items-center justify-center gap-4 px-3.5"
+            className="flex h-full flex-col items-center justify-center gap-4 px-3.5 transition-opacity duration-200"
           >
             <div className="flex flex-col items-center gap-1 text-center text-xs text-muted-foreground">
               <p>Describe what you want to print.</p>
@@ -234,6 +236,16 @@ export default function ChatSidebar({
               <p className="opacity-70">Click a face on the model to refer to it in your message.</p>
             </div>
             <ChatInput ref={chatInputRef} className="w-full bg-transparent px-0 py-0" />
+          </div>
+        ) : isHydratingSession ? (
+          <div
+            data-slot="chat-history-loading"
+            aria-busy="true"
+            className="flex h-full flex-col justify-end gap-2 px-3.5 py-4 opacity-70 transition-opacity duration-200"
+          >
+            <div className="h-3 w-7/12 animate-pulse rounded bg-muted" />
+            <div className="h-3 w-10/12 animate-pulse rounded bg-muted" />
+            <div className="h-3 w-5/12 animate-pulse rounded bg-muted" />
           </div>
         ) : (
           <ChatHistory
@@ -255,7 +267,7 @@ export default function ChatSidebar({
         </div>
       ) : null}
 
-      {isEmpty ? null : <ChatInput ref={chatInputRef} />}
+      {showCenteredEmpty ? null : <ChatInput ref={chatInputRef} />}
     </aside>
   );
 }

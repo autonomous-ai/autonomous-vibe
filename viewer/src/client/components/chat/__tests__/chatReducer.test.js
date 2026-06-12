@@ -165,6 +165,41 @@ test("a streamed response is preserved (and keeps growing) across switch-away-an
   assert.equal(state.turnOwners["t-1"], undefined, "owner pruned on end");
 });
 
+test("overlapping turns keep their project retained until every turn ends", () => {
+  let state = { ...INITIAL_CHAT_STATE, currentProjectId: "proj-1" };
+  state = chatReducer(
+    state,
+    { type: "queue_user_message", turnId: "t-1", text: "first", at: FIXED_NOW },
+    FIXED_NOW,
+  );
+  state = chatReducer(
+    state,
+    { type: "queue_user_message", turnId: "t-2", text: "second", at: FIXED_NOW + 1 },
+    FIXED_NOW,
+  );
+  state = applyEvents(state, [
+    { kind: "turn_start", turnId: "t-1", phase: "implement" },
+    { kind: "turn_start", turnId: "t-2", phase: "plan" },
+    { kind: "text_delta", turnId: "t-1", text: "first done" },
+    { kind: "turn_end", turnId: "t-1" },
+  ]);
+  assert.equal(state.turnInProgress, true, "t-2 still keeps the project live");
+
+  state = chatReducer(state, { type: "set_project", projectId: "proj-2" }, FIXED_NOW);
+  assert.equal(state.history.length, 0, "active project has a clean chat");
+
+  state = applyEvents(state, [
+    { kind: "text_delta", turnId: "t-2", text: "still streaming" },
+  ]);
+  assert.equal(state.history.length, 0, "background stream stays out of proj-2");
+
+  state = chatReducer(state, { type: "set_project", projectId: "proj-1" }, FIXED_NOW);
+  const assistant = state.history.find((t) => t.id === "t-2" && t.role === "assistant");
+  assert.ok(assistant, "second turn is restored");
+  assert.equal(assistant.blocks[0].text, "still streaming");
+  assert.equal(state.turnInProgress, true);
+});
+
 test("returning to the owning project lets its turn's events apply again", () => {
   let state = chatReducer(
     { ...INITIAL_CHAT_STATE, currentProjectId: "proj-1" },
@@ -181,6 +216,39 @@ test("returning to the owning project lets its turn's events apply again", () =>
   const assistant = state.history.find((t) => t.id === "t-1" && t.role === "assistant");
   assert.ok(assistant, "owner project shows its own turn's response");
   assert.equal(assistant.blocks[0].text, "On it…");
+});
+
+test("a backend-started turn for another project does not pollute the active chat (routed by projectId)", () => {
+  // Repro of the "two BUILDING blocks in one project" bug: a build started by
+  // the backend (autopilot) for proj-B, while proj-A is on screen. Without the
+  // projectId stamp, proj-B's `turn_start` would be adopted by proj-A and both
+  // builds would render in one chat. With it, proj-B's events route to proj-B
+  // (which has no retained slice here) and are dropped from proj-A's view.
+  let state = { ...INITIAL_CHAT_STATE, currentProjectId: "proj-A" };
+  state = applyEvents(state, [
+    { kind: "turn_start", turnId: "t-b", projectId: "proj-B", phase: "implement" },
+    { kind: "text_delta", turnId: "t-b", projectId: "proj-B", text: "building…" },
+    { kind: "artifact_changed", turnId: "t-b", projectId: "proj-B", file: "x.stl", reason: "new" },
+  ]);
+  assert.equal(state.history.length, 0, "proj-B's build stays out of proj-A's chat");
+  assert.equal(state.turnInProgress, false, "proj-A shows no spinner for proj-B's turn");
+  assert.equal(state.turnOwners["t-b"], "proj-B", "owner taken from the event, not the screen");
+});
+
+test("a turn whose turn_start was missed still gets an owner + running indicator (projectId)", () => {
+  // Repro of "no spinner, but messages keep arriving": an HMR/reload wiped
+  // turnOwners mid-build, so the active project's turn arrives mid-stream with
+  // no `turn_start`. The projectId on later events re-establishes ownership, so
+  // the message renders AND the spinner comes back.
+  let state = { ...INITIAL_CHAT_STATE, currentProjectId: "proj-A" };
+  state = applyEvents(state, [
+    { kind: "text_delta", turnId: "t-1", projectId: "proj-A", text: "still working…" },
+  ]);
+  const assistant = state.history.find((t) => t.id === "t-1" && t.role === "assistant");
+  assert.ok(assistant, "the orphaned turn's message renders in its project");
+  assert.equal(assistant.blocks[0].text, "still working…");
+  assert.equal(state.turnInProgress, true, "spinner restored from the event's projectId");
+  assert.equal(state.turnOwners["t-1"], "proj-A");
 });
 
 test("chat_event stream renders a single assistant turn with merged text deltas", () => {

@@ -5,6 +5,7 @@ import { useProjectsStore } from "@/store/projects.ts";
 import { CHAT_MIN_WIDTH, clampChatWidth } from "@/workbench/chatLayout";
 import ChatHistory from "./ChatHistory";
 import ChatInput from "./ChatInput";
+import ChatStatusLine from "./ChatStatusLine";
 import { FOCUS_CHAT_INPUT_EVENT } from "./chatInputHelpers";
 // import ActionButtons from "./ActionButtons";
 import AuthModeControl from "./AuthModeControl";
@@ -267,7 +268,12 @@ export default function ChatSidebar({
         </div>
       ) : null}
 
-      {showCenteredEmpty ? null : <ChatInput ref={chatInputRef} />}
+      {showCenteredEmpty ? null : (
+        <>
+          <ChatStatusLine />
+          <ChatInput ref={chatInputRef} />
+        </>
+      )}
     </aside>
   );
 }

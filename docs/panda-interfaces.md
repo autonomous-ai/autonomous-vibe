@@ -280,6 +280,15 @@ function file_save(file: string, asset: AssetKind): Promise<string | null>;
 // file_reveal — replaces POST /__cad/reveal
 function file_reveal(file: string, asset: AssetKind): Promise<void>;
 
+// file_import — native "Open" dialog that imports user-chosen mesh files into
+// the open project. Everything is normalized to `.stl` (the render/slice
+// pipeline's native format): `.stl` is copied as-is; `.glb`/`.gltf` is converted
+// to `.stl` via the bundled CPython's trimesh (OrcaSlicer can't slice GLB).
+// Destination names are de-duplicated so an import never overwrites an existing
+// model; the catalog revision is bumped on success. Resolves to the imported
+// workspace-relative paths (e.g. ["dragon.stl"]), or [] if the user cancelled.
+function file_import(): Promise<string[]>;
+
 // step_source_status_read — replaces GET /__cad/step-source-status
 interface StepSourceStatus {
   hasSource: boolean;

@@ -272,7 +272,8 @@ import {
 import { emitCadRefSelection } from "@/components/chat/cadRefEvents";
 import { basename, pickPrinterForSlice, PRINT_CONFIG_CHANGED_EVENT } from "@/components/chat/actionButtonsHelpers";
 import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
-import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, selectSliceTargetStl, getChatState, addPendingAttachment, setPendingViewContext, useChatStore, selectAwaitingAnswerProjectIds } from "@/store/chat";
+import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, selectSliceTargetStl, getChatState, addPendingAttachment, setPendingViewContext, useChatStore, selectAwaitingAnswerProjectIds, awaitingNeedsUser } from "@/store/chat";
+import { useAutopilot } from "@/lib/autopilot";
 import { useProjectsStore } from "@/store/projects.ts";
 import { sortProjects } from "@/components/library/projectListHelpers.js";
 import { PLACEHOLDER_PROJECT_NAME, FOCUS_CHAT_INPUT_EVENT, PREFILL_CHAT_INPUT_EVENT } from "@/components/chat/chatInputHelpers";
@@ -619,14 +620,21 @@ export default function CadWorkspace({
     () => new Set(Object.values(turnOwners || {})),
     [turnOwners],
   );
-  // Projects whose session is paused waiting for a user answer (proposed plan or
-  // unanswered preference questions). Drives the sidebar "needs your answer" dot.
-  // Independent of `generatingProjectIds` — a paused turn has already ended, so a
-  // project is never in both sets at once.
+  // Projects whose session is paused waiting for a user answer. Drives the
+  // sidebar "needs your answer" dot. Autopilot-aware: a proposed plan only counts
+  // as a wait when autopilot is OFF (under autopilot the build auto-chains, so
+  // it's "working", not "waiting"); questions always count. Independent of
+  // `generatingProjectIds` — a real wait means the turn has ended.
   const awaitingAnswerMap = useChatStore(selectAwaitingAnswerProjectIds);
+  const autopilot = useAutopilot();
   const awaitingAnswerProjectIds = useMemo(
-    () => new Set(Object.keys(awaitingAnswerMap || {})),
-    [awaitingAnswerMap],
+    () =>
+      new Set(
+        Object.entries(awaitingAnswerMap || {})
+          .filter(([, reason]) => awaitingNeedsUser(reason, autopilot))
+          .map(([id]) => id),
+      ),
+    [awaitingAnswerMap, autopilot],
   );
   // True while the *active* project has an in-flight chat turn — drives the
   // live build stage (select-on-arrival, ambient spin, wireframe→solid

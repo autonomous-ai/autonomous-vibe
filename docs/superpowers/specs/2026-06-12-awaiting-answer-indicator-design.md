@@ -190,33 +190,62 @@ plan_proposed / turn_end(+questions fence)   chat_event reducer
   cleared on: queue_user_message / turn_start / error / mark_plan(non-proposed)
 ```
 
+## Autopilot correction + chat status line (follow-up)
+
+Field observation: users couldn't tell "still running" from "waiting for me",
+and the question surfaced that **autopilot auto-approves plans**. Confirmed in
+`spawn_chat_turn` (chat.rs): under autopilot (`auto_build`, the default) a plan
+turn that calls `ExitPlanMode` auto-chains into a build turn — *no* user wait —
+while a turn that stops to ask preference questions does **not** chain and waits.
+So a `plan_proposed` under autopilot is "working", not "waiting"; the original
+indicator wrongly flagged it during the plan→build gap.
+
+Two changes:
+
+1. **Reason-tagged, autopilot-aware awaiting.** `awaitingAnswerProjectIds` now
+   maps `projectId → "plan" | "questions"` (was `→ true`). A new pure helper
+   `awaitingNeedsUser(reason, autopilot)` resolves it: questions always wait; a
+   plan waits only when autopilot is OFF. The sidebar-dot derivation in
+   `CadWorkspace` (and the status line) filter through it, so under autopilot a
+   proposed plan never shows the dot.
+
+2. **Chat status line above the composer** (`ChatStatusLine.jsx`, mounted in
+   `ChatSidebar` just above `ChatInput`). Flags only the state the chat didn't
+   already make obvious — waiting on the user:
+   - waiting → "Waiting for your answer / approval ↑", a button that scrolls the
+     last `chat-questions` / proposed `chat-plan` card into view.
+   - otherwise → nothing.
+
+   The "working" state is intentionally NOT shown here: the turn header's
+   PLANNING/Building pill + ThinkingSummary ("Working…") already convey it, and a
+   second "Planning…" line below them read as a duplicate.
+
 ## Testing
 
-Pure-reducer tests in `viewer/src/client/components/chat/__tests__/` (the
-reducer is exported and exercised without React — see existing
-`chatReducer.test.js`, `planFlow.test.js`):
+Pure-reducer tests in `viewer/src/client/components/chat/__tests__/awaitingAnswer.test.js`:
 
-1. `plan_proposed` for a project sets `awaitingAnswerProjectIds[project]`.
-2. `turn_end` whose assistant turn contains a `panda-questions` fence sets it.
-3. `turn_end` with no questions fence and no prior plan does **not** set it.
-4. `queue_user_message` for the project clears it.
-5. `mark_plan` approved/superseded clears it.
-6. `error` for the project clears it.
-7. State survives a `set_project` switch (map is top-level, not in the dropped
-   session slice) — set for project A, switch to B, switch back to A: still set.
-8. A backgrounded project's `plan_proposed` (event whose `ownerProject` !=
-   `currentProjectId`) still sets the map for that project.
-
-Component-level: existing sidebar tests (if any) — assert the dot renders for an
-awaiting project and not for an idle/generating one.
+1. `plan_proposed` sets reason `"plan"`; `turn_end` + `panda-questions` fence sets
+   `"questions"`; a plain `turn_end` sets nothing.
+2. Clears on `queue_user_message` / `mark_plan` (approve+supersede) / `error` /
+   fresh `turn_start`.
+3. Survives a `set_project` switch (top-level map); a backgrounded project's
+   `plan_proposed` marks that project, not the active one.
+4. The switch-and-return regression: question fence + proposed-plan blocks survive
+   leaving and returning (slice retention).
+5. `awaitingNeedsUser`: questions always wait; a plan waits only when autopilot
+   is off.
 
 Run: `npm --prefix viewer test`.
 
 ## Files touched
 
-- `viewer/src/client/store/chat.js` — state field, reducer transitions,
-  `turnHasPendingQuestions` helper, `selectAwaitingAnswerProjectIds` selector.
-- `viewer/src/client/components/CadWorkspace.js` — derive the Set, pass the prop.
+- `viewer/src/client/store/chat.js` — reason-tagged `awaitingAnswerProjectIds`,
+  reducer transitions, `turnHasPendingQuestions` /
+  `selectAwaitingAnswerProjectIds` / `awaitingNeedsUser`, and the
+  paused-project slice-retention in `set_project`.
+- `viewer/src/client/components/CadWorkspace.js` — autopilot-aware Set, pass prop.
 - `viewer/src/client/components/workbench/FileViewerSidebar.js` — thread the prop
-  through `FileViewerContents` → `ProjectNode`; render the dot.
-- `viewer/src/client/components/chat/__tests__/` — reducer tests.
+  through `FileViewerContents` → `ProjectNode`; render the amber dot.
+- `viewer/src/client/components/chat/ChatStatusLine.jsx` — new working/waiting
+  status line; mounted in `ChatSidebar.jsx` above the composer.
+- `viewer/src/client/components/chat/__tests__/awaitingAnswer.test.js` — tests.

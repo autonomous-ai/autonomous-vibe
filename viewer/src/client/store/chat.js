@@ -109,15 +109,16 @@ export const INITIAL_CHAT_STATE = Object.freeze({
   awaitingApproval: false,
   activePlanTurnId: "",
   isHydratingSession: false,
-  // Project IDs whose session is paused waiting for a user answer — a proposed
-  // plan awaiting approval, or unanswered preference questions. Kept at the top
-  // level (keyed by projectId, like turnOwners) rather than in the per-session
-  // slice, so it survives project switches: a project that proposes a plan then
-  // is navigated away from would otherwise lose its retained slice (the retain
-  // condition is "turn in flight", and a paused turn has ended). Drives the
-  // sidebar "needs your answer" dot. Set when a turn ends in a paused state;
-  // cleared when the user responds. Not persisted — lost on a full reload, where
-  // the plan/question card is still visible in chat on reopen.
+  // Maps projectId → why its session is paused waiting for the user: "plan" (a
+  // proposed plan) or "questions" (a preference fork). Kept at the top level
+  // (like turnOwners) rather than in the per-session slice, so it survives
+  // project switches: a project that pauses then is navigated away from would
+  // otherwise lose its retained slice (the retain condition is "turn in flight",
+  // and a paused turn has ended). Drives the sidebar "needs your answer" dot and
+  // the composer status line — but only after `awaitingNeedsUser` resolves the
+  // reason against autopilot (which auto-builds plans, so a "plan" reason isn't a
+  // real wait then). Set when a turn ends paused; cleared when the user responds.
+  // Not persisted — lost on a full reload, where the card is still in chat.
   awaitingAnswerProjectIds: {},
   // Maps an in-flight turnId → the project that started it. Chat events carry
   // only a turnId, so this is how the reducer routes a streaming response back
@@ -404,11 +405,14 @@ function turnHasPendingQuestions(turn) {
   );
 }
 
-// Mark `projectId` as awaiting a user answer (value-stable: returns the same map
-// when already set, so the selector doesn't churn React subscribers).
-function setAwaiting(map, projectId) {
-  if (!projectId || map[projectId]) return map;
-  return { ...map, [projectId]: true };
+// Mark `projectId` as awaiting a user answer, tagging *why* — "plan" (a proposed
+// plan) or "questions" (preference fork). The reason matters because autopilot
+// auto-builds plans (so a "plan" reason isn't really a wait then) but never
+// auto-answers questions; consumers resolve that via `awaitingNeedsUser`.
+// Value-stable: returns the same map when already set to the same reason.
+function setAwaiting(map, projectId, reason) {
+  if (!projectId || map[projectId] === reason) return map;
+  return { ...map, [projectId]: reason };
 }
 
 // Clear `projectId` from the awaiting map (the user responded / the pause ended).
@@ -425,10 +429,10 @@ function nextAwaitingMap(map, event, ownerProject, history) {
   if (!ownerProject) return map;
   switch (event.kind) {
     case "plan_proposed":
-      return setAwaiting(map, ownerProject);
+      return setAwaiting(map, ownerProject, "plan");
     case "turn_end": {
       const turn = history.find((t) => t.id === event.turnId && t.role === "assistant");
-      return turnHasPendingQuestions(turn) ? setAwaiting(map, ownerProject) : map;
+      return turnHasPendingQuestions(turn) ? setAwaiting(map, ownerProject, "questions") : map;
     }
     case "turn_start":
     case "error":
@@ -967,14 +971,31 @@ export function selectAnyTurnInProgress(state) {
 const EMPTY_AWAITING = Object.freeze({});
 
 /**
- * The `{ projectId: true }` map of projects whose session is paused waiting for a
- * user answer (proposed plan or unanswered questions). Drives the sidebar dot.
- * Stable empty object when none, so memoized consumers don't churn.
+ * The `{ projectId: "plan"|"questions" }` map of projects whose session is paused
+ * waiting for the user. Resolve each reason through `awaitingNeedsUser` before
+ * surfacing it. Stable empty object when none, so memoized consumers don't churn.
  *
  * @param {ChatState} state
  */
 export function selectAwaitingAnswerProjectIds(state) {
   return state?.awaitingAnswerProjectIds || EMPTY_AWAITING;
+}
+
+/**
+ * Whether a paused reason should surface to the user as "waiting for you", given
+ * the autopilot setting. Questions always wait (autopilot never auto-answers
+ * them); a proposed plan waits only when autopilot is OFF — under autopilot the
+ * backend auto-chains the build (see `spawn_chat_turn` in chat.rs), so a "plan"
+ * reason is really "working", not "waiting".
+ *
+ * @param {"plan"|"questions"|undefined} reason
+ * @param {boolean} autopilot
+ * @returns {boolean}
+ */
+export function awaitingNeedsUser(reason, autopilot) {
+  if (reason === "questions") return true;
+  if (reason === "plan") return !autopilot;
+  return false;
 }
 
 // ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ import {
   INITIAL_CHAT_STATE,
   chatReducer,
   selectAwaitingAnswerProjectIds,
+  awaitingNeedsUser,
 } from "../../../store/chat.js";
 
 const NOW = 1_000;
@@ -40,7 +41,7 @@ test("plan_proposed marks the owning project as awaiting an answer", () => {
     ],
     withProject("A"),
   );
-  assert.equal(awaiting(state).A, true);
+  assert.equal(awaiting(state).A, "plan");
 });
 
 test("turn_end with a panda-questions fence marks the project awaiting", () => {
@@ -52,7 +53,7 @@ test("turn_end with a panda-questions fence marks the project awaiting", () => {
     ],
     withProject("A"),
   );
-  assert.equal(awaiting(state).A, true);
+  assert.equal(awaiting(state).A, "questions");
 });
 
 test("turn_end without questions and no plan does not mark awaiting", () => {
@@ -75,7 +76,7 @@ test("queue_user_message clears the awaiting flag (user responded)", () => {
     ],
     withProject("A"),
   );
-  assert.equal(awaiting(state).A, true);
+  assert.equal(awaiting(state).A, "plan");
   state = chatReducer(
     state,
     { type: "queue_user_message", turnId: "t2", text: "go", at: NOW },
@@ -142,7 +143,7 @@ test("awaiting state survives a project switch (top-level map, not the session s
   );
   state = chatReducer(state, { type: "set_project", projectId: "B" }, NOW);
   state = chatReducer(state, { type: "set_project", projectId: "A" }, NOW);
-  assert.equal(awaiting(state).A, true);
+  assert.equal(awaiting(state).A, "plan");
 });
 
 test("plan_proposed for a backgrounded project marks that project, not the active one", () => {
@@ -155,8 +156,16 @@ test("plan_proposed for a backgrounded project marks that project, not the activ
     [{ kind: "plan_proposed", turnId: "t1", plan: "# Plan", projectId: "A" }],
     state,
   );
-  assert.equal(awaiting(state).A, true);
+  assert.equal(awaiting(state).A, "plan");
   assert.equal(awaiting(state).B, undefined);
+});
+
+test("awaitingNeedsUser: questions always wait; a plan waits only when autopilot is off", () => {
+  assert.equal(awaitingNeedsUser("questions", true), true);
+  assert.equal(awaitingNeedsUser("questions", false), true);
+  assert.equal(awaitingNeedsUser("plan", false), true);
+  assert.equal(awaitingNeedsUser("plan", true), false, "autopilot auto-builds the plan");
+  assert.equal(awaitingNeedsUser(undefined, false), false);
 });
 
 test("a paused project's question UI survives a project switch and return", () => {
@@ -172,7 +181,7 @@ test("a paused project's question UI survives a project switch and return", () =
     ],
     withProject("A"),
   );
-  assert.equal(awaiting(state).A, true);
+  assert.equal(awaiting(state).A, "questions");
   state = chatReducer(state, { type: "set_project", projectId: "B" }, NOW);
   state = chatReducer(state, { type: "set_project", projectId: "A" }, NOW);
   const turn = state.history.find((t) => t.role === "assistant" && t.id === "t1");
@@ -181,7 +190,7 @@ test("a paused project's question UI survives a project switch and return", () =
     turn.blocks.some((b) => b.kind === "text" && b.text.includes("```panda-questions")),
     "the panda-questions fence should survive the round-trip so the QuestionCard renders",
   );
-  assert.equal(awaiting(state).A, true, "the awaiting dot should persist");
+  assert.equal(awaiting(state).A, "questions", "the awaiting dot should persist");
 });
 
 test("a paused project's proposed plan + approval gate survive a switch and return", () => {

@@ -96,9 +96,19 @@ pub fn session_id_for_project(project_id: &str) -> Uuid {
 /// auto-approved) plan. Begins with [`APPROVE_PLAN_PREAMBLE`] so rehydration
 /// drops it from history.
 fn approved_plan_message(plan_text: &str) -> String {
+    // Autopilot can reach here with an empty plan (the model exited plan mode
+    // without restating it, keeping the plan in its thinking channel). The build
+    // resumes the same session, so point it at the plan it just designed rather
+    // than appending a blank. Keeps the APPROVE_PLAN_PREAMBLE prefix either way
+    // so the synthetic prompt stays strippable on rehydration.
+    let body = if plan_text.trim().is_empty() {
+        "(Implement the plan you just designed in this session.)"
+    } else {
+        plan_text
+    };
     format!(
         "The plan below is approved. Implement it now, generating all parts \
-         and STL/STEP artifacts as described.\n\n{plan_text}"
+         and STL/STEP artifacts as described.\n\n{body}"
     )
 }
 
@@ -132,11 +142,19 @@ fn spawn_chat_turn(app: AppHandle, project_id: &str, message: String, phase: Tur
         // chat regardless of which project is on screen (see `ChatEventEnvelope`).
         let event_project_id = project_id_for_task.clone();
         // Capture the plan the model proposes so autopilot can build from it.
-        let captured_plan = std::sync::Arc::new(Mutex::new(String::new()));
+        // `Some(_)` means ExitPlanMode fired — build it, even if the plan TEXT is
+        // empty (the model sometimes keeps the plan in its thinking channel and
+        // exits plan mode blank; the build turn resumes the same session, so its
+        // reasoning carries over). `None` means the turn ended without proposing a
+        // plan — it stopped to ask preference questions, or errored — so don't
+        // build. This distinction is why we track the Option rather than testing
+        // the string: an empty ExitPlanMode plan must still build.
+        let captured_plan: std::sync::Arc<Mutex<Option<String>>> =
+            std::sync::Arc::new(Mutex::new(None));
         let plan_sink = captured_plan.clone();
         let on_event = move |event: ChatEvent| {
             if let ChatEvent::PlanProposed { ref plan, .. } = event {
-                *plan_sink.lock() = plan.clone();
+                *plan_sink.lock() = Some(plan.clone());
             }
             // Best-effort emit. If the React side has unmounted (window
             // closed), emit fails — there's nothing useful to do here.
@@ -157,10 +175,14 @@ fn spawn_chat_turn(app: AppHandle, project_id: &str, message: String, phase: Tur
         .await;
         deregister_turn(&turn_id_for_task);
 
-        // Autopilot: after a plan turn that produced a plan, build it now.
+        // Autopilot: after a plan turn that PROPOSED a plan (ExitPlanMode fired),
+        // build it now — gated on the event, NOT on the plan text being
+        // non-empty. The old `!plan.trim().is_empty()` guard silently aborted the
+        // build when ExitPlanMode returned an empty plan, leaving the turn stuck
+        // on "Building automatically" with nothing ever happening.
+        let proposed_plan = captured_plan.lock().clone();
         if matches!(phase, TurnPhase::Plan) && !cancel_for_task.is_cancelled() {
-            let plan = captured_plan.lock().clone();
-            if !plan.trim().is_empty() {
+            if let Some(plan) = proposed_plan {
                 let auto_build = crate::commands::app::load_settings()
                     .await
                     .map(|s| s.auto_build)
@@ -531,6 +553,25 @@ mod tests {
         assert!(msg.starts_with(APPROVE_PLAN_PREAMBLE));
         assert!(msg.contains("Make a 120mm phone stand."));
         // The build phase's synthetic prompt must be droppable from history.
+        assert!(parse_session_history(
+            &serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": msg},
+                "timestamp": "2026-06-10T00:00:00.000Z"
+            })
+            .to_string()
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn approved_plan_message_handles_empty_plan_and_stays_strippable() {
+        // Autopilot reaches this with an empty plan when the model exits plan mode
+        // blank. The message must still kick off a build (keep the preamble) and
+        // stay droppable from rehydrated history, and must not append a bare gap.
+        let msg = approved_plan_message("   ");
+        assert!(msg.starts_with(APPROVE_PLAN_PREAMBLE));
+        assert!(msg.contains("Implement the plan you just designed"));
         assert!(parse_session_history(
             &serde_json::json!({
                 "type": "user",

@@ -14,7 +14,8 @@ import {
   LoaderCircle,
   Package,
   Route,
-  Trash2
+  Trash2,
+  Upload
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -708,6 +709,7 @@ function FileViewerContents({
   onSelectEntry,
   onSelectProject,
   onCreateProject,
+  onImportFiles,
   onRequestDeleteProject,
   onRenameProject,
   generatingProjectIds,
@@ -766,19 +768,34 @@ function FileViewerContents({
           <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Projects
           </span>
-          {onCreateProject ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-6 text-muted-foreground"
-              aria-label="New project"
-              title="New project"
-              onClick={() => onCreateProject()}
-            >
-              <FolderPlus className="size-4" aria-hidden="true" />
-            </Button>
-          ) : null}
+          <div className="flex items-center gap-0.5">
+            {onImportFiles ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-6 text-muted-foreground"
+                aria-label="Import STL or GLB"
+                title="Import STL or GLB"
+                onClick={() => onImportFiles()}
+              >
+                <Upload className="size-4" aria-hidden="true" />
+              </Button>
+            ) : null}
+            {onCreateProject ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-6 text-muted-foreground"
+                aria-label="New project"
+                title="New project"
+                onClick={() => onCreateProject()}
+              >
+                <FolderPlus className="size-4" aria-hidden="true" />
+              </Button>
+            ) : null}
+          </div>
         </div>
         <SidebarInput
           type="search"
@@ -842,6 +859,7 @@ export default function FileViewerSidebar({
   onSelectEntry,
   onSelectProject,
   onCreateProject,
+  onImportFiles,
   onRequestDeleteProject,
   onRenameProject,
   generatingProjectIds,
@@ -885,6 +903,7 @@ export default function FileViewerSidebar({
       onSelectEntry={onSelectEntry}
       onSelectProject={onSelectProject}
       onCreateProject={onCreateProject}
+      onImportFiles={onImportFiles}
       onRequestDeleteProject={onRequestDeleteProject}
       onRenameProject={onRenameProject}
       generatingProjectIds={generatingProjectIds}

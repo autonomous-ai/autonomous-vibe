@@ -172,6 +172,7 @@ pub fn run() {
             files::file_read_bytes,
             files::file_save,
             files::file_reveal,
+            files::file_import,
             // step
             step::step_source_status_read,
             step::step_artifact_regenerate,

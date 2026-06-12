@@ -4,7 +4,7 @@ use crate::ipc::types::AssetKind;
 use crate::ipc::{IpcError, IpcResult};
 use crate::paths;
 use crate::state::AppState;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::State;
 use tauri_plugin_dialog::DialogExt;
 
@@ -60,6 +60,154 @@ pub async fn file_save(
         .map_err(IpcError::from)?;
 
     Ok(Some(destination.display().to_string()))
+}
+
+/// Import one or more user-chosen 3D mesh files into the open project via the
+/// native "Open" dialog.
+///
+/// Everything is normalized to `.stl` — the catalog/render/slice pipeline's
+/// native mesh format. `.stl` is copied as-is; `.glb`/`.gltf` is converted to
+/// `.stl` via the bundled CPython's `trimesh`. (OrcaSlicer can't slice GLB, so a
+/// raw copy would be a print dead-end; converting on import makes an imported
+/// model renderable *and* printable through the existing `.stl` paths.) GLB
+/// color/materials are intentionally dropped — irrelevant for single-material
+/// FDM.
+///
+/// Returns the imported workspace-relative paths (e.g. `["dragon.stl"]`), or an
+/// empty vec if the user cancelled. Bumps the catalog revision so the viewer's
+/// asset cache-bust tokens change and the rail re-reads.
+#[tauri::command]
+pub async fn file_import(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> IpcResult<Vec<String>> {
+    let id = state
+        .active_project()
+        .ok_or_else(|| IpcError::new("NO_ACTIVE_PROJECT", "no project is open"))?;
+    let root = paths::project_root(&id);
+    tokio::fs::create_dir_all(&root).await.map_err(IpcError::from)?;
+
+    // `blocking_pick_files` parks the calling thread until the user responds, so
+    // run it on the blocking pool rather than an async-runtime worker (matches
+    // `file_save`'s `blocking_save_file`).
+    let dialog_app = app.clone();
+    let chosen = tauri::async_runtime::spawn_blocking(move || {
+        dialog_app
+            .dialog()
+            .file()
+            .add_filter("3D models", &["stl", "glb", "gltf"])
+            .blocking_pick_files()
+    })
+    .await
+    .map_err(|e| IpcError::new("IMPORT_FAILED", format!("import dialog failed: {e}")))?;
+
+    let Some(picks) = chosen else {
+        return Ok(Vec::new()); // user cancelled
+    };
+
+    let mut imported = Vec::new();
+    for pick in picks {
+        let source = pick
+            .into_path()
+            .map_err(|e| IpcError::new("IMPORT_FAILED", format!("invalid source path: {e}")))?;
+        imported.push(import_one(&source, &root).await?);
+    }
+
+    state.bump_revision();
+    Ok(imported)
+}
+
+/// Place a single imported mesh into `project_root` as an `.stl`, returning its
+/// project-relative name. `.stl` copies bytes; `.glb`/`.gltf` converts via
+/// trimesh. The destination is de-duplicated so an import never clobbers a
+/// generated model or a prior import.
+async fn import_one(source: &Path, project_root: &Path) -> IpcResult<String> {
+    let stem = source
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| IpcError::invalid_argument("source file has no name"))?;
+    let ext = source
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    let dest = unique_dest(project_root, stem, "stl");
+    match ext.as_str() {
+        "stl" => {
+            tokio::fs::copy(source, &dest).await.map_err(IpcError::from)?;
+        }
+        "glb" | "gltf" => {
+            convert_mesh_to_stl(source, &dest).await?;
+        }
+        other => {
+            return Err(IpcError::new(
+                "IMPORT_UNSUPPORTED",
+                format!("cannot import .{other} files; supported: stl, glb, gltf"),
+            ));
+        }
+    }
+
+    paths::to_workspace_relative(&dest, project_root)
+        .ok_or_else(|| IpcError::new("IMPORT_FAILED", "imported file escaped project root"))
+}
+
+/// Pick a non-colliding destination `<dir>/<stem>.<ext>`, appending `-1`, `-2`,
+/// … until the name is free, so an import never overwrites an existing file.
+fn unique_dest(dir: &Path, stem: &str, ext: &str) -> PathBuf {
+    let first = dir.join(format!("{stem}.{ext}"));
+    if !first.exists() {
+        return first;
+    }
+    let mut n = 1u32;
+    loop {
+        let candidate = dir.join(format!("{stem}-{n}.{ext}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Convert a `.glb`/`.gltf` to `.stl` with the bundled CPython's `trimesh`
+/// (already vendored in the desktop python runtime and used by cadpy's render
+/// path). `force='mesh'` flattens a multi-geometry scene into one mesh; the
+/// `.stl` extension drives the exporter. A `.glb` is self-contained; a `.gltf`
+/// referencing external buffers/textures is best-effort and surfaces any failure
+/// as `IMPORT_FAILED`.
+async fn convert_mesh_to_stl(source: &Path, dest: &Path) -> IpcResult<()> {
+    let python = resolve_python()
+        .ok_or_else(|| IpcError::new("PYTHON_MISSING", "bundled python interpreter not found"))?;
+    let output = tokio::process::Command::new(&python)
+        .arg("-c")
+        .arg("import sys,trimesh; trimesh.load(sys.argv[1],force='mesh').export(sys.argv[2])")
+        .arg(source)
+        .arg(dest)
+        .output()
+        .await
+        .map_err(|e| IpcError::new("IMPORT_FAILED", format!("conversion failed to start: {e}")))?;
+    if !output.status.success() {
+        // A partial/empty export can be left behind on failure; drop it so a
+        // de-duped retry doesn't skip the name and a broken `.stl` never lands
+        // in the catalog.
+        let _ = tokio::fs::remove_file(dest).await;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(IpcError::new(
+            "IMPORT_FAILED",
+            "GLB/GLTF to STL conversion failed",
+        )
+        .with_detail(serde_json::Value::String(stderr.trim().to_string())));
+    }
+    Ok(())
+}
+
+/// Resolve a usable Python interpreter: the bundled CPython sidecar first, else
+/// a system `python3`. Mirrors `commands::app::resolve_python`.
+fn resolve_python() -> Option<PathBuf> {
+    crate::commands::claude_driver::bundled_python_bin_dir()
+        .map(|dir| dir.join("python3"))
+        .filter(|p| p.exists())
+        .or_else(|| which::which("python3").ok())
 }
 
 #[derive(Debug)]
@@ -189,6 +337,61 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = validate_save_source(dir.path().join("nope.stl")).unwrap_err();
         assert_eq!(err.code, "FILE_NOT_FOUND");
+    }
+
+    #[test]
+    fn unique_dest_appends_suffix_on_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert_eq!(unique_dest(root, "m", "stl"), root.join("m.stl"));
+        std::fs::write(root.join("m.stl"), b"").unwrap();
+        assert_eq!(unique_dest(root, "m", "stl"), root.join("m-1.stl"));
+        std::fs::write(root.join("m-1.stl"), b"").unwrap();
+        assert_eq!(unique_dest(root, "m", "stl"), root.join("m-2.stl"));
+    }
+
+    #[tokio::test]
+    async fn import_one_copies_stl_into_project_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let src = dir.path().join("dragon.stl");
+        std::fs::write(&src, b"solid dragon\n").unwrap();
+
+        let rel = import_one(&src, &root).await.unwrap();
+        assert_eq!(rel, "dragon.stl");
+        assert_eq!(
+            std::fs::read(root.join("dragon.stl")).unwrap(),
+            b"solid dragon\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn import_one_dedupes_and_never_clobbers() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        // A generated model already occupies the name.
+        std::fs::write(root.join("dragon.stl"), b"existing").unwrap();
+        let src = dir.path().join("dragon.stl");
+        std::fs::write(&src, b"new bytes").unwrap();
+
+        let rel = import_one(&src, &root).await.unwrap();
+        assert_eq!(rel, "dragon-1.stl");
+        assert_eq!(std::fs::read(root.join("dragon.stl")).unwrap(), b"existing");
+        assert_eq!(std::fs::read(root.join("dragon-1.stl")).unwrap(), b"new bytes");
+    }
+
+    #[tokio::test]
+    async fn import_one_rejects_unsupported_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let src = dir.path().join("model.obj");
+        std::fs::write(&src, b"v 0 0 0").unwrap();
+
+        let err = import_one(&src, &root).await.unwrap_err();
+        assert_eq!(err.code, "IMPORT_UNSUPPORTED");
     }
 }
 

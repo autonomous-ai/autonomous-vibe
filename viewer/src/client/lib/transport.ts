@@ -827,6 +827,8 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
       return null as unknown as T;
     case "file_reveal":
       return undefined as unknown as T;
+    case "file_import":
+      return [] as unknown as T;
     case "step_source_status_read":
       return { hasSource: false } as unknown as T;
     case "step_artifact_regenerate":
@@ -1021,6 +1023,9 @@ const transportBase = {
     invoke<string | null>("file_save", { file, asset }),
   file_reveal: (file: string, asset: AssetKind) =>
     invoke<void>("file_reveal", { file, asset }),
+  // Import user-chosen STL/GLB files into the open project (normalized to
+  // `.stl`); returns the imported workspace-relative paths, or [] if cancelled.
+  file_import: () => invoke<string[]>("file_import"),
 
   // step
   step_source_status_read: (file: string) =>

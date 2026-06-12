@@ -5976,6 +5976,24 @@ export default function CadWorkspace({
     });
   }, []);
 
+  // "Import STL/GLB" from the sidebar header. Copies the user's chosen mesh
+  // files into the active project (the backend normalizes `.glb`/`.gltf` to
+  // `.stl` via trimesh, so everything lands as a renderable + sliceable `.stl`),
+  // refreshes the rail, and opens the first import once its catalog entry
+  // materializes — reusing the same deferred auto-select as a fresh build.
+  const handleImportFiles = useCallback(async () => {
+    try {
+      const imported = await getTransport().file_import();
+      if (!Array.isArray(imported) || imported.length === 0) {
+        return; // user cancelled or nothing imported
+      }
+      await refreshCadCatalog({ markRefreshing: false });
+      setAutoSelectStem(cadPathForEntry({ file: imported[0] }));
+    } catch (err) {
+      console.warn("Failed to import files", err);
+    }
+  }, []);
+
   // The native "Printer → Add Printer…" menu item (see src-tauri/src/menu.rs)
   // emits `open_add_printer`. It used to be handled by the top-bar ProjectMenu,
   // which has been removed; host the listener here next to the AddPrinterDialog
@@ -7314,6 +7332,7 @@ export default function CadWorkspace({
               onSelectEntry={handleSidebarSelectEntry}
               onSelectProject={handleSelectProject}
               onCreateProject={handleCreateProject}
+              onImportFiles={handleImportFiles}
               generatingProjectIds={generatingProjectIds}
               awaitingAnswerProjectIds={awaitingAnswerProjectIds}
               onRequestDeleteProject={handleRequestDeleteProject}

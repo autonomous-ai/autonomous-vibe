@@ -31,10 +31,14 @@ answer. Covers both pause reasons:
 ## Non-goals
 
 - Surviving a full app reload. History hydration (`hydrate_session`) flattens
-  block structure to plain text, so awaiting state is not reconstructed for a
-  reloaded project. The `QuestionCard` / plan card is still visible in the chat
-  when the project is reopened. Backend persistence can be layered on later if
-  needed.
+  block structure to plain text and can't recover the driver-synthesized
+  `panda-questions` fence, so awaiting state is not reconstructed after a process
+  restart. Backend persistence can be layered on later if needed.
+
+  (Switching projects *within a session* and returning IS handled — see "Slice
+  retention for paused projects" below. The original spec listed this as a
+  non-goal; it was promoted to a fix after the QuestionCard was observed
+  vanishing on return, which made the amber dot a dead end.)
 - Any indicator outside the project row (no chat-header marker this iteration).
 - IPC / contract changes. `docs/panda-interfaces.md` is frozen for v1; this is
   frontend-only.
@@ -150,9 +154,28 @@ Amber (`bg-amber-500`) is visually distinct from the gray spinner. `animate-puls
 gives the gentle attention-draw. `role="status"` + `aria-label` for screen
 readers.
 
+### Slice retention for paused projects
+
+The dot must not be a dead end: returning to a paused project has to show the
+QuestionCard / plan card so the user can actually answer. But a paused turn has
+**ended** (`turn_end` fired when the question/plan was emitted), so the existing
+`set_project` retain check (`turnInProgress || projectHasInFlightTurn`) drops the
+project's rich session slice on switch-away. On return it re-hydrates from the
+persisted transcript, which flattens blocks to plain text and — critically —
+never contained the driver-synthesized `panda-questions` fence (that lives only
+in the live event stream). The QuestionCard then has nothing to render from and
+disappears.
+
+Fix: add `awaitingAnswerProjectIds[currentProjectId]` to the `set_project` retain
+condition so a paused project keeps its live slice. `setProject`'s existing
+`hadRetained` guard then skips the hydrate fetch, and the reducer restores the
+slice intact (history with the fence, `awaitingApproval`, `activePlanTurnId`).
+Frontend-only; fixes both the QuestionCard and the plan card. (A full process
+restart still loses it — see Non-goals.)
+
 ## Data flow
 
-```
+```text
 plan_proposed / turn_end(+questions fence)   chat_event reducer
         │                                            │
         ▼                                            ▼

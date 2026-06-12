@@ -451,6 +451,7 @@ function ProjectNode({
   selectedKey,
   treeProps,
   isGenerating = false,
+  isAwaitingAnswer = false,
   activeCatalogHydrated,
   activeCatalogRefreshing,
   activeCatalogError
@@ -624,6 +625,16 @@ function ProjectNode({
                 aria-label="Generating"
                 title="Working…"
               />
+            ) : isAwaitingAnswer ? (
+              // A paused turn (proposed plan or unanswered questions) has already
+              // ended, so it never coincides with the spinner — they share the
+              // slot. Amber + pulse reads as "needs your input".
+              <span
+                className="size-2 shrink-0 rounded-full bg-amber-500 animate-pulse"
+                role="status"
+                aria-label="Waiting for your answer"
+                title="Waiting for your answer"
+              />
             ) : null}
           </SidebarMenuButton>
         )}
@@ -700,6 +711,7 @@ function FileViewerContents({
   onRequestDeleteProject,
   onRenameProject,
   generatingProjectIds,
+  awaitingAnswerProjectIds,
   entrySourceFormat,
   entryHasMesh,
   entryHasDxf,
@@ -798,6 +810,7 @@ function FileViewerContents({
                       selectedKey={selectedKey}
                       treeProps={treeProps}
                       isGenerating={Boolean(generatingProjectIds?.has(node.id))}
+                      isAwaitingAnswer={Boolean(awaitingAnswerProjectIds?.has(node.id))}
                       activeCatalogHydrated={catalogHydrated}
                       activeCatalogRefreshing={catalogRefreshing}
                       activeCatalogError={catalogError}
@@ -832,6 +845,7 @@ export default function FileViewerSidebar({
   onRequestDeleteProject,
   onRenameProject,
   generatingProjectIds,
+  awaitingAnswerProjectIds,
   entrySourceFormat,
   entryHasMesh,
   entryHasDxf,
@@ -874,6 +888,7 @@ export default function FileViewerSidebar({
       onRequestDeleteProject={onRequestDeleteProject}
       onRenameProject={onRenameProject}
       generatingProjectIds={generatingProjectIds}
+      awaitingAnswerProjectIds={awaitingAnswerProjectIds}
       entrySourceFormat={entrySourceFormat}
       entryHasMesh={entryHasMesh}
       entryHasDxf={entryHasDxf}

@@ -272,7 +272,7 @@ import {
 import { emitCadRefSelection } from "@/components/chat/cadRefEvents";
 import { basename, pickPrinterForSlice, PRINT_CONFIG_CHANGED_EVENT } from "@/components/chat/actionButtonsHelpers";
 import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
-import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, selectSliceTargetStl, getChatState, addPendingAttachment, setPendingViewContext, useChatStore } from "@/store/chat";
+import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, selectSliceTargetStl, getChatState, addPendingAttachment, setPendingViewContext, useChatStore, selectAwaitingAnswerProjectIds } from "@/store/chat";
 import { useProjectsStore } from "@/store/projects.ts";
 import { sortProjects } from "@/components/library/projectListHelpers.js";
 import { PLACEHOLDER_PROJECT_NAME, FOCUS_CHAT_INPUT_EVENT, PREFILL_CHAT_INPUT_EVENT } from "@/components/chat/chatInputHelpers";
@@ -618,6 +618,15 @@ export default function CadWorkspace({
   const generatingProjectIds = useMemo(
     () => new Set(Object.values(turnOwners || {})),
     [turnOwners],
+  );
+  // Projects whose session is paused waiting for a user answer (proposed plan or
+  // unanswered preference questions). Drives the sidebar "needs your answer" dot.
+  // Independent of `generatingProjectIds` — a paused turn has already ended, so a
+  // project is never in both sets at once.
+  const awaitingAnswerMap = useChatStore(selectAwaitingAnswerProjectIds);
+  const awaitingAnswerProjectIds = useMemo(
+    () => new Set(Object.keys(awaitingAnswerMap || {})),
+    [awaitingAnswerMap],
   );
   // True while the *active* project has an in-flight chat turn — drives the
   // live build stage (select-on-arrival, ambient spin, wireframe→solid
@@ -7306,6 +7315,7 @@ export default function CadWorkspace({
               onSelectProject={handleSelectProject}
               onCreateProject={handleCreateProject}
               generatingProjectIds={generatingProjectIds}
+              awaitingAnswerProjectIds={awaitingAnswerProjectIds}
               onRequestDeleteProject={handleRequestDeleteProject}
               onRenameProject={handleRenameProject}
               entrySourceFormat={entrySourceFormat}

@@ -12,7 +12,9 @@
 //! `.panda/` is already excluded from catalog scans (`commands::catalog`), so a
 //! project's snapshots never surface as CAD parts in the Models rail.
 
-use crate::ipc::types::SnapshotSummary;
+use crate::commands::chat::session_id_for_project;
+use crate::commands::claude_driver;
+use crate::ipc::types::{SnapshotRestore, SnapshotSummary};
 use crate::ipc::{IpcError, IpcResult};
 use crate::paths;
 use crate::state::AppState;
@@ -48,6 +50,38 @@ fn snapshots_dir(project: &Path) -> PathBuf {
 
 fn history_path(project: &Path) -> PathBuf {
     panda_dir(project).join("history.json")
+}
+
+/// Where a snapshot stores its captured chat transcript. Deliberately a *sibling*
+/// of the snapshot's model dir (`<id>.session.jsonl`, not `<id>/session.jsonl`)
+/// so [`restore_scope`] — which copies the whole `<id>/` dir back into the
+/// project — never lands the transcript among the model files. The live
+/// transcript belongs under `~/.claude`, not in the project.
+fn session_snapshot_path(project: &Path, snapshot_id: &str) -> PathBuf {
+    snapshots_dir(project).join(format!("{snapshot_id}.session.jsonl"))
+}
+
+/// Absolute path of the live Claude Code session transcript for `project_id`
+/// (`~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`, outside the project dir).
+/// `None` only when the home dir can't be resolved.
+fn live_session_path(project_id: &str) -> Option<PathBuf> {
+    let session_id = session_id_for_project(project_id).to_string();
+    claude_driver::session_jsonl_path(&project_dir(project_id), &session_id)
+}
+
+/// Overwrite the live Claude session with `saved`, rewinding the conversation to
+/// the snapshot point. Split from path resolution so it's unit-testable. Returns
+/// false (caller falls back to the linear marker) when the copy can't happen.
+fn rewind_session_to(saved: &Path, live: &Path) -> bool {
+    if !saved.exists() {
+        return false;
+    }
+    if let Some(parent) = live.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return false;
+        }
+    }
+    std::fs::copy(saved, live).is_ok()
 }
 
 /// Reject a path-component id that could escape the snapshots dir. Mirrors
@@ -126,9 +160,49 @@ fn copy_scope(project: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Copy a snapshot file back into the project and stamp it with the current
+/// mtime. The stamp matters: `std::fs::copy` preserves the source's mtime (on
+/// macOS it clones it outright), but a *restored* file must look freshly written.
+/// The catalog cache-busts renderable assets with a `?v=<mtime>-<size>` token
+/// (`commands::catalog::versioned_asset_uri`), and the viewer keys its reload
+/// trigger, its manifest-signature dedup, and its URL-keyed byte cache off that
+/// token. A normal build always writes a fresh (monotonic) mtime; a revert via
+/// plain copy resurrects the snapshot's *old* mtime, so the token — and thus the
+/// whole manifest signature — can land back on a value the viewer already has
+/// cached, leaving the stale mesh on screen even after the catalog refreshes.
+/// Stamping `now` makes a revert refresh the viewer exactly like a build does.
+/// Best-effort: a touch failure only risks the rare same-bytes revert not
+/// repainting.
+fn restore_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::copy(from, to)?;
+    if let Ok(file) = std::fs::OpenOptions::new().write(true).open(to) {
+        let _ = file.set_modified(std::time::SystemTime::now());
+    }
+    Ok(())
+}
+
+/// Recursively restore a directory, stamping every file with a fresh mtime
+/// (see [`restore_file`]). Used for nested model dirs like `<stem>_parts/`.
+fn restore_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if ty.is_dir() {
+            restore_tree(&from, &to)?;
+        } else if ty.is_file() {
+            restore_file(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
 /// Replace the in-scope entries of `project` with the contents of `snap`.
 /// Removes the current in-scope files/dirs first so parts added since the
-/// snapshot don't linger, then copies the snapshot back.
+/// snapshot don't linger, then copies the snapshot back (with fresh mtimes so
+/// the viewer reloads — see [`restore_file`]).
 fn restore_scope(project: &Path, snap: &Path) -> std::io::Result<()> {
     for entry in std::fs::read_dir(project)? {
         let entry = entry?;
@@ -148,9 +222,9 @@ fn restore_scope(project: &Path, snap: &Path) -> std::io::Result<()> {
         let to = project.join(entry.file_name());
         let ty = entry.file_type()?;
         if ty.is_dir() {
-            copy_tree(&from, &to)?;
+            restore_tree(&from, &to)?;
         } else if ty.is_file() {
-            std::fs::copy(&from, &to)?;
+            restore_file(&from, &to)?;
         }
     }
     Ok(())
@@ -187,6 +261,15 @@ pub async fn snapshot_save(
         .unwrap_or_else(|| format!("Version {}", history.snapshots.len() + 1));
     let id = Uuid::new_v4().to_string();
     copy_scope(&dir, &snapshots_dir(&dir).join(&id)).map_err(IpcError::from)?;
+    // Capture the conversation too: the Claude session transcript lives outside
+    // the project dir, so snapshot it explicitly alongside the model. Best-effort
+    // — a missing/unreadable session just means this save can't rewind the chat
+    // on restore (the restore then keeps the chat linear).
+    if let Some(live) = live_session_path(&project_id) {
+        if live.exists() {
+            let _ = std::fs::copy(&live, session_snapshot_path(&dir, &id));
+        }
+    }
     let summary = SnapshotSummary {
         id,
         label,
@@ -197,16 +280,19 @@ pub async fn snapshot_save(
     Ok(summary)
 }
 
-/// Revert the model to a saved state. The model files go back; a one-line note
-/// is stashed so the next chat turn tells the model what happened (the chat
-/// panel's own "↩ Reverted to …" marker is added by the frontend). The saved
-/// state is not consumed — it stays restorable.
+/// Revert the model to a saved state. The model files go back, and — when the
+/// save captured the chat transcript — the live Claude session is rewound to the
+/// snapshot point too (the frontend reloads the chat panel from it). For older
+/// saves with no captured transcript, the conversation stays linear and a
+/// one-line note is stashed so the next turn tells the model the files went back
+/// (the chat panel's "↩ Reverted to …" marker is added by the frontend). The
+/// saved state is not consumed — it stays restorable.
 #[tauri::command]
 pub async fn snapshot_restore(
     project_id: String,
     snapshot_id: String,
     state: State<'_, AppState>,
-) -> IpcResult<SnapshotSummary> {
+) -> IpcResult<SnapshotRestore> {
     validate_id(&project_id)?;
     validate_id(&snapshot_id)?;
     let dir = project_dir(&project_id);
@@ -225,8 +311,25 @@ pub async fn snapshot_restore(
         ));
     }
     restore_scope(&dir, &snap).map_err(IpcError::from)?;
-    state.set_pending_revert_note(&project_id, &summary.label);
-    Ok(summary)
+    // Bump the catalog revision so every renderable entry's synthesized mesh
+    // hash (`${url}#${revision}` in cadCatalogBackendTauri) changes on the next
+    // scan — covers assembly part entries whose URLs aren't mtime-versioned, so
+    // the whole reverted model repaints, not just the top-level mesh.
+    state.bump_revision();
+    // Rewind the chat if this save captured it. When it did, the reverted model
+    // and conversation are consistent (both at the snapshot point), so the
+    // next-turn "files went back" note is unnecessary — and would mislead, since
+    // the rewound session never saw the later edits.
+    let chat_rewound = live_session_path(&project_id)
+        .map(|live| rewind_session_to(&session_snapshot_path(&dir, &snapshot_id), &live))
+        .unwrap_or(false);
+    if !chat_rewound {
+        state.set_pending_revert_note(&project_id, &summary.label);
+    }
+    Ok(SnapshotRestore {
+        summary,
+        chat_rewound,
+    })
 }
 
 /// Delete a saved state (its files and index entry). Idempotent — a missing
@@ -246,6 +349,8 @@ pub async fn snapshot_delete(project_id: String, snapshot_id: String) -> IpcResu
     if snap.exists() {
         std::fs::remove_dir_all(&snap).map_err(IpcError::from)?;
     }
+    // Drop the captured chat transcript sibling too, if this save had one.
+    let _ = std::fs::remove_file(session_snapshot_path(&dir, &snapshot_id));
     Ok(())
 }
 
@@ -298,6 +403,83 @@ mod tests {
         // Excluded entries survive the restore untouched.
         assert!(dir.join("project.json").is_file());
         assert!(dir.join("inputs/ref.png").is_file());
+    }
+
+    #[test]
+    fn restore_stamps_fresh_mtime_so_the_viewer_reloads() {
+        use std::time::{Duration, SystemTime};
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("proj");
+        let snap = tmp.path().join("snap");
+
+        // A snapshot whose model.stl carries an OLD mtime — exactly what
+        // `std::fs::copy` preserves from the save (it clones the mtime on macOS).
+        write(&snap.join("model.stl"), "solid v1");
+        let old = SystemTime::now() - Duration::from_secs(3600);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(snap.join("model.stl"))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+
+        // The working tree currently shows a different (newer) model.
+        write(&dir.join("model.stl"), "solid v2");
+
+        let before = SystemTime::now() - Duration::from_secs(5);
+        restore_scope(&dir, &snap).unwrap();
+
+        // Content reverts...
+        assert_eq!(std::fs::read_to_string(dir.join("model.stl")).unwrap(), "solid v1");
+        // ...and the restored file is stamped ~now, NOT the snapshot's old mtime,
+        // so the catalog's `?v=<mtime>-<size>` token changes and the viewer
+        // reloads the reverted mesh instead of keeping the stale one.
+        let restored = std::fs::metadata(dir.join("model.stl"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert!(
+            restored > before,
+            "restored mtime should be fresh (≈now), not the snapshot's preserved old mtime"
+        );
+    }
+
+    #[test]
+    fn restore_never_lands_the_captured_session_among_model_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("proj");
+        write(&project.join("main.py"), "current");
+        // A snapshot: model dir under `.panda/snapshots/<id>/` plus a sibling
+        // transcript `.panda/snapshots/<id>.session.jsonl`.
+        let id = "snap1";
+        write(&snapshots_dir(&project).join(id).join("main.py"), "v1");
+        write(&session_snapshot_path(&project, id), r#"{"transcript":true}"#);
+
+        restore_scope(&project, &snapshots_dir(&project).join(id)).unwrap();
+
+        assert_eq!(std::fs::read_to_string(project.join("main.py")).unwrap(), "v1");
+        // The transcript is a sibling of the model dir (not inside it), so a
+        // restore never copies it into the project as a stray file.
+        assert!(!project.join("session.jsonl").exists());
+        assert!(!project.join("snap1.session.jsonl").exists());
+    }
+
+    #[test]
+    fn rewind_session_overwrites_live_only_when_captured() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Mimic the live session living a few dirs deep under a fake ~/.claude.
+        let live = tmp.path().join("home/.claude/projects/enc/uuid.jsonl");
+        write(&live, "later conversation");
+        let saved = tmp.path().join("saved.session.jsonl");
+
+        // No captured transcript (older save) → linear fallback, live untouched.
+        assert!(!rewind_session_to(&saved, &live));
+        assert_eq!(std::fs::read_to_string(&live).unwrap(), "later conversation");
+
+        // Captured transcript → rewinds the live session back to it.
+        write(&saved, "snapshot conversation");
+        assert!(rewind_session_to(&saved, &live));
+        assert_eq!(std::fs::read_to_string(&live).unwrap(), "snapshot conversation");
     }
 
     #[test]

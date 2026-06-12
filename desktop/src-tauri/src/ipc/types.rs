@@ -699,6 +699,18 @@ pub struct SnapshotSummary {
     pub created_at: i64,
 }
 
+/// Result of `snapshot_restore`. Carries the restored save state plus whether
+/// the snapshot's captured chat transcript was rewound over the live Claude
+/// session — when true the frontend reloads the chat panel from the restored
+/// conversation; when false (an older save with no captured transcript) it
+/// keeps the chat linear and just drops a "reverted" marker.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotRestore {
+    pub summary: SnapshotSummary,
+    pub chat_rewound: bool,
+}
+
 // ---------------------------------------------------------------------------
 // App settings + prereq check
 // ---------------------------------------------------------------------------

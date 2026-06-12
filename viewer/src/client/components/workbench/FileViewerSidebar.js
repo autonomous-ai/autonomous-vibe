@@ -59,6 +59,7 @@ import {
   sidebarLabelForEntry
 } from "@/workbench/sidebar";
 import FileAccessContextMenu from "./FileAccessContextMenu";
+import SavedStates from "./SavedStates";
 
 const DESKTOP_FILE_VIEWER_MIN_WIDTH = 150;
 const DESKTOP_FILE_VIEWER_MAX_WIDTH = "calc(100vw - 0.75rem)";
@@ -510,6 +511,12 @@ function ProjectNode({
   // project-relative, so the same key can exist in multiple projects.
   const effectiveSelectedKey = node.isActive ? selectedKey : "";
 
+  // Git-tag-style version button rides on the active project's header row,
+  // inline with its name. Only the active project has a model on screen to
+  // save, so other rows stay clean. While renaming, the row becomes an input,
+  // so the button (and the delete-action shift below) stand down.
+  const showVersionButton = node.isActive && node.hasFiles && !editing;
+
   let body = null;
   if (node.isActive) {
     const hasMatches = node.hasFiles;
@@ -591,7 +598,11 @@ function ProjectNode({
             size="sm"
             isActive={node.isActive}
             title={node.isActive && canRename ? "Click again to rename" : node.name}
-            className="group/project min-w-0 w-full justify-start font-medium"
+            className={cn(
+              "group/project min-w-0 w-full justify-start font-medium",
+              // Keep the name clear of the inline version button on this row.
+              showVersionButton && "pr-8",
+            )}
             onClick={handleHeaderClick}
           >
             <span
@@ -616,12 +627,21 @@ function ProjectNode({
             ) : null}
           </SidebarMenuButton>
         )}
+        {showVersionButton ? (
+          <div className="absolute right-1 top-1 z-10">
+            <SavedStates projectId={node.id} />
+          </div>
+        ) : null}
         {onRequestDeleteProject ? (
           <SidebarMenuAction
             showOnHover
             aria-label={`Delete ${node.name || "project"}`}
             title="Delete project"
-            className="text-muted-foreground hover:text-destructive focus-visible:text-destructive"
+            className={cn(
+              "text-muted-foreground hover:text-destructive focus-visible:text-destructive",
+              // Slide left of the version button when it's on this row.
+              showVersionButton && "right-8",
+            )}
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();

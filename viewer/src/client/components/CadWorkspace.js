@@ -16,7 +16,6 @@ import ViewerAlertDialog from "./workbench/ViewerAlertDialog";
 import ViewerLoadingOverlay from "./workbench/ViewerLoadingOverlay";
 import BuildBlueprintOverlay from "./viewer/BuildBlueprintOverlay";
 import FloatingToolBar from "./workbench/FloatingToolBar";
-import SavedStates from "./workbench/SavedStates";
 import RegionNotePopover from "./workbench/RegionNotePopover";
 import { isRegionStroke, regionStrokes } from "cadjs/lib/viewer/drawingTools";
 import { regionBadgePixelAnchor } from "cadjs/lib/viewer/drawingCanvas";
@@ -7346,15 +7345,6 @@ export default function CadWorkspace({
                     aria-label="Toggle Models"
                     className="size-8"
                   />
-                </div>
-              ) : null}
-
-              {/* Git-tag-style model save-states. Sits just right of the Models
-                  toggle, shown only when a model is on screen — "I like this,
-                  save it before I keep prompting." */}
-              {!previewMode && currentProjectId && selectedEntry ? (
-                <div className="pointer-events-auto absolute left-[3.625rem] top-3.5 z-20">
-                  <SavedStates projectId={currentProjectId} />
                 </div>
               ) : null}
 

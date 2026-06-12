@@ -210,12 +210,15 @@ Two changes:
    proposed plan never shows the dot.
 
 2. **Chat status line above the composer** (`ChatStatusLine.jsx`, mounted in
-   `ChatSidebar` just above `ChatInput`). One fixed spot that states the state:
-   - working → `phaseLabel(runningTurn.phase)` → "Planning…" / "Building…" with a
-     spinner (review rides the implement tag, so it reads "Building…").
+   `ChatSidebar` just above `ChatInput`). Flags only the state the chat didn't
+   already make obvious — waiting on the user:
    - waiting → "Waiting for your answer / approval ↑", a button that scrolls the
      last `chat-questions` / proposed `chat-plan` card into view.
-   - idle → nothing.
+   - otherwise → nothing.
+
+   The "working" state is intentionally NOT shown here: the turn header's
+   PLANNING/Building pill + ThinkingSummary ("Working…") already convey it, and a
+   second "Planning…" line below them read as a duplicate.
 
 ## Testing
 

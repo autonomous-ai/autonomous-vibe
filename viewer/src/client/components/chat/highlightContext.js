@@ -19,31 +19,6 @@ export function isRegionStroke(stroke) {
 }
 
 /**
- * A suggested chat instruction to pre-fill when the user sends a drawing to the
- * AI, phrased around the shape(s) they drew: "Improve the detail inside the
- * circle." Returns "" when nothing is drawn (caller leaves the input empty).
- */
-export function buildDrawingSuggestionText(strokes) {
-  const all = Array.isArray(strokes) ? strokes : [];
-  if (!all.length) return "";
-  const regions = all.filter(isRegionStroke);
-  let target;
-  if (regions.length === 1) {
-    target = regions[0].tool === "rectangle" ? "the rectangle" : "the circle";
-  } else if (regions.length > 1) {
-    target = regions.every((s) => s.tool === "rectangle")
-      ? "the rectangles"
-      : regions.every((s) => s.tool === "circle")
-        ? "the circles"
-        : "the highlighted areas";
-  } else {
-    // Only freehand/line/arrow marks — no closed region to name.
-    target = "the highlighted area";
-  }
-  return `Improve ${target}.`;
-}
-
-/**
  * Axis-aligned bounding box over every point of every stroke, in normalized
  * [0,1] viewport space, plus the centroid. Returns null when there are no
  * finite points to bound.

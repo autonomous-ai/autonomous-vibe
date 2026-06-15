@@ -78,7 +78,7 @@ export default function DrawingToolbar({
 
       {canSendToChat ? (
         <ToolbarButton
-          label="Send to AI"
+          label="Send"
           onClick={handleSendDrawingToChat}
           disabled={!actionCount}
         >

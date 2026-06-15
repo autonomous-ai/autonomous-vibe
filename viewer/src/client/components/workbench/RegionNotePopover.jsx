@@ -4,9 +4,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 
 // Inline action card for a region, anchored next to its numbered badge in the
-// viewport, shown the moment a circle/rectangle/freehand is drawn. Pre-filled
-// with a shape-aware suggestion ("Improve the detail inside the circle.") the
-// user can edit in a roomy multi-line box, then send to the AI with the
+// viewport, shown the moment a circle/rectangle/freehand is drawn. The user
+// types the change for the highlight in a roomy multi-line box (empty by
+// default, just a placeholder prompt), then sends it straight to the AI with the
 // annotated screenshot. Screen-space and `position: fixed`, matching
 // getBoundingClientRect's viewport coordinates.
 //
@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 //
 // Props:
 //   number       region badge number (1-based; 0/undefined for freehand)
-//   initialNote  pre-filled text (suggestion, or a previously-typed note)
+//   initialNote  pre-filled text (a previously-typed note; "" for a fresh region)
 //   anchor       { left, top } viewport px of the region badge
 //   onSave(text) persist the text as the region note (called on blur)
 //   onSend(text) attach the annotated view + this text to the chat
@@ -96,7 +96,7 @@ export default function RegionNotePopover({ number, initialNote = "", anchor, on
         className="h-8 w-fit gap-1.5 self-end px-3 text-xs"
       >
         <Sparkles className="size-3.5" strokeWidth={2} aria-hidden="true" />
-        Send to AI
+        Send
       </Button>
     </div>
   );

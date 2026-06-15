@@ -272,13 +272,13 @@ import {
 import { emitCadRefSelection } from "@/components/chat/cadRefEvents";
 import { basename, pickPrinterForSlice, PRINT_CONFIG_CHANGED_EVENT } from "@/components/chat/actionButtonsHelpers";
 import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
-import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, selectSliceTargetStl, getChatState, addPendingAttachment, setPendingViewContext, useChatStore, selectAwaitingAnswerProjectIds, awaitingNeedsUser } from "@/store/chat";
+import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, selectSliceTargetStl, getChatState, setPendingViewContext, startTurn, useChatStore, selectAwaitingAnswerProjectIds, awaitingNeedsUser } from "@/store/chat";
 import { useAutopilot } from "@/lib/autopilot";
 import { useProjectsStore } from "@/store/projects.ts";
 import { sortProjects } from "@/components/library/projectListHelpers.js";
-import { PLACEHOLDER_PROJECT_NAME, FOCUS_CHAT_INPUT_EVENT, PREFILL_CHAT_INPUT_EVENT } from "@/components/chat/chatInputHelpers";
+import { PLACEHOLDER_PROJECT_NAME } from "@/components/chat/chatInputHelpers";
 import { blobToAttachment, MAX_ATTACHMENTS } from "@/components/chat/attachments";
-import { buildHighlightContextNote, buildDrawingSuggestionText } from "@/components/chat/highlightContext";
+import { buildHighlightContextNote } from "@/components/chat/highlightContext";
 import { useProjectsFileTree } from "./workbench/hooks/useProjectsFileTree";
 import DeleteConfirmDialog from "@/components/library/DeleteConfirmDialog.jsx";
 
@@ -6369,13 +6369,13 @@ export default function CadWorkspace({
       return;
     }
     const number = regionStrokes(strokes).findIndex((entry) => entry.id === stroke.id) + 1;
-    // Pre-fill with a shape-aware suggestion ("Improve the detail inside the
-    // circle."), unless the region already carries a note the user typed.
+    // Start empty (just the placeholder prompt) unless the region already carries
+    // a note the user typed — no auto-suggested default text to clear out first.
     const existingNote = typeof stroke.note === "string" ? stroke.note.trim() : "";
     setActiveRegionNote({
       strokeId: stroke.id,
       number,
-      initialNote: existingNote || buildDrawingSuggestionText([stroke]),
+      initialNote: existingNote,
       anchor: { left: rect.left + anchorPx[0], top: rect.top + anchorPx[1] },
     });
   }, []);
@@ -6643,11 +6643,10 @@ export default function CadWorkspace({
     }
   }, [selectedEntry]);
 
-  // Bridge the annotated viewport into the chat composer: capture the same
-  // composite the screenshot tools produce (render + drawing overlay), wrap it
-  // as a chat image attachment, and queue it. The chip then shows in the
-  // always-visible chat sidebar; we focus the composer so the user can type the
-  // instruction for the highlighted area ("improve this", "add vents", …).
+  // Send the annotated viewport straight to the AI — no detour through the chat
+  // composer. Capture the same composite the screenshot tools produce (render +
+  // drawing overlay), wrap it as a chat image attachment, and dispatch the turn
+  // immediately. The user gets a response without a second click.
   const handleSendDrawingToChat = useCallback(async (textOverride) => {
     if (!selectedEntry) {
       return;
@@ -6656,8 +6655,12 @@ export default function CadWorkspace({
       setScreenshotStatus("CAD Viewer not ready");
       return;
     }
-    const pending = getChatState().pendingAttachments?.length || 0;
-    if (pending >= MAX_ATTACHMENTS) {
+    if (getChatState().turnInProgress) {
+      setScreenshotStatus("A turn is already in progress");
+      return;
+    }
+    const existing = getChatState().pendingAttachments || [];
+    if (existing.length >= MAX_ATTACHMENTS) {
       setCopyStatus("");
       setScreenshotStatus(`Up to ${MAX_ATTACHMENTS} images per message`);
       return;
@@ -6668,7 +6671,7 @@ export default function CadWorkspace({
       const file = typeof File === "function"
         ? new File([blob], name, { type: blob.type || "image/png" })
         : blob;
-      addPendingAttachment(await blobToAttachment(file, { name }));
+      const attachment = await blobToAttachment(file, { name });
       // Tell the model *where* the highlight is (frame region + camera), to ride
       // alongside the image. Best-effort: a missing perspective just omits it.
       const perspective = viewerRef.current.getPerspective?.() || null;
@@ -6677,25 +6680,26 @@ export default function CadWorkspace({
         perspective,
       });
       setPendingViewContext(contextNote);
-      // Pre-fill the composer: the popover passes its edited text; the toolbar
-      // button passes its click event (ignored), so we fall back to a shape-aware
-      // suggestion. The prefill event focuses too, so the bare focus is just the
-      // fallback when there's nothing to suggest.
-      const override = typeof textOverride === "string" ? textOverride.trim() : "";
-      const suggestion = override || buildDrawingSuggestionText(drawingStrokesRef.current);
-      if (suggestion) {
-        window.dispatchEvent(new CustomEvent(PREFILL_CHAT_INPUT_EVENT, { detail: { text: suggestion } }));
-      } else {
-        window.dispatchEvent(new Event(FOCUS_CHAT_INPUT_EVENT));
+      // The popover passes the user's typed instruction; the toolbar button passes
+      // its click event (ignored), leaving the text empty — startTurn then injects
+      // the "suggest options" directive alongside the highlight context. Carry any
+      // already-queued composer attachments so the unattended send never drops
+      // them (startTurn consumes the pending queue regardless).
+      const text = typeof textOverride === "string" ? textOverride.trim() : "";
+      const response = await startTurn(text, { attachments: [...existing, attachment] });
+      if (!response) {
+        setPendingViewContext("");
+        setScreenshotStatus("Could not send to the AI");
+        return;
       }
       // The marks are now baked into the attached screenshot — clear them so the
       // canvas is fresh for the next highlight (undoable if they want them back).
       handleClearDrawings();
       setCopyStatus("");
-      setScreenshotStatus("Attached highlighted view to chat");
+      setScreenshotStatus("Sent highlighted view to the AI");
     } catch (captureError) {
       setCopyStatus("");
-      setScreenshotStatus(captureError instanceof Error ? captureError.message : "Could not attach view to chat");
+      setScreenshotStatus(captureError instanceof Error ? captureError.message : "Could not send view to the AI");
     }
   }, [selectedEntry, handleClearDrawings]);
 

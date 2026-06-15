@@ -7,38 +7,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  buildDrawingSuggestionText,
   buildHighlightContextNote,
   isRegionStroke,
   regionLabel,
   strokesBoundingBox,
 } from "../highlightContext.js";
-
-test("buildDrawingSuggestionText names the drawn shape", () => {
-  assert.equal(
-    buildDrawingSuggestionText([{ tool: "circle", points: [{ x: 0.5, y: 0.5 }] }]),
-    "Improve the circle.",
-  );
-  assert.equal(
-    buildDrawingSuggestionText([{ tool: "rectangle", points: [] }]),
-    "Improve the rectangle.",
-  );
-  // Multiple of the same shape pluralize; mixed shapes generalize.
-  assert.equal(
-    buildDrawingSuggestionText([{ tool: "circle" }, { tool: "circle" }]),
-    "Improve the circles.",
-  );
-  assert.equal(
-    buildDrawingSuggestionText([{ tool: "circle" }, { tool: "rectangle" }]),
-    "Improve the highlighted areas.",
-  );
-  // Only freehand marks → generic "highlighted area"; nothing drawn → "".
-  assert.equal(
-    buildDrawingSuggestionText([{ tool: "freehand" }]),
-    "Improve the highlighted area.",
-  );
-  assert.equal(buildDrawingSuggestionText([]), "");
-});
 
 test("strokesBoundingBox bounds every point across strokes", () => {
   const box = strokesBoundingBox([

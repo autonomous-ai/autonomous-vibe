@@ -8,7 +8,7 @@ import TurnReasoning from "./TurnReasoning";
 import TurnActivity from "./TurnActivity";
 import { LiveDuration } from "./liveDuration";
 import { phaseLabel } from "./activityLabels";
-import { segmentTurnBlocks } from "@/store/chat";
+import { segmentTurnBlocks, segmentSpans } from "@/store/chat";
 
 function TextBlock({ text, streaming }) {
   if (streaming) {
@@ -143,6 +143,9 @@ export default memo(function ChatTurn({ turn }) {
   const { segments, body: bodyBlocks } = isUser
     ? { segments: [], body: turn.blocks }
     : segmentTurnBlocks(turn.blocks);
+  // Contiguous per-segment time spans, floored at the turn start so a segment's
+  // pre-tool thinking counts (no more "0s" planning groups).
+  const spans = isUser ? [] : segmentSpans(segments, turn.startedAt);
   // Before any block has streamed, a running turn still needs a heartbeat so it
   // never looks stuck — a bare "Thinking… Ns" stands in until the first segment.
   const showStartupHeartbeat = running && segments.length === 0;
@@ -200,10 +203,11 @@ export default memo(function ChatTurn({ turn }) {
                   <TurnReasoning
                     turn={turn}
                     segment={segment}
+                    span={spans[i]}
                     active={active}
                     showDuration={segment.activity.length === 0}
                   />
-                  <TurnActivity segment={segment} active={active} />
+                  <TurnActivity segment={segment} span={spans[i]} active={active} />
                 </div>
               );
             })

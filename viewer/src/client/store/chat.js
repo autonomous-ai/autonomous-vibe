@@ -231,33 +231,36 @@ export function segmentTurnBlocks(blocks) {
 }
 
 /**
- * Wall-clock span of one segment, in ms, from its blocks' per-block timestamps:
- * start = the earliest block's `at`; end = the latest tool `endedAt` (or block
- * `at`). For the turn's live/active segment it counts to `now` so it ticks.
- * Returns 0 when the segment has no timestamped blocks (e.g. hydrated history,
- * which is flat `text` with no `at`).
+ * Contiguous, gapless wall-clock spans (epoch ms) for a turn's segments, so each
+ * segment's counter reflects all the time it owned — not just its own block
+ * span. Each segment starts where the previous one ended; the first starts at
+ * the turn's `startedAt` (so a planning turn's "think a while → one fast tool"
+ * reads the real elapsed time, not 0s when the thinking wasn't a streamed
+ * block). A segment's end is the latest of its blocks' `at`/`endedAt`. The
+ * active (live) segment's end is overridden with `now` by the renderer so it
+ * ticks. Falls back to block times when `startedAt` is unknown.
  *
- * @param {TurnSegment} segment
- * @param {number=} now epoch ms — used only when `active`
- * @param {boolean=} active whether this is the turn's live segment
- * @returns {number}
+ * @param {TurnSegment[]} segments
+ * @param {number=} startedAt the turn's start time (epoch ms)
+ * @returns {{ start: number, end: number }[]}
  */
-export function segmentDurationMs(segment, now, active) {
-  const reasoning = (segment && segment.reasoning) || [];
-  const activity = (segment && segment.activity) || [];
-  const starts = [];
-  for (const b of reasoning) if (typeof b.at === "number") starts.push(b.at);
-  for (const b of activity) if (typeof b.at === "number") starts.push(b.at);
-  if (!starts.length) return 0;
-  const start = Math.min(...starts);
-  if (active && typeof now === "number") return Math.max(0, now - start);
-  const ends = [start];
-  for (const b of reasoning) if (typeof b.at === "number") ends.push(b.at);
-  for (const b of activity) {
-    if (typeof b.endedAt === "number") ends.push(b.endedAt);
-    else if (typeof b.at === "number") ends.push(b.at);
+export function segmentSpans(segments, startedAt) {
+  const list = Array.isArray(segments) ? segments : [];
+  const spans = [];
+  let prevEnd = typeof startedAt === "number" ? startedAt : null;
+  for (const seg of list) {
+    const times = [];
+    for (const b of (seg && seg.reasoning) || []) if (typeof b.at === "number") times.push(b.at);
+    for (const b of (seg && seg.activity) || []) {
+      if (typeof b.at === "number") times.push(b.at);
+      if (typeof b.endedAt === "number") times.push(b.endedAt);
+    }
+    const start = prevEnd != null ? prevEnd : times.length ? Math.min(...times) : 0;
+    const end = Math.max(start, times.length ? Math.max(...times) : start);
+    spans.push({ start, end });
+    prevEnd = end;
   }
-  return Math.max(0, Math.max(...ends) - start);
+  return spans;
 }
 
 // Injected (model-facing only) when the user sends a highlighted view with no
@@ -717,7 +720,15 @@ export function chatReducer(state, action, now = Date.now()) {
           if (typeof b.at === "number") times.push(b.at);
           if (typeof b.endedAt === "number") times.push(b.endedAt);
         }
-        const startedAt = times.length ? Math.min(...times) : item.at;
+        const blockMin = times.length ? Math.min(...times) : item.at;
+        // Floor an assistant turn's start at the prompt that triggered it, so the
+        // first segment counts the model's pre-first-block thinking (a planning
+        // turn reads its real time, not 0s) on reload too.
+        const prev = action.session.history[index - 1];
+        const startedAt =
+          item.role === "assistant" && prev && prev.role === "user" && typeof prev.at === "number"
+            ? Math.min(prev.at, blockMin)
+            : blockMin;
         const endedAt = times.length ? Math.max(...times) : item.at;
         return {
           id: `hydrated-${index}`,

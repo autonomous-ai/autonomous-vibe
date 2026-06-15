@@ -1,155 +1,99 @@
-# Hobbyist 3D printing defaults
+# Sourcing dimensions + FDM best-practice defaults
 
-Load this when you need real-world dimensions for fasteners, common
-devices, bearings, or FDM print tolerances.
+Two parts:
 
-> SKILL.md's "Default assumptions" carries the quick headline numbers (M3/M4/M5
-> clearance, 0.2/0.4 mm slop). **This file is the full canonical table** — the
-> complete fastener / bearing / motor / phone / mount data lives here. When the
-> two agree on a headline value, this file is the one to cite for anything
-> device- or hardware-specific.
+1. **How to source a dimension** — where each number in your model comes from,
+   and how to get real-world product specs right.
+2. **Generic FDM best-practice values** — the print rules of thumb, stated as
+   formulas. These are this skill's calibrated defaults; use them directly.
 
-## FDM print tolerances (0.4mm nozzle, typical hobbyist printer)
+---
 
-(SKILL.md states the headline 0.2 mm press-fit / 0.4 mm hand-assembly slop;
-this is the full table.)
+## Part 1 — How to source a dimension
 
-| What | Slop to add to the hole | Notes |
+Every number sorts into one of three buckets. Pick the right one; never invent a
+spec.
+
+### Real-world dimensions of a named product → web-search
+
+Specific phones, motors, doorbells/cameras, mount standards (VESA, ARCA, GoPro,
+1/4-20, GridFinity), connector collars, or a bearing/part you don't recognize:
+**web-search the manufacturer or catalog spec**, then:
+
+- **State it as an assumption the user can correct** (e.g. "Assuming iPhone 16 ≈
+  147 × 72 × 8 mm — correct me if your model differs").
+- **Round for printing** to 0.5 mm; add **4–6 mm** to each dimension if a phone
+  case must fit.
+- Pull the dimension that actually drives the fit (a cradle cares about
+  *depth*; a bearing seat cares about *OD*; a captive-cable opening cares about
+  the *connector collar Ø×len*, not the cable jacket).
+
+Do **not** recall these from memory — they drift by model, region, and revision,
+and a confident wrong number is the classic failure. If a search can't pin a
+specific device, say so and **ask the user** for the dimension rather than guess.
+
+### Hardware a cadlib helper already covers → pass a named size
+
+Screws, nuts, bearings, magnets, and heat-set inserts have dimensions baked into
+`cadlib/tables.py`; the helpers (`add_screw_post`, `add_nut_trap`,
+`add_bearing_seat`, `add_magnet_pocket`, `add_heat_set_pocket`) read them from a
+named size. Pass `bearing="608"` / `screw_size="M3"` and let the helper supply
+the geometry — don't transcribe the numbers into your model. For an open-ended
+fit a helper takes a raw dimension (e.g. `cable_diameter=…`); that's where a
+web-searched value goes.
+
+### Generic print physics → use the rules in Part 2
+
+Tolerances, wall thickness, fits, boss sizing — these are formulas, not lookups.
+
+---
+
+## Part 2 — Generic FDM best-practice values
+
+Assumes a 0.4 mm nozzle on an XY-calibrated printer (PLA/PETG). State the rule;
+quote a number only as a worked example.
+
+### Fits & tolerances (per side, added to the hole)
+
+| Fit | Slop | Use |
 |---|---|---|
-| Press-fit hole (M3 screw) | +0.2 mm (so 3.4mm clearance) | Standard close-fit |
-| Loose-fit hole (M3 bolt slips through) | +0.4 mm (3.6mm) | When you don't want any drag |
-| Shaft press-fit (6mm shaft) | +0.2 mm (6.2mm) | Tight enough to stay; loose enough to insert by hand |
-| Bearing seat (608, 22mm OD) | -0.05 mm (21.95mm) | press fit (interference) |
-| Cable channel (USB-C connector) | +0.5 mm | Connector is ~9×3 mm; channel: 9.5×3.5 mm |
-| Snap-fit lip | 0.3–0.5 mm interference | Plastic creep accommodates this |
+| Press-fit | `+0.2 mm` | tight, stays put, hand-press |
+| Hand-assembly / slip | `+0.4 mm` | slides/seats freely by hand |
+| Snap / interference | `0.3–0.5 mm` | plastic creep accommodates it |
 
-## Wall thickness recommendations (FDM, 3 perimeters at 0.4mm)
+`cadlib.fits` (`mating_clearance`, `slot_for`, `peg_for`) encodes these — prefer
+it for mating parts so one fit class drives both halves.
 
-| Use case | Min wall | Notes |
-|---|---|---|
-| Decorative / non-load-bearing | 1.2 mm | 3 perimeters |
-| Functional enclosure | 2.0 mm | Stiff enough not to flex |
-| Stressed bracket | 3.0 mm | Doubles as a print-time saver vs over-engineering |
-| Vase / shell | 1.6–2.0 mm | Watertight, prints cleanly with spiral mode |
-| Living hinge | 0.4–0.6 mm | Single perimeter, PETG/PP only |
+### Holes for fasteners
 
-## Fastener clearance holes (close-fit)
+- Clearance hole `= nominal + 0.3–0.4 mm` (M3 → 3.4 mm, M4 → 4.5 mm, M5 → 5.5 mm).
+- Self-tap into plastic `= major-thread Ø − 0.3 mm`.
+- Counterbore Ø `= cap-head Ø + 0.5 mm` (rounded to 0.5 mm).
 
-(SKILL.md carries the M3/M4/M5 quick defaults; this is the full table, incl.
-heavy clearance, cap-head cbores, and imperial sizes.)
+For the actual screw/nut/insert geometry, prefer the cadlib helper (Part 1) over
+hand-cut holes.
 
-| Screw | Clearance hole | Heavy clearance | Notes |
-|---|---|---|---|
-| M3 | 3.4 mm | 3.6 mm | Cap-head: 6.0 mm cbore, 3.5 mm depth |
-| M4 | 4.5 mm | 4.8 mm | Cap-head: 7.5 mm cbore, 4.5 mm depth |
-| M5 | 5.5 mm | 5.8 mm | Cap-head: 9.5 mm cbore, 5.5 mm depth |
-| M6 | 6.5 mm | 7.0 mm | |
-| #4-40 | 3.2 mm | 3.5 mm | |
-| #6-32 | 3.7 mm | 4.0 mm | |
-| #8-32 | 4.4 mm | 4.7 mm | |
+### Walls
 
-> Convention: cbore Ø = cap_head_Ø + 0.5 mm (rounded to nearest 0.5). The cadcode pattern docs match.
+- Minimum/structural wall `= N × nozzle width`. At 0.4 mm: 1.2 mm decorative
+  (3 perimeters), **2.0 mm enclosure** (stiff, no flex), **2.8 mm + ribs**
+  load-bearing. See `references/patterns/wall-thickness-rules.md` for the `h³`
+  rationale and why a rib beats a thicker wall.
 
-For *self-tap into plastic*: use a hole 0.3 mm smaller than the screw's
-major thread diameter.
+### Press-fit / bearing / magnet pockets
 
-## Common bearings
+- Bearing seat `= bearing OD − 0.05 mm` (interference press fit). The
+  `add_bearing_seat` helper applies this from `BEARING_TABLE`.
+- **Slicer XY compensation:** a calibrated printer lands within ±0.05 mm; stock
+  i3-class printers run +0.10 to +0.15 mm oversized. If press fits come out
+  tight, set the slicer's XY compensation / horizontal expansion to ≈ −0.10 mm.
+- **Elephant's foot:** the first 2–3 layers squish wider. For any press-fit,
+  bearing, or magnet pocket whose open face is on the build plate, add a
+  `~0.4 × 45°` chamfer on that bottom edge so the wider layers don't crush the fit.
 
-| Bearing | OD × ID × thickness | Seat hole | Notes |
-|---|---|---|---|
-| 608ZZ (skate) | 22 × 8 × 7 mm | 21.95 mm | press fit (interference); cheap workhorse |
-| 624ZZ | 13 × 4 × 5 mm | 13.1 mm | Small motor shafts |
-| 6800 | 19 × 10 × 5 mm | 19.1 mm | Thin section |
-| 6803 | 26 × 17 × 5 mm | 26.1 mm | Large hollow |
+### Sanity-scale check
 
-## Common motors
-
-| Motor | Body | Shaft | Mount | Notes |
-|---|---|---|---|---|
-| NEMA17 | 42 × 42 × ~40 mm | 5 mm dia | 31 mm pattern, M3 | 3D-printer standard |
-| NEMA23 | 56 × 56 × ~50 mm | 6.35 mm dia | 47 mm pattern, M5 | CNC stepper |
-| BLDC 2204 | 28 mm dia × 14 mm | 5 mm thread | 16×19 mm | Drone motor |
-
-## Phones (approximate body, no case)
-
-| Model | H × W × D | Notes |
-|---|---|---|
-| iPhone 15 / 15 Pro | 147 × 71 × 8.25 mm | Pro has Camera Control button |
-| iPhone 15 Plus | 161 × 78 × 7.8 mm | |
-| iPhone 15 Pro Max | 160 × 77 × 8.25 mm | Heavier — stands need stable base |
-| iPhone 16 family | similar to 15, ±0.5 mm | |
-| Pixel 8 | 151 × 71 × 8.9 mm | |
-| Pixel 8 Pro | 163 × 77 × 8.8 mm | |
-| Samsung Galaxy S24 | 147 × 71 × 7.6 mm | |
-| Samsung Galaxy S24 Ultra | 162 × 79 × 8.6 mm | |
-
-Round to nearest 0.5 mm for printing; thinner phones are within FDM tolerance
-of one another. The depth is the dimension that matters most for cradles.
-
-**Add 4–6 mm to each dimension to accommodate a typical case.**
-
-## Captive cables & connector collars (install-feasibility)
-
-These devices ship with a **permanently-attached cable** ending in a
-**strain-relief collar / connector wider than the jacket**. Your opening must
-clear the *collar*, and the route must be **open** (lay the cable in from the
-side — you cannot thread a captive cable through a closed tunnel). See
-`references/component-integration.md` and `references/patterns/cable-channel.md`.
-
-| Component | Body | Captive cable Ø | Connector collar Ø × len | Notes |
-|---|---|---|---|---|
-| Apple MagSafe charger (puck) | Ø56 × 5.5–6 mm | 3.6 mm braided | ~9 mm × ~14 mm | Cable exits the puck edge; ~1 m; collar is the wide bit |
-| USB-C connector (plug) | — | ~4.0 mm cable | ~9 × 3.4 mm (rect) + collar Ø~8 mm | Connector body is rectangular |
-| Lightning connector (plug) | — | ~3.2 mm cable | ~7.7 × 3.2 mm (rect) + collar Ø~7 mm | |
-| Barrel jack (5.5/2.1) pigtail | — | ~4 mm cable | Ø~9–11 mm × ~10 mm | |
-| Generic strain-relief collar | — | cable Ø | **≈ 2× cable Ø** × 10–15 mm | Use when the exact part is unknown |
-
-Round openings up: connector pocket Ø = collar Ø **+ ≥0.6 mm**.
-
-| Other cable jackets | Ø |
-|---|---|
-| ribbon ~3, USB-A ~4.5, USB-C ~4, micro-USB ~3.5, JST-XH 2-pin ~2.5, mains 2-core ~6, cat6 ethernet ~6.5 | mm |
-
-## Common mount patterns
-
-| Standard | Pattern | Notes |
-|---|---|---|
-| GoPro 3-finger | 14 mm fingers, 5 mm gap, M5 bolt center | Universal action-cam mount |
-| VESA 75 | 75 × 75 mm, M4 holes | Small monitors |
-| VESA 100 | 100 × 100 mm, M4 holes | Mid-size monitors |
-| ARCA Swiss | 38 mm wide, 45° dovetail flanks | Tripod plates |
-| 1/4-20 tripod | 1/4" UNC thread | Cameras, lights |
-| GridFinity baseplate | 42 × 42 mm cells, 7 mm tall | Workbench organization |
-
-## Common doorbell / sensor bodies (approximate)
-
-| Device | Body | Mount type |
-|---|---|---|
-| Eufy E340 doorbell | 135 × 47 × 26 mm | Standard wall plate |
-| Ring Video Doorbell 4 | 127 × 62 × 28 mm | Two screws, ~70 mm apart |
-| Wyze Cam v3 | 50 × 50 × 50 mm | Magnetic base |
-| Nest Doorbell (battery) | 162 × 46 × 24 mm | Wall plate or chime mount |
-
-## Sanity-check sizes
-
-If your bbox dies dramatically outside these ranges for the part type, you
-probably have a unit or radius/diameter mistake:
-
-- Wall hook: 60–120 mm tall, 30–60 mm deep
-- Phone stand: 100–150 mm tall, 70–100 mm deep, 100 g of plastic
-- Drawer pull: 80–120 mm wide, 20–40 mm deep
-- Cable clip: 20–40 mm
-- Light switch cover: 70 × 115 mm (US single-gang) or 86 × 86 mm (UK)
-- Light bulb shade: 60–150 mm dia
-- Vase: 80–200 mm tall, 50–120 mm dia
-- Hex tray cell: 15–30 mm flat-to-flat
-- Drone arm: 80–200 mm long
-- GoPro adapter plate: 40–60 × 20–40 × 4–6 mm
-
-## Slicer XY compensation
-
-Every fit in this doc assumes the printer is XY-calibrated within ±0.05 mm; stock i3-class printers measure +0.10 to +0.15 mm oversized. Use the slicer's "XY compensation" (PrusaSlicer / Bambu) or "horizontal expansion" (Orca / Cura) at −0.10 mm to land back at nominal.
-
-## Elephant's foot
-
-The first 2–3 layers squish wider on most FDM beds. For any press-fit, bearing, or magnet pocket whose open face is on the build plate, add a `0.4 × 45°` chamfer on the bottom edge so the wider layers don't crush the fit.
+Consumer/handheld objects cluster in roughly **20–200 mm**. If a dimension lands
+far outside the part's obvious human scale (a "phone stand" coming out 8 mm tall,
+a "vase" 2 m wide), suspect a **unit mistake or a radius-vs-diameter swap**
+before trusting the geometry. (cadpy's hard sanity bound is 200 × 200 mm.)

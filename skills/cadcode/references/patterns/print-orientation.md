@@ -8,8 +8,11 @@ threads, snap-fits, or anything load-bearing.
 ## Why this exists (the mechanics)
 
 FDM prints in horizontal layers (XY) stacked vertically (Z). Strength is
-~3x higher across layers (X/Y) than between layers (Z) — Z is the bond
-between extruded layers and pulls apart first. Overhangs and bridges also
+anisotropic: in-plane (X/Y) the load runs through continuous filament,
+while across layers (Z) it pulls on the bond between extruded layers, which
+fails first. The in-plane/cross-layer ratio is typically ~2–4× (a rough
+figure that shifts with material, temperature, and print settings — treat
+it as "noticeably weaker in Z", not a hard constant). Overhangs and bridges also
 constrain orientation (see `overhang-relief.md` for the 45° self-support
 rule and bridging-span limits). Top surfaces are visibly rougher than
 bottom (build-plate) surfaces. DESIGN the part in CadQuery so when sliced

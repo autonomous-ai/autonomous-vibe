@@ -34,11 +34,12 @@ part = add_nut_trap(
 )
 ```
 
-Nut dimensions (`flat`, `thick`, `pocket_flat`, `pocket_h`, `screw_clear`)
-live in `cadlib/tables.py::NUT_TABLE` (`M2`, `M2.5`, `M3`, `M4`, `M5`, `M6`).
-`Read` that file for the exact numbers; pocket flats carry a +0.2 mm FDM
-clearance over nominal. The helper raises `ValueError` for an unknown
-`nut_size`.
+Nut dimensions (`flat`, `thick`, `pocket_flat`, `pocket_h`, `screw_clear`) are
+owned by `cadlib/tables.py::NUT_TABLE` and keyed by `nut_size`; the helper reads
+them for you. `Read` that file if you need the raw numbers — don't transcribe
+them. The pocket flats follow the generic FDM rule `pocket_flat = nominal +
+0.2 mm`, so the nut drops in without forcing. The helper raises `ValueError` for
+an unknown `nut_size`.
 
 This covers the standard top-drop (`pocket_face=">Z"`) and below-roof
 (`pocket_face="<Z"`) insertion modes. The side-slide slot variant is not in

@@ -39,6 +39,20 @@ SLIVER_VOLUME_MM3 = 1.0
 # already softened (its two new edges turn ~45° each).
 SHARP_EDGE_MIN_NORMAL_ANGLE_DEG = 50.0
 
+# Two assembled parts whose placed solids interpenetrate by less than this
+# (mm^3) are treated as merely touching at a shared mating face (a lid resting on
+# a lip, a tab seated in its slot) — not colliding. The floor also absorbs the
+# numerical fuzz of a coincident-face boolean.
+COLLISION_MIN_VOLUME_MM3 = 2.0
+
+# ...and the overlap must also reach this fraction of the *smaller* part's volume
+# to count as a collision. A real interference/press fit overlaps in a thin shell
+# (single-digit % of the part); a feature poking through a wall or two
+# mispositioned parts overlap by a much larger share. Requiring both the absolute
+# floor and this fraction keeps intended press fits quiet while catching gross
+# interpenetration.
+COLLISION_MIN_FRACTION = 0.10
+
 Warning = dict  # {"part": str, "kind": str, "detail": str, "severity": str}
 
 
@@ -77,6 +91,123 @@ def min_solid_volume(shape: object) -> float:
     """Smallest per-solid volume (mm^3), or ``0.0`` if there are no solids."""
     vols = [_solid_volume(s) for s in _solids(shape)]
     return min(vols) if vols else 0.0
+
+
+def _shape_volume(shape: object) -> float:
+    """Total solid volume (mm^3) of an OCCT shape (sums every ``TopAbs_SOLID``)."""
+    return sum(_solid_volume(s) for s in _solids(shape))
+
+
+def intersection_volume(shape_a: object, shape_b: object) -> float:
+    """Volume (mm^3) of the region two placed solids share.
+
+    Uses OCCT's boolean ``Common``. Returns ``0.0`` for disjoint parts and a
+    tiny (sub-mm^3) value for parts that merely touch at a coincident face, so
+    callers can threshold real interpenetration against
+    ``COLLISION_MIN_VOLUME_MM3``. Best-effort: a boolean that fails to run
+    returns ``0.0`` rather than raising.
+    """
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+
+    common = BRepAlgoAPI_Common(shape_a, shape_b)
+    if not common.IsDone():
+        return 0.0
+    return _shape_volume(common.Shape())
+
+
+def _bbox_overlap_bound(box_a: dict, box_b: dict) -> float:
+    """Volume of the axis-aligned overlap of two bounding boxes (an upper bound
+    on the true intersection volume — a cheap pre-filter before the boolean)."""
+    overlap = 1.0
+    for axis in range(3):
+        lo = max(box_a["min"][axis], box_b["min"][axis])
+        hi = min(box_a["max"][axis], box_b["max"][axis])
+        if hi <= lo:
+            return 0.0
+        overlap *= hi - lo
+    return overlap
+
+
+def check_collisions(scene: object) -> list[Warning]:
+    """Flag printed parts that interpenetrate in their assembled positions.
+
+    Every pair of leaf occurrences is tested in its *placed* (located) frame. A
+    cheap bounding-box overlap pre-filter skips the (common) non-touching pairs;
+    only boxes whose overlap could exceed the floor pay for the boolean. An
+    overlap counts as a ``collision`` (severity ``error``, so the review loop
+    treats it as blocking) only when it clears both ``COLLISION_MIN_VOLUME_MM3``
+    and ``COLLISION_MIN_FRACTION`` of the smaller part — which lets an intended
+    interference fit's thin shell through while catching a boss poking through a
+    wall or two mispositioned parts. Never raises.
+    """
+    import itertools
+
+    from cadpy.step_scene import _bbox_from_shape, scene_leaf_occurrences
+
+    try:
+        leaves = list(scene_leaf_occurrences(scene))
+    except Exception:
+        return []
+    if len(leaves) < 2:
+        return []
+
+    # (name, placed_shape, bbox, volume) for each leaf we can resolve.
+    placed: list[tuple] = []
+    for index, node in enumerate(leaves):
+        if (
+            getattr(node, "prototype_key", None) is None
+            or node.prototype_key not in scene.prototype_shapes
+        ):
+            continue
+        try:
+            from cadpy.step_scene import scene_occurrence_shape
+
+            shape = scene_occurrence_shape(scene, node)  # located (placed) shape
+            box = _bbox_from_shape(shape)
+            volume = _shape_volume(shape)
+        except Exception:
+            continue
+        name = node.name or node.source_name or f"part{index + 1}"
+        placed.append((name, shape, box, volume))
+
+    warnings: list[Warning] = []
+    for (name_a, shape_a, box_a, vol_a), (name_b, shape_b, box_b, vol_b) in (
+        itertools.combinations(placed, 2)
+    ):
+        if _bbox_overlap_bound(box_a, box_b) < COLLISION_MIN_VOLUME_MM3:
+            continue  # bounding boxes barely meet — cannot be a real collision
+        pair = f"{name_a}|{name_b}"
+        try:
+            overlap = intersection_volume(shape_a, shape_b)
+        except Exception as exc:
+            warnings.append(
+                _warning(
+                    pair,
+                    "check_failed",
+                    f"collision check raised {type(exc).__name__}: {exc}",
+                )
+            )
+            continue
+        smaller = min(vol_a, vol_b)
+        if smaller <= 0:
+            continue
+        if overlap >= COLLISION_MIN_VOLUME_MM3 and overlap >= COLLISION_MIN_FRACTION * smaller:
+            warnings.append(
+                _warning(
+                    pair,
+                    "collision",
+                    f"parts '{name_a}' and '{name_b}' interpenetrate by "
+                    f"{overlap:.1f} mm^3 ({100.0 * overlap / smaller:.0f}% of the "
+                    "smaller part) in assembled position — a feature pokes through "
+                    "or two parts occupy the same space. Reposition or resize so "
+                    "mating faces touch with the right clearance. If this is an "
+                    "intended press/interference fit, model the mate at clearance "
+                    "and note the interference in the spec instead of overlapping "
+                    "solids.",
+                    "error",
+                )
+            )
+    return warnings
 
 
 def is_valid(shape: object) -> bool:
@@ -298,6 +429,9 @@ def collect_scene_warnings(export_shape: object, scene: object) -> list[Warning]
             except Exception:
                 continue
             warnings.extend(check_part(shape, name))
+        # Per-part checks see each prototype in isolation; collisions only exist
+        # between parts in their placed frames, so check them across the scene.
+        warnings.extend(check_collisions(scene))
     else:
         warnings.extend(check_part(export_shape, "model"))
     return warnings

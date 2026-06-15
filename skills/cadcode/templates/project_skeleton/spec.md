@@ -21,8 +21,9 @@ Human-readable design intent. The agent reads this before touching code.
 ## Assembly & setup
 
 Ordered steps to assemble + set up the finished print, and the clearance each
-needs. Model the WHOLE component (captive cables, connector collars, plugs) — see
-`references/component-integration.md` + `references/hobbyist-defaults.md`.
+needs. Model the WHOLE component (captive cables, connector collars, plugs) —
+**web-search the component's dimensions and state them as assumptions** (see
+`references/component-integration.md`).
 
 1. <install component X: how it goes in, what its cable/connector needs>
 2. <place the device / route the cable / fasten>

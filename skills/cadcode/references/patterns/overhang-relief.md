@@ -29,15 +29,18 @@ self-supporting along the entire ceiling.
 
 When a hole runs INTO the part from a vertical face (along Z), the top
 of the bore would hang. Add a 45° chamfer on the TOP edge of the bore
-mouth, depth ≥ bore radius. The chamfer prints as a self-supporting
-sloped wall; the actual round bore starts beneath it.
+mouth — `chamfer depth ≈ bore radius`, so the slope covers the full
+horizontal span of the would-be ceiling. The chamfer prints as a
+self-supporting sloped wall; the actual round bore starts beneath it.
 
 ### 3. T-shape under-cut → bridge or sacrificial wall
 
-A T (or H) profile has two outward-facing horizontal undercuts. If the
-span is short (< ~8 mm) the slicer can bridge it. If too wide, add a
-sacrificial wall — a thin tab from the bottom of the undercut to the bed
-— that the user snips off after printing.
+A T (or H) profile has two outward-facing horizontal undercuts. As a rule
+of thumb, an unsupported bridge is reliable up to a few× nozzle width
+(roughly ~5–10 mm, depending on cooling and material), so the slicer can
+bridge a short span on its own. Beyond that the bridge sags — add a
+sacrificial wall, a thin tab from the bottom of the undercut to the bed
+that the user snips off after printing.
 
 ### 4. Long horizontal flat ceiling → tent it
 
@@ -129,15 +132,19 @@ horizontal hole.)
 
 ## When to use which relief
 
+Span figures below are rules of thumb tied to bridging capability (a few×
+nozzle width, ~5–10 mm before a bridge sags — material- and
+cooling-dependent), not hard cutoffs:
+
 | Situation                          | Use                                       |
 |------------------------------------|-------------------------------------------|
 | Horizontal screw hole              | teardrop hole                             |
 | Vertical hole on the underside     | chamfered bottom, OR flip the part        |
-| Wide flat ceiling > 10 mm          | tent / roof shape                         |
-| Narrow slot ceiling 3–8 mm         | bridge with 1-2 sacrificial threads       |
+| Wide flat ceiling (past bridging limit) | tent / roof shape                    |
+| Narrow slot ceiling (near bridging limit) | bridge with 1-2 sacrificial threads |
 | 30° wall (past 45° from vertical)  | step into 45° increments                  |
 | T-shape undercut                   | sacrificial breakaway wall                |
-| Small overhang < 0.5 mm            | do nothing — slicer bridges it cleanly    |
+| Small overhang (sub-mm)            | do nothing — slicer bridges it cleanly    |
 
 ## Pitfalls
 
@@ -145,8 +152,8 @@ horizontal hole.)
   direction, NOT the design's +Z direction. If the part is rotated 90°
   for printing, the teardrop apex must be rotated to match.
 - Chamfered bore rim that's too shallow: rim is still horizontal in the
-  middle. Chamfer DEPTH must equal the bore RADIUS for full coverage of
-  the horizontal portion of the ceiling.
+  middle. Aim for `chamfer depth ≈ bore radius` so the slope covers the
+  full horizontal portion of the ceiling.
 - Aggressive overhang relief is ugly on the visible face. Use slicer
   supports on cosmetic surfaces and reserve geometric reliefs for hidden
   or functional surfaces.
@@ -154,7 +161,9 @@ horizontal hole.)
   wall in PETG at 40 mm/s droops. Material matters. PETG, TPU and most
   ABS variants are more conservative — design to 40° in tricky cases.
 - Don't redesign to remove a sub-millimetre overhang — modern slicers
-  bridge 0.5 mm trivially. Reliefs are for spans > ~5 mm.
+  bridge a fraction of a millimetre trivially. Reliefs earn their keep once
+  a span approaches the bridging limit (a few× nozzle width, ~5–10 mm
+  depending on cooling and material).
 - Stair-stepping a sloped wall makes the cosmetic face stairstepped;
   acceptable hidden, ugly visible. Step only the non-visible faces.
 - `edges("%CIRCLE")` on `faces(">Z")` picks ALL circular edges on the

@@ -7,14 +7,14 @@ have it stay" feature.
 ## Why this exists (the mechanics)
 
 An interference fit retains the insert by elastic deformation: the printed
-pocket is 0.05-0.2 mm smaller than the insert, and the plastic squeezes
-around it on insertion. The FDM dimensional-accuracy floor is roughly 0.1 mm
-(varies by printer, slicer, and shrinkage), so the working interference
-range sits at +0.05 to +0.2 mm depending on insert size and material
-stiffness. Larger inserts need proportionally LESS interference — a 22 mm
-bearing seats happily at +0.10 mm, while an 8 mm shaft wants +0.20 mm.
+pocket is cut smaller than the insert, and the plastic squeezes around it on
+insertion. The FDM dimensional-accuracy floor is roughly 0.1 mm (varies by
+printer, slicer, and shrinkage). The rule: interference DECREASES as the
+press diameter grows — roughly ~0.2 mm for small steel shafts down to
+~0.05 mm for large bearing ODs in PLA (springier, so a touch more, in PETG).
 Insertion force scales steeply with interference: over-shoot and the pocket
-splits rather than seats.
+splits rather than seats. For toleranced bearing seats specifically, see
+`bearing-seat.md` (`cadlib/tables.py::BEARING_TABLE` owns those values).
 
 ## Use the helper
 
@@ -38,24 +38,21 @@ part = add_press_fit_pocket(
 ```
 
 The hole is cut at `insert_diameter - interference`, `insert_depth +
-bottom_clearance` deep. For a sense of which interference suits which
-insert/material, see the calibration note below and `bearing-seat.md` for
-the toleranced bearing seats in `cadlib/tables.py::BEARING_TABLE`.
+bottom_clearance` deep. Pick `interference` by the rule above (more for
+small shafts, less for large ODs); for toleranced bearing seats defer to
+`bearing-seat.md`. Heat-set inserts are the opposite — a LOOSE hole the
+brass melts into; see `heat-set-insert-pocket.md`.
 
 > **Calibration note:** the values assume an XY-calibrated printer
 > (±0.05 mm). Stock i3-style printers often over-extrude 0.10–0.15 mm;
 > print a 20 mm test cube and adjust slicer XY compensation if seats come
-> out tight. Rough starting interference by insert: 3–8 mm steel shaft
-> ~0.20 mm; 10 mm shaft ~0.15 mm; 13–19 mm bearing OD ~0.10 mm; 22 mm+
-> bearing OD ~0.05 mm in PLA (~0.15 mm in springier PETG). Heat-set inserts
-> are the opposite — a LOOSE hole the brass melts into; see
-> `heat-set-insert-pocket.md`.
+> out tight.
 
 ## Parameter ranges
 
-| Param | Reasonable range | Notes |
+| Param | Rule | Notes |
 |---|---|---|
-| interference | 0.05-0.2 mm | smaller for big parts, larger for small parts |
+| interference | smaller for big ODs, larger for small shafts (see the rule above) | over-shoot splits the pocket |
 | lead_in_chamfer | 0.3-0.6 mm | required - without it parts snag on the rim |
 | bottom_clearance | 0.2-0.5 mm | so the part can fully seat without bottoming |
 | wall thickness around pocket | >= 2 mm (>= 3 mm preferred) | thinner walls bulge and the fit loosens |

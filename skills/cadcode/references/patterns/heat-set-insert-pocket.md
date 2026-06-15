@@ -6,7 +6,8 @@ into plastic many times without stripping".
 
 ## Why this exists (the mechanics)
 
-A knurled brass insert heated to ~240 C with a soldering iron locally melts
+A knurled brass insert heated with a soldering iron (~240 C for PLA — see
+Pitfalls for the per-material range) locally melts
 the plastic around its knurls; the plastic reflows into the knurl pattern
 and solidifies, locking the insert mechanically and giving you real
 machine-threaded engagement in a 3D-printed part. Pull-out strength is
@@ -36,9 +37,10 @@ part = add_heat_set_pocket(
 ```
 
 Insert dimensions (`pocket_d` body Ø, `insert_len`, plus the `relief_d` ×
-`relief_h` rim relief) live in `cadlib/tables.py::HEATSET_TABLE` (`M2`,
-`M2.5`, `M3`, `M4`, `M5`). `Read` that file for the exact numbers; the helper
-raises `ValueError` for an unknown `insert_size`.
+`relief_h` rim relief) are owned by `cadlib/tables.py::HEATSET_TABLE` and keyed
+by `insert_size`; the helper reads them for you. `Read` that file if you need the
+raw numbers — don't transcribe them. The helper raises `ValueError` for an
+unknown `insert_size`.
 
 The rim relief that older notes called "mandatory" is **now cut by the
 helper** — you no longer have to add it yourself. It pulls `relief_d` /
@@ -47,14 +49,10 @@ and screw heads sit flat.
 
 ## Boss sizing around the pocket
 
-Outer boss diameter >= `pocket_d + 2 * wall`, where `wall >= 2.5 mm`
-(>= 3 mm for PLA — bare 2 mm walls split in practice on PLA).
-
-- M2 insert: boss OD >= 8.2 mm
-- M2.5 insert: boss OD >= 8.7 mm
-- M3 insert: boss OD >= 9.0 mm
-- M4 insert: boss OD >= 10.6 mm
-- M5 insert: boss OD >= 11.4 mm
+The rule is `boss OD = pocket_d + 2 x wall`, with `wall >= 2.5 mm` (>= 3 mm for
+PLA — bare 2 mm walls split in practice on PLA). Pull `pocket_d` from the helper
+rather than hand-listing it: an M3 insert (pocket_d ~4 mm) lands at
+`OD >= 4 + 5 = 9 mm`.
 
 Less wall and the boss splits when the iron pushes the insert in (the
 softened plastic has nowhere to go and pressure cracks the cold ring around
@@ -76,11 +74,12 @@ the corner so the crack path is longer.
 - Top face print quality matters: the insert seats on the top layer, and
   if it's rough or stringy the insert tilts. Use 5+ top layers and turn
   on ironing if your slicer supports it.
-- Iron temperature by material: target 220-240 C for PLA, 260-280 C for
-  PETG, 300-320 C for ABS / PC. Too high and you melt a halo around the
-  insert so it sinks too deep or droops sideways. ABS / PC actually hold
-  heat-sets better — the higher glass transition gives a stronger reflowed
-  bond.
+- Iron temperature by material: typical starting temps are 220-240 C for PLA,
+  260-280 C for PETG, 300-320 C for ABS / PC — verify against the
+  filament/insert datasheet rather than treating these as authoritative. Too
+  high and you melt a halo around the insert so it sinks too deep or droops
+  sideways. ABS / PC actually hold heat-sets better — the higher glass
+  transition gives a stronger reflowed bond.
 - Don't put a heat-set insert in TPU or other flexible filament — there
   is no rigid plastic for the knurls to bite into, the insert just sinks
   and wallows.

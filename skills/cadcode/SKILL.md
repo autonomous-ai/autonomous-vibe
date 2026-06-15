@@ -1,6 +1,6 @@
 ---
 name: cadcode
-description: Generate, edit, validate, and render parametric 3D models for hobbyist 3D printing using CadQuery (B-rep, OCCT). Use for natural-language CAD asks like "phone stand", "wall mount", "honeycomb tray", "GoPro adapter", "vase". Outputs an archival STEP plus a printable STL the viewer previews. Produces editable Python source — describe what you want, get a printable file in minutes, edit by chatting.
+description: Use when the user wants to create, edit, or print a parametric 3D model from a natural-language description — "phone stand", "wall mount", "honeycomb tray", "GoPro adapter", "vase" — or to tweak, re-render, or fix an existing CadQuery `.py` part for hobbyist 3D printing.
 ---
 
 # CADCode — hobbyist 3D CAD via CadQuery
@@ -65,6 +65,16 @@ Rules of the project format:
   section). The legacy ``result = <shape>`` form is still accepted for
   trivial single-file scripts — the runner treats it as if
   ``gen_step()`` returned ``result``.
+- **Every mating interface shares one dimension.** A tab and its slot, a lip
+  and its groove, a boss and its hole, a peg and its socket — both sides derive
+  from a **single** base value in `params.py`, with the FDM clearance applied in
+  exactly **one** place. Never size the two halves independently (that is how a
+  tab and slot silently drift until they jam or fall out). Prefer the helpers
+  that emit both halves from one call/table (`add_nut_trap`,
+  `add_open_cable_channel`, `add_screw_post`); for a hand-built mate, derive the
+  second half from the first with `cadlib.fits` — `slot_for(tab, fit)` (female
+  for a male) or `peg_for(hole, fit)` (male for a female) pick the correct FDM
+  clearance so the two halves can't drift. See `assets/example_snap_lid_box.py`.
 - **One file per physical part** under `parts/`. Each part knows nothing
   about its siblings; it builds in its own local frame.
 - **Each feature is its own function.** `add_left_usb_c_cutout(part, p)`,
@@ -113,7 +123,7 @@ What "fix" means in practice:
 
 - ``ok=false``: read the traceback, change the smallest responsible line, re-run.
 - ``is_solid=false`` or volume far off expected: load `references/repair-loop.md`, classify, fix, re-run.
-- ``warnings`` non-empty (e.g. ``disconnected_bodies``, ``sliver``, ``invalid_brep``): these are deterministic geometry defects — **treat them as blocking**. A ``disconnected_bodies`` warning means a feature is floating off the body (placed outside its footprint, or never unioned) — or, for a **mechanism**, two pinned links whose shared joint was posed by eyeballed angles instead of solved, so they never meet. Anchor it to the body (`references/patterns/anchor-to-body.md`) or solve the loop so the joint coincides (`references/kinematic-placement.md`), and re-run. Do not declare done while any **blocking** warning remains. (The advisory `sharp_edges` hint — `severity: "info"` — is **not** blocking: address it within printability and leave functional arrises sharp; see step 6.)
+- ``warnings`` non-empty (e.g. ``disconnected_bodies``, ``collision``, ``sliver``, ``invalid_brep``): these are deterministic geometry defects — **treat them as blocking**. A ``disconnected_bodies`` warning means a feature is floating off the body (placed outside its footprint, or never unioned) — or, for a **mechanism**, two pinned links whose shared joint was posed by eyeballed angles instead of solved, so they never meet. Anchor it to the body (`references/patterns/anchor-to-body.md`) or solve the loop so the joint coincides (`references/kinematic-placement.md`), and re-run. A ``collision`` warning means two assembled parts occupy the same space (a boss pokes through a wall, a part is mispositioned) — reposition or resize so mating faces meet at the right clearance, and re-run. Do not declare done while any **blocking** warning remains. (The advisory `sharp_edges` hint — `severity: "info"` — is **not** blocking: address it within printability and leave functional arrises sharp; see step 6.)
 - Preview STL looks wrong (proportions off, hole misplaced, parts misaligned, a member poking through a plate): edit the `.py` and re-run. **Always inspect every part** — geometry can be valid (`is_solid=true`, no warnings) but still wrong.
 
 You have everything you need to close the loop on your own:
@@ -133,7 +143,7 @@ what makes you feel like an engineer instead of an autocomplete.
 
 When Panda runs you in **planning mode** (`--permission-mode plan`), you write
 no geometry — you produce the plan the user approves before the build. That plan
-is an **engineering spec**, not a sales pitch. Hold it to four rules:
+is an **engineering spec**, not a sales pitch. Hold it to five rules:
 
 1. **Exact measurements.** Every dimension, quantity, and metric is a precise
    number with a unit. Never "about", "roughly", or "approximately" — if you
@@ -149,6 +159,15 @@ is an **engineering spec**, not a sales pitch. Hold it to four rules:
    loose-fit cover), say so in a clause rather than inventing a load.
 4. **Show the math.** For each derived or load-bearing number, show the formula
    and the values used so a reader can check it: `name = formula = value unit`.
+5. **Verification checklist.** End the plan with the explicit list the build will
+   clear one item at a time, each paired with how it is checked — a SANITY check
+   (a number / `validate()` assert / `functional` warning) and a VISUAL check
+   (which render, or a **cross-section** for an interior interface). Two groups:
+   **(A) per component** — every feature sits on solid material (no tooth / peg /
+   boss / rib over a void, hole, or notch) and depths actually reach; **(B) per
+   interface** — each mating pair (peg/socket, clutch, gear, tab/slot, lip/groove)
+   actually meets and can transmit its force (form-fitting, not a smooth pocket
+   over round pegs), with the right clearance and a reachable assembly path.
 
 **Scale to the request.** A trivial edit ("make the wall 2 mm thicker", "move
 the holes 5 mm apart") needs only the exact before→after values and any physical
@@ -168,16 +187,20 @@ would compromise the part, say so and pick function. Trivial edits skip the
 `Form` clause.
 
 **Assembly & functional discipline.** A part that is a valid solid but can't be
-assembled or used is a failure (the classic miss: a MagSafe stand whose puck
-*pocket* is perfect but whose **captive cable + connector collar** can't pass the
-opening). For any design that integrates a real component, the plan must include:
+assembled or used is a failure — whether it can't be *installed* (a MagSafe stand
+whose puck *pocket* is perfect but whose **captive cable + connector collar**
+can't pass the opening) or can't *function* (a dial that sits clear of its drive
+pegs, so turning it does nothing). For any design with a real component or a
+moving / mating mechanism, the plan must include:
 - **Assembly & setup sequence** — the ordered steps to assemble and set up the
   finished print (install each component, route its cable/connector, place the
   device), and the clearance each step needs. Model the WHOLE component,
-  including captive cables, connector collars, and plugs — look it up in
-  `references/hobbyist-defaults.md`.
-- **Functional requirements** — the checklist of what it must do (hold / charge /
-  route / rest / remove), each tied to a dimension.
+  including captive cables, connector collars, and plugs — **web-search the
+  component's dimensions** (body, cable Ø, connector-collar Ø×len) and state them
+  as assumptions the user can correct.
+- **Functional requirements** — what it must do (hold / charge / route / rest /
+  remove / drive / mesh), each tied to a dimension and carried into the
+  Verification checklist (rule 5).
 
 Read `references/component-integration.md` for the discipline. Encode the
 constraints two ways (see the build loop): hard `validate()` asserts for
@@ -186,18 +209,35 @@ edits skip this.
 
 ### Where the numbers come from — source them, don't guess
 
-| Need | Load |
-|---|---|
-| FDM tolerances, fastener clearance holes, bearing/motor/phone sizes, sanity sizes | `references/hobbyist-defaults.md` |
-| Wall thickness (nozzle multiples) + the `h³` stiffness rule | `references/patterns/wall-thickness-rules.md` |
-| Screw pull-out (engagement = 2·screw-Ø), boss OD sizing | `references/patterns/screw-boss.md` |
-| Rib vs wall stiffness (one rib ≈ 5–10× cheaper than doubling walls) | `references/patterns/rib-stiffener.md` |
+Every number you put in the model comes from exactly one of three places. Know
+which, and never invent one.
 
-Standard derived values you should cite rather than invent: wall snaps to a
-nozzle multiple (0.4 mm nozzle → 0.8 / 1.2 / 1.6 / 2.0 / 2.8 / 3.2 mm; 2.0 mm
-enclosure, 2.8 mm + ribs load-bearing); M3 clearance Ø3.4 mm, self-tap Ø2.5 mm,
-boss engagement 6 mm, boss OD ≥ 8.8 mm; FDM slip fit ≈ 0.2 mm clearance per
-side; PETG ≈ 0.6× PLA stiffness and creeps under sustained load.
+1. **Real-world dimensions of a named product** (a phone, a motor, a doorbell, a
+   bearing you don't recognize, a mount standard, a connector collar) — **web-search
+   the manufacturer/catalog spec**, then **state it as an assumption the user can
+   correct** and round for printing. Don't carry these from memory; they drift by
+   model/region and a confident guess is the classic failure. If a search can't
+   pin a specific device, say so and ask the user for the dimension.
+2. **Hardware the cadlib helpers already cover** (screws, nuts, bearings, magnets,
+   heat-set inserts, common cable jackets) — the helper owns the dimensions; pass
+   it a named size (`bearing="608"`, `screw_size="M3"`) and let
+   `cadlib/tables.py` supply the geometry. Don't transcribe those numbers into
+   your model. For an open-ended fit the helper takes a raw dimension
+   (`cable_diameter=…`) — that's where a web-searched value goes.
+3. **Generic FDM best-practice** (tolerances, wall thickness, boss sizing, fits) —
+   use the rules below, which are formulas, not lookups:
+
+| Best-practice rule | Load for the why |
+|---|---|
+| `wall = N × nozzle` (0.4 mm nozzle → 0.8 / 1.2 / 1.6 / 2.0 / 2.8 mm; 2.0 mm enclosure, 2.8 mm + ribs load-bearing) | `references/patterns/wall-thickness-rules.md` |
+| Clearance hole `= nominal + 0.3–0.4 mm`; self-tap `= major − 0.3 mm`; cbore `= cap-head Ø + 0.5 mm` | `references/hobbyist-defaults.md` |
+| Boss OD `= 2·clearance + 2·wall`; screw engagement `= 2·screw-Ø` | `references/patterns/screw-boss.md` |
+| FDM slop: press-fit `+0.2`, hand-assembly `+0.4`, snap/interference `0.3–0.5 mm` | `references/hobbyist-defaults.md` |
+| Rib vs wall stiffness (one rib ≈ 5–10× cheaper than doubling walls; `h³`) | `references/patterns/rib-stiffener.md` |
+
+Material properties (e.g. PETG ≈ 0.6× PLA stiffness and creeps under sustained
+load) are starting assumptions — keep the engineering formula but label the
+constant as one to verify/web-search for the user's actual material.
 
 ### Physics checklist — what to show
 
@@ -211,8 +251,8 @@ side; PETG ≈ 0.6× PLA stiffness and creeps under sustained load.
 - **FDM layer orientation:** a load pulling *across* the layer lines is far
   weaker (e.g. boss pull-out drops ~50%). State the print orientation wherever
   strength matters.
-- **Build volume:** confirm the part fits the printer (Bambu ≈ 256 mm cube;
-  cadpy's sanity bound is 200 × 200 mm).
+- **Build volume:** confirm the part fits the printer (a Bambu bed is ≈ 256 mm
+  cube — verify for the user's printer model; cadpy's sanity bound is 200 × 200 mm).
 - **Assumptions to state:** material (and its density/stiffness), applied load,
   orientation in use, support condition (free-standing, wall-mounted, clamped).
   Label every assumed input (a phone's mass, a bag's weight) as an assumption
@@ -223,41 +263,51 @@ side; PETG ≈ 0.6× PLA stiffness and creeps under sustained load.
 End the Physics check with a one-line verdict: stable / load-safe / printable
 under the stated assumptions, or the condition that would make it fail.
 
-### Worked example — desktop phone stand (single PLA part)
+### Default to ONE premium part; split only when it must come apart
 
-> **What I'll make** — A free-standing PLA cradle that holds a phone at a 70°
-> viewing angle.
->
-> **Parts**
-> - *Stand body* — 100 × 75 mm base footprint, 6.0 mm floor; cradle wall rising
->   at 70° from the base, 110 mm tall, 2.8 mm wall; front retaining lip 8 mm
->   tall × 5 mm deep. Material PLA. One printed part, no fasteners; the phone
->   rests in the cradle and is retained by the lip (phone slides in from the
->   top, 1 mm side clearance each side for a loose fit).
->
-> **Measurements & math**
-> - `cradle wall = load-bearing default = 2.8 mm` (7 perimeters @ 0.4 mm nozzle)
-> - `floor = 6.0 mm` — mass ballast low in the base to resist tip-over
-> - `lip height = 8 mm` > phone resting offset, so the phone cannot slide out
-> - `phone CoM height up cradle = 80 mm` (assumed, mid-height of a 160 mm phone)
->
-> **Physics check** — Assumptions (user can correct): phone mass *assumed*
-> 0.20 kg, PLA, static desktop, printed flat on the base.
-> - Tip-over: phone leans 20° back from vertical, so its CoM sits
->   `x_CoM = 80·sin(20°) = 80·0.342 = 27.4 mm` behind the cradle root.
-> - The base extends `60 mm` behind the cradle root, so
->   `x_CoM (27.4 mm) < base_overhang (60 mm)` ⇒ **stable, 32.6 mm margin.**
-> - Load path: phone weight (`0.20 kg · 9.81 = 2.0 N`) bears on the cradle wall
->   and floor, both continuous PLA to the base — no fastener in the load path.
-> - Print orientation: printed flat on the base, so the cradle's bending load
->   runs along layer lines, not across them — full layer strength.
-> - Build volume: `100 × 75 × 110 mm` fits a Bambu 256 mm bed easily.
-> - **Verdict:** stable, load-safe, and printable for phones up to a 60 mm
->   rearward CoM offset under these assumptions.
+**Most consumer objects are a single, sculpted premium part** — a phone stand, a
+knob, a bracket, a wall mount, a vase, a MagSafe stand. Default to **one
+well-proportioned solid body** with any component (charger puck, cable, bearing,
+phone) integrated into it as a recess / pocket / channel. A premium object reads
+as one continuous form, **not a flat plate bolted to a flat base**.
 
-For a **multi-part assembly**, give each part its own *Parts* entry and make the
-connection explicit (e.g. "base + lid, 0.2 mm slip fit on a 2 mm lip; four M3
-self-tap bosses, 6 mm engagement, on a 80 × 60 mm bolt pattern").
+Reach for multiple printed parts **only** when the object physically must come
+apart: a lid or removable cover, a part with a moving joint (hinge, linkage), a
+shape that can't print in one orientation, or anything larger than the bed. *A
+phone stand is one part; a box with a lid is two.* When unsure, choose one part —
+a unified body looks better and has nothing to misfit. The multi-part fit /
+collision / shared-dimension discipline below applies **only** to designs that
+are genuinely several printed parts; never split a single object to satisfy it.
+
+### Spec format — the shape to fill in
+
+> **What I'll make** — one line.
+> **Parts** — usually **one**. Give it outer dims, material, purpose. *Only if
+> the design is genuinely multi-part*, add an entry per printed part and state
+> exactly how each connects (joint type, the shared mating dimension, the
+> clearance per side).
+> **Form** — the premium read in one line: the unified corner/edge radius and
+> the primary surface treatment (the aesthetic discipline above +
+> `references/industrial-design.md`). A solid, resolved body — never a thin slab.
+> **Measurements & math** — each derived/load-bearing number as
+> `name = formula = value unit` (e.g. `wall = 7 perim · 0.4 mm = 2.8 mm`).
+> **Physics check** — only the checks that apply (tip-over CoM vs base, load
+> path, stiffness, layer orientation, build volume), then a one-line **Verdict**.
+
+**Worked example — MagSafe phone stand (one premium part).** A solid, gently
+tapered wedge body — *not* a flat plate: ~75 × 80 mm base, ~95 mm tall, leaning
+~12° back; a Ø56 × 3 mm puck recess sunk into the front face, the cable channeled
+out the back (model the puck **and** its captive cable + connector collar —
+`references/component-integration.md`); 3 mm walls, 4 mm unified vertical radius,
+floor ballast low for stability, an 8 mm front lip the phone rests on. One
+printed part, charger integrated — mimic `assets/example_magsafe_stand.py`.
+(These numbers are illustrative; the puck/cable/collar dimensions are
+web-sourced from Apple's spec and stated as assumptions — see rule 1 above.)
+
+*Only if the design is multi-part*, make each connection explicit and numeric
+(e.g. "base + lid, 0.2 mm slip fit on a 2 mm lip; four M3 self-tap bosses, 6 mm
+engagement, on an 80 × 60 mm bolt pattern") — a multi-part plan that doesn't
+state how the parts join is incomplete.
 
 ## Use this skill when
 
@@ -290,31 +340,40 @@ Use these defaults unless the user specifies otherwise:
 - **Wall thickness for FDM enclosures**: 2.0–3.0 mm.
 - **Cosmetic fillet**: 1.0–2.0 mm where geometry allows.
 - **Cable channels / slots**: 2–4 mm wider than the cable / connector.
-- **Clearance holes** (use these unless user specifies otherwise):
-  - M3 close-fit: 3.4 mm
-  - M4 close-fit: 4.5 mm
-  - M5 close-fit: 5.5 mm
-  - #4 self-tap: 3.2 mm
-  - #6 self-tap: 3.7 mm
+- **Clearance holes**: `hole = nominal + 0.3–0.4 mm` (so M3 → 3.4 mm, M4 → 4.5 mm,
+  M5 → 5.5 mm); self-tap into plastic `= major − 0.3 mm`. For screws/nuts/inserts,
+  prefer the cadlib helper with a named size rather than transcribing the hole.
 - **Tolerances baked into the print** (FDM, 0.4mm nozzle): assume 0.2 mm
   positive slop on holes the user will press a part into; assume 0.4 mm slop
   on parts the user will assemble by hand.
 
-Ask the user **one focused clarifying question only** when an assumption
-would change geometry materially. Examples that warrant a question:
+### Ask only about preferences; decide all engineering silently
 
-- Phone model when the prompt says "phone stand" but no model is given.
-- Portrait vs landscape orientation when both are common for the part type.
-- Wall mount vs desk stand vs handheld when not implied.
-- Hand or thread (M3 vs #4-40, BSPP vs NPT).
+Split every open decision into two buckets and treat them oppositely. The user
+verifies **taste**, never **geometry**.
 
-Examples that do **not** warrant a question — just pick a sane default and
-note the assumption in your reply:
+- **Personal preferences — only the user can know these. Ask, but sparingly.**
+  No "correct" answer; depends on the person or their stuff: which device/phone,
+  colour/finish, size for their space, left- vs right-handed, wall- vs desk- vs
+  handheld, how many of X it holds. Ask only when the answer actually changes
+  geometry, and ask the **fewest, highest-leverage** questions — ideally one,
+  never a quiz.
+- **Engineering choices — there is a best answer. Never ask; pick it.** Wall
+  thickness, clearance/tolerance, fillet radius, joint type (tab-slot vs snap vs
+  screw), fastener size and thread, boss sizing, print orientation, which parts
+  split out. Decide these from best practice and the references — silently.
+  Default-and-state: make the call, note it in one line only if it changes fit
+  or load, and move on. Never turn an engineering decision into a question.
 
-- Cosmetic fillet radius.
-- Background colour, finish, or decorative texture.
-- Whether to add a chamfer to the print-bed edge (always yes — it lifts off
-  cleaner).
+The test: *could a competent product designer pick this correctly without
+knowing the user?* If yes, it's engineering — decide it.
+
+- Warrants a question (preference): device when "phone stand" names no model;
+  portrait vs landscape when both are common; wall mount vs desk stand when not
+  implied; capacity ("1 pen or 6").
+- Never ask (engineering — just pick, optionally note): wall thickness, fillet
+  radius, clearance, joint/fastener type and thread, print orientation, finish,
+  print-bed edge chamfer (always yes — it lifts off cleaner).
 
 ## Root model
 
@@ -440,29 +499,52 @@ a JSON line.
 ### 6. Read the failure (or the render)
 
 Don't skip this step. Even when `ok=true is_solid=true`, geometry can be
-visually wrong:
+visually wrong. Work the plan's **Verification checklist** here: clear each item
+with BOTH its sanity check (a number / assert / `functional` warning) and its
+visual check (a render — a **cross-section** for any interior interface):
 
 - **Resolve `warnings` first.** The JSON's ``warnings`` array lists
   deterministic defects cadpy already found — `disconnected_bodies` (a part is
-  several detached solids → something floats), `sliver`, `invalid_brep`. Any
-  warning is blocking; go to step 7.
+  several detached solids → something floats), `collision` (two assembled parts
+  interpenetrate → a feature pokes through or a part is mispositioned), `sliver`,
+  `invalid_brep`. Any warning is blocking; go to step 7.
+- **Prove the parts fit and don't collide (multi-part designs).** cadpy now runs
+  a pairwise `collision` check across the assembled parts — but a clean check
+  only proves they don't *overlap*, not that they *join*. For every mating
+  interface (tab/slot, lip/groove, boss/hole, peg/socket), confirm both sides
+  derive from **one** source-of-truth dimension in `params.py` plus the FDM
+  clearance applied in **one** place — so the male and female can never drift
+  apart (the atomic helpers `add_nut_trap` / `add_open_cable_channel` and the
+  table-driven `add_screw_post` already guarantee this; for a hand-built
+  tab/slot or dovetail tab, put the shared base dimension in `params.py` and add
+  the clearance once). Then walk the assembly sequence: there must be a real
+  ordered path to put it together (lid drops past the lip, captive cable passes
+  the opening). A model with valid solids but unchecked mating is **not done**.
 - **Look at every part, not just the assembly.** Run
   ``python scripts/review <project_dir>`` — it renders the assembled model and
   *each named part* to multi-view (iso + top) PNGs under ``<stem>_review/`` and
   re-lists the warnings. `Read` each PNG. The top view exposes features that sit
   outside the body footprint; the iso exposes members poking through plates.
   A whole-assembly preview hides a floating standoff *inside* a tray or a small
-  spike on one part — per-part views do not.
+  spike on one part — per-part views do not. For an **interior** interface (a peg
+  in a socket, a tooth on a disc, a lip in a groove) exterior views can't show
+  whether it engages — render a **cross-section**:
+  ``python scripts/review <project_dir> --section <x|y|z>[@offset_mm]`` (add
+  ``--part <name>`` to cut one part), then `Read` it.
 - **Justify each part.** For every part, state in one line what it is for and
   what it connects to (which mounting interface / mating face). If you cannot
   justify a part, or it does not connect to anything, it is a defect — fix it.
-- **Verify it assembles and works.** Walk the plan's **assembly & setup
-  sequence** against the renders: for each step, can the component — *and its
-  captive cable / connector collar* — physically get where it needs to go
-  (open route, opening sized for the connector, reachable insertion path)? Encode
-  the constraints as hard `validate()` asserts (impossible fits) **and**
-  `functional` warnings returned from `gen_step()`
-  (`return {"shape": shape, "warnings": functional_checks(p)}`). The
+- **Clear the Verification checklist, item by item.** For each item do BOTH a
+  sanity check and a visual check. **(A) Per component:** every feature sits on
+  SOLID material — a tooth, peg, boss, or rib perched over a void / hole / notch
+  is half-supported and weak; depths actually reach. **(B) Per interface:** the
+  mating features actually MEET in the right axis and can TRANSMIT their force — a
+  coupling sitting clear of its pegs doesn't drive, a smooth pocket over round
+  pegs can't transmit torque, a captive cable's collar must pass its opening.
+  Walk the plan's assembly sequence against the renders, cross-sectioning the
+  interior interfaces. Encode each item as a hard `validate()` assert (impossible
+  fits) **and** a `functional` warning returned from `gen_step()`
+  (`return {"shape": shape, "warnings": functional_checks(p)}`); the
   `.step.json` `validation.warnings` lists any `functional` failures — fix the
   geometry/params and re-run until they're gone. See
   `references/component-integration.md`.
@@ -516,16 +598,19 @@ assumptions you made.
 - Run `scripts/cad` (or at minimum `scripts/check`) before declaring done.
   Never claim a model is printable from reading code alone.
 - Never declare done with a **blocking** warning (`disconnected_bodies`,
-  `sliver`, `invalid_brep`, `empty`, `check_failed`) **or a `functional`
-  warning** in the `warnings` array, a floating/disconnected part, or a part you
-  cannot justify. A `functional` warning (`severity: "warning"`) means the design
+  `collision`, `sliver`, `invalid_brep`, `empty`, `check_failed`) **or a
+  `functional` warning** in the `warnings` array, a floating/disconnected part,
+  two parts that interpenetrate, or a part you cannot justify. A `functional` warning (`severity: "warning"`) means the design
   can't be assembled/used as intended (e.g. a connector that won't fit its
-  opening) — fix it. The advisory `sharp_edges` hint (`severity: "info"`) is not
+  opening, a coupling that doesn't engage its drive pegs, or a feature perched
+  over a void) — fix it. The advisory `sharp_edges` hint (`severity: "info"`) is not
   blocking — soften what you can within printability and leave functional arrises
   sharp. For assemblies, run `scripts/review` and inspect **every** per-part
   render — not just the assembled preview.
-- When the prompt is ambiguous on a *geometry-changing* axis, ask **one**
-  clarifying question. Otherwise, pick a default and proceed.
+- Ask the user only about *personal preferences* that change geometry, and ask
+  the fewest possible. Decide every *engineering* choice silently from the
+  references — never ask about wall thickness, clearance, joint/fastener type,
+  or print orientation. (See "Ask only about preferences".)
 - Use millimeters throughout. Do not convert; do not annotate inches.
 
 ## Reference examples
@@ -543,6 +628,7 @@ when you need to mimic a pattern):
 | ``assets/example_knurled_knob.py`` | Polar array of cutting features (knurling), chamfers, M3 set screw |
 | ``assets/example_desk_valet.py`` | Premium look: unified radius language via ``cadlib.styling`` (``design_radius_for`` + ``soften_edges`` + ``break_edges``), shelled tray |
 | ``assets/example_magsafe_stand.py`` | Functional integration: a captive-cable component done right — `add_open_cable_channel` (connector-clearance), hard `validate()` + soft `functional_checks()` warnings via the envelope dict |
+| ``assets/example_snap_lid_box.py`` | **Multi-part fit (study this for any assembly).** A real `cq.Assembly` of base + lid as separate printed parts: the lid lip is derived from the base cavity via `cadlib.fits.peg_for` (one shared dimension), seated collision-clean, with `functional_checks()` proving it assembles |
 
 These are the canonical patterns. Mimic the file shape: docstring at top,
 named parameters at the top of the file, single ``result = ...`` at the
@@ -570,10 +656,10 @@ Load these only when their trigger applies (saves the host agent's context):
 - `references/cadquery-modeling.md` — CadQuery idioms: workplanes, faces
   selectors, hole/cboreHole, fillet/chamfer, polygon for hex grids, loft for
   taper, common pitfalls.
-- `references/hobbyist-defaults.md` — full FDM tolerance table, common
-  fastener / cable / bearing dimensions, well-known part sizes (iPhone 15
-  family, GoPro mount, NEMA17 motor, GridFinity 42mm baseplate, 608 bearing,
-  etc.).
+- `references/hobbyist-defaults.md` — two parts: (1) how to source dimensions —
+  web-search real-world product specs and state them as assumptions; (2) the
+  generic FDM best-practice rules/formulas (tolerances, wall = N×nozzle,
+  self-tap, cbore, bearing seat, XY-comp, elephant's foot, sanity-scale check).
 - `references/repair-loop.md` — diagnosis + repair when `scripts/cad`
   returns `ok=false` or `is_solid=false`: classify the failure, the smallest
   responsible fix, when to re-render vs re-validate.
@@ -605,6 +691,7 @@ from cadlib.cutouts   import (
     add_open_cable_channel,   # captive cable + connector collar (installable)
 )
 from cadlib.mechanical import add_dovetail_slot, add_rib_stiffener
+from cadlib.fits      import mating_clearance, slot_for, peg_for  # shared mating dims
 from cadlib.styling   import design_radius_for, soften_edges, break_edges
 from cadlib.kinematics import solve_fourbar, place_two_point, circle_intersections
 from cadlib.layout    import four_corner_points, grid_points, circle_points

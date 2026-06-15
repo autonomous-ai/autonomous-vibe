@@ -35,8 +35,9 @@ modules (``typing``, ``dataclasses``, ``enum``, ``functools``,
 ``decimal``, ``abc``, ``contextlib``, ``warnings``, ``weakref``, ``io``,
 ``re``, ``string``, ``textwrap``, ``random``). It does **not** allow
 ``os``, ``subprocess``, ``urllib``, ``requests``, ``cv2``, file system
-modules, network modules, etc. If your code needs anything outside the
-allow-list, you have the wrong tool for the job.
+modules, network modules, etc. (the runner's import allow-list is the
+authoritative list and may change — this is the current set.) If your code
+needs anything outside the allow-list, you have the wrong tool for the job.
 
 Other common causes:
 
@@ -88,8 +89,8 @@ Ask **one** clarifying question after the 4th failed iteration, or earlier
 if you find yourself making the same guess about the user's intent:
 
 - Two valid interpretations of the prompt (portrait vs landscape, etc.).
-- The reference dimensions aren't in `hobbyist-defaults.md` and you'd be
-  guessing for a specific device.
+- A web search can't pin the dimensions for a specific device and you'd be
+  guessing.
 - The prompt requires a fit (press fit, threading) and the user didn't say
   whether they want loose or tight.
 

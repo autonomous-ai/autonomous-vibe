@@ -20,17 +20,24 @@ plastic is wasted.
 
 ## Default wall thicknesses
 
-For a generic FDM nozzle (0.4 mm):
+The rule is `wall = N × nozzle width`, where `N` is the perimeter count the
+use case needs. Pick `N`, multiply by the nozzle width, and you have a wall
+the slicer can render without a gap-fill bead.
 
-| Use case | Wall thickness | Why |
-|---|---|---|
-| Decorative shell (no load) | 1.2 mm (3 perimeters) | strong enough to handle |
-| Generic enclosure | 2.0 mm (5 perimeters) | rigid, no flex, good acoustics |
-| Load-bearing part | 2.8 mm (7 perimeters) + ribs | use ribs not thickness |
-| Cosmetic detail / tab | 0.8 mm (2 perimeters) | thinnest robust wall |
-| Living-hinge web | 0.4 mm (1 perimeter) | see living-hinge.md |
-| Top wall above magnets | 0.4–0.8 mm | see magnet-pocket.md |
-| Bottom of a tray | 1.2 mm (3 perimeters) + ribs | rigid floor |
+Worked example at a 0.4 mm nozzle: a decorative shell wants 3 perimeters →
+**1.2 mm**; a generic enclosure wants 5 → **2.0 mm**; a load-bearing part
+wants 7 + ribs → **2.8 mm**. The full mapping of use case to `N` (and so to
+the worked thickness at 0.4 mm):
+
+| Use case | Perimeters (N) | At 0.4 mm | Why |
+|---|---|---|---|
+| Decorative shell (no load) | 3 | 1.2 mm | strong enough to handle |
+| Generic enclosure | 5 | 2.0 mm | rigid, no flex, good acoustics |
+| Load-bearing part | 7 + ribs | 2.8 mm | use ribs not thickness |
+| Cosmetic detail / tab | 2 | 0.8 mm | thinnest robust wall |
+| Living-hinge web | 1 | 0.4 mm | see living-hinge.md |
+| Top wall above magnets | 1–2 | 0.4–0.8 mm | see magnet-pocket.md |
+| Bottom of a tray | 3 + ribs | 1.2 mm | rigid floor |
 
 ## Nozzle-aware adjustment
 
@@ -73,16 +80,15 @@ separately and subtract.)
 
 ## Hard rules
 
-- **Minimum printable wall**: 0.4 mm (single perimeter at 0.4 mm nozzle).
-  Below this and the slicer skips the geometry entirely.
-- **Avoid 0.4 < t < 0.8** for non-flexure walls — older slicers round you
-  to 0 or 2 perimeters depending on settings, output unpredictable. Modern
-  slicers (PrusaSlicer 2.6+, OrcaSlicer, Bambu Studio) use variable
-  extrusion width and print 1.0 mm walls cleanly — snapping to multiples
-  is still preferred for predictability but no longer mandatory for prints
-  from the last ~2 years. Strict multiples-only rule applies if you're on
-  an older Cura / Slic3r build; modern slicers fill gaps with variable-width
-  extrusion and print non-multiple walls cleanly.
+- **Minimum printable wall** `= 1 × nozzle width` (a single perimeter; 0.4 mm
+  at a 0.4 mm nozzle). Below this and the slicer skips the geometry entirely.
+- **Avoid `1 < N < 2` nozzle-widths** (0.4 < t < 0.8 at a 0.4 mm nozzle) for
+  non-flexure walls — that band rounds to 0 or 2 perimeters depending on
+  settings, output unpredictable. Modern slicers quantize wall to
+  extrusion-width multiples and use variable-width extrusion to fill gaps,
+  so a non-multiple wall often prints cleanly — but snapping to nozzle
+  multiples is still preferred for predictability. Check your slicer's
+  perimeter / wall settings if a wall renders thinner than authored.
 - **Above 4 mm**: warping risk on big PLA prints. Use solid infill walls
   or rib-stiffened thin walls instead.
 - **Snap to nozzle multiples** within ±0.05 mm. A 1.0 mm wall is worse

@@ -59,6 +59,14 @@ loft of two rectangles creates the drafted side walls automatically.)
 
 ## Quick conversions
 
+The horizontal offset is just the formula from the template:
+
+    offset = tan(angle) × height
+
+(tan(1°) ≈ 0.0175, from the mechanics above — so 1° ≈ 0.175 mm of offset
+per 10 mm of Z.) Plug in your own angle and height; the table below is only
+convenience for the common angles at 10 mm Z:
+
 | Angle | Horizontal offset per 10 mm Z |
 |---|---|
 | 0.5° | 0.087 mm |

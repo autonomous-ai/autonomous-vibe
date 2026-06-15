@@ -8,8 +8,9 @@ closed tunnel) and the route must clear the connector collar, or you physically
 cannot install the charger.
 
 Demonstrates, end to end:
-  * real component dims sourced from `references/hobbyist-defaults.md`
-    (puck Ø56, captive cable Ø3.6, connector collar Ø9 × 14 mm);
+  * real component dims web-sourced from Apple's MagSafe spec and stated as
+    assumptions (puck Ø56, captive cable Ø3.6, connector collar Ø9 × 14 mm) —
+    these are illustrative; verify the current spec when you build;
   * `cadlib.cutouts.add_open_cable_channel` — an open, installable route with a
     connector-clearance pocket (see `references/patterns/cable-channel.md`);
   * hard `validate(p)` asserts that block the build on an impossible fit;

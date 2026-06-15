@@ -9,7 +9,8 @@ for both ergonomics and printability, .pushPoints for fastener arrays.
 
 import cadquery as cq
 
-# --- GoPro 3-finger spec ---
+# --- GoPro 3-finger spec (web-sourced standard; verify against the current
+#     GoPro interface spec — these are the well-known nominal values) ---
 FINGER_W = 3.0          # each finger thickness (mm)
 FINGER_GAP = 3.0        # gap between fingers — must be ≥3mm to receive 2-finger end
 FINGER_DIAMETER = 18.0  # diameter of the circular finger cap

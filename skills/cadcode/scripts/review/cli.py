@@ -12,8 +12,13 @@ Prints a single JSON line on stdout::
     "stem": "ladybug_robot",
     "warnings": [ { "part", "kind", "detail", "severity" }, ... ],
     "assembled_png": "<abs path>",          // may be null if render failed
-    "renders": [ { "part", "stl_path", "png_path" }, ... ]
+    "renders": [ { "part", "stl_path", "png_path" }, ... ],
+    "section_png": "<abs path>"             // null unless --section was passed
   }
+
+Pass ``--section <x|y|z>[@offset]`` (optionally ``--part <name>``) to also render
+an INTERIOR cross-section so mating interiors read — a peg seated in a socket, a
+tooth on solid material, a lip inside its groove — which exterior views hide.
 
 The PNGs are QA artifacts (the viewer renders the STL); they land in
 ``<stem>_review/`` next to the model. Rendering never raises — a failed render
@@ -55,7 +60,33 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Disambiguate when a directory holds multiple .step.json files.",
     )
+    p.add_argument(
+        "--section",
+        default=None,
+        metavar="<x|y|z>[@offset_mm]",
+        help=(
+            "Also render an INTERIOR cross-section through the given axis-aligned "
+            "plane (offset defaults to the bbox center) so mating interiors read — "
+            "a peg seated in a socket, a tooth on solid material, a lip in its "
+            "groove. Sections the assembled model unless --part is given."
+        ),
+    )
+    p.add_argument(
+        "--part",
+        default=None,
+        help="With --section, cut this named part instead of the assembled model.",
+    )
     return p
+
+
+def _parse_section(spec: str) -> tuple[str, float | None]:
+    """Parse a ``--section`` value like ``z`` or ``z@10.5`` → ``(axis, offset)``."""
+    axis, _, off = spec.partition("@")
+    axis = axis.strip().lower()
+    if axis not in ("x", "y", "z"):
+        raise ValueError(f"section axis must be x, y, or z (got {axis!r})")
+    offset = float(off.strip()) if off.strip() else None
+    return axis, offset
 
 
 def _resolve_sidecar(input_path: Path, stem: str | None) -> Path | None:
@@ -103,7 +134,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     stem = sidecar.name[: -len(".step.json")]
     warnings = meta.get("validation", {}).get("warnings", []) or []
 
-    from cadpy.render_part import render_stl_to_png
+    from cadpy.render_part import render_stl_section_to_png, render_stl_to_png
 
     review_dir = base_dir / f"{stem}_review"
 
@@ -133,6 +164,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         )
 
+    # Optional interior cross-section (opt-in via --section). Cuts the assembled
+    # model, or a named part with --part, so a reviewer can SEE inside a mating
+    # interface instead of inferring engagement from an exterior view.
+    section_png = None
+    if args.section:
+        try:
+            axis, offset = _parse_section(args.section)
+        except ValueError as exc:
+            return _err(str(exc))
+        if args.part:
+            match = next(
+                (p for p in (meta.get("parts") or []) if str(p.get("name")) == args.part),
+                None,
+            )
+            if match is None:
+                return _err(f"--part {args.part!r} not found in {sidecar.name}")
+            sec_stl = (base_dir / match.get("stlPath", "")).resolve()
+            sec_name = args.part
+        else:
+            sec_stl = assembled_stl
+            sec_name = stem
+        if sec_stl.is_file():
+            out = render_stl_section_to_png(
+                sec_stl,
+                review_dir / f"{sec_name}_section_{axis}.png",
+                axis=axis,
+                offset=offset,
+            )
+            section_png = str(out) if out else None
+
     print(
         json.dumps(
             {
@@ -141,6 +202,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "warnings": warnings,
                 "assembled_png": assembled_png,
                 "renders": renders,
+                "section_png": section_png,
             }
         )
     )

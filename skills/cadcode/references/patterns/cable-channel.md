@@ -11,9 +11,11 @@ strain relief at entry/exit points. A simple U-channel cut into a
 surface holds the cable by friction (if sized right) or with a flexible
 snap-over cap. Strain relief is the spot where the cable jacket is
 gripped — without it, repeated flexing at the channel mouth fatigues
-the conductors and the wire breaks inside the jacket invisibly. Common
-cable diameters: ribbon ~3 mm, USB-A ~4.5 mm, USB-C ~4 mm, micro-USB
-~3.5 mm, JST-XH 2-pin ~2.5 mm, mains ~6 mm, ethernet (cat6) ~6.5 mm.
+the conductors and the wire breaks inside the jacket invisibly.
+
+Web-search the jacket (or connector collar) Ø for the specific cable, or
+pass a value you measure; common jackets live in
+`cadlib/tables.py::CABLE_TABLE`.
 
 ## Use the helper
 
@@ -34,10 +36,9 @@ part = add_cable_channel(
 ```
 
 Channel width is computed as `cable_diameter + channel_clearance`; depth
-defaults to `cable_diameter * 0.9`. Common jacket diameters live in
-`cadlib/tables.py::CABLE_TABLE` (`JST-XH-2`, `ribbon-flat`, `USB-A-cable`,
-`USB-C-cable`, `micro-USB-cable`, `ethernet-cable`, `mains-2c`, etc.) —
-`Read` that file and pass the number through `cable_diameter`.
+defaults to `cable_diameter * 0.9`. For a common jacket, look it up in
+`cadlib/tables.py::CABLE_TABLE` and pass the number through
+`cable_diameter`; otherwise web-search or measure the cable.
 
 > **Connector vs cable:** USB-A / USB-C / micro-USB / RJ45 connectors are
 > RECTANGULAR with a height ≪ width. A round channel sized for the cable
@@ -62,7 +63,7 @@ wrong means the part is geometrically perfect but **impossible to assemble**:
    for the collar Ø, not the cable Ø.
 
 Use the connector-aware helper (see `references/component-integration.md` for the
-discipline and `references/hobbyist-defaults.md` for collar dims):
+discipline; web-search the collar Ø×len for the specific device):
 
 ```python
 from cadlib.cutouts import add_open_cable_channel

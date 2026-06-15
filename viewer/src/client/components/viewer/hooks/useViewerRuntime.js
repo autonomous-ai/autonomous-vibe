@@ -147,8 +147,14 @@ export function useViewerRuntime({
       controls.rotateSpeed = 1;
       controls.panSpeed = 1.35;
       controls.zoomSpeed = getDefaultZoomSpeed();
+      // Keep zoom-to-cursor OFF. With it on (plus screenSpacePanning), every
+      // wheel zoom re-pins controls.target to the screen-center point, so the
+      // orbit pivot drifts off the model as you zoom out and rotation ends up
+      // orbiting empty space ("camera rotates instead of the object"). With it
+      // off, zoom dollies along the camera->target axis and the pivot stays on
+      // the model, so the mouse always rotates the object.
       if ("zoomToCursor" in controls) {
-        controls.zoomToCursor = true;
+        controls.zoomToCursor = false;
       }
       // Stock OrbitControls rotation: a fixed-up (camera.up = world Z) turntable
       // whose polar angle is clamped to [0, π], so the model stays upright and

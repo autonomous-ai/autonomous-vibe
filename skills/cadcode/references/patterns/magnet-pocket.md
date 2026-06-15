@@ -7,14 +7,14 @@ mount, snap-shut lid, sliding magnet, N42 / N52 disc magnet pocket, or any
 ## Why this exists (the mechanics)
 
 Neodymium disc magnets ship in standard stock sizes given as D x T
-(diameter x thickness) — D6x3, D8x3, D10x3, D12x5, D15x3, etc. The
-printed pocket is either a slip fit (clearance, magnet drops in cleanly
-and is held with a drop of CA glue) or a press fit (slight interference,
-friction only). The top wall — the thin layer of plastic between the
-magnet face and the outside of the part — controls remaining hold force:
-thinner wall is stronger but more fragile. POLARITY is set by which way
-you insert the magnet; the design must dictate which face attracts so
-two mating parts come together right-side up, never repel.
+(diameter x thickness). The printed pocket is either a slip fit
+(clearance, magnet drops in cleanly and is held with a drop of CA glue) or
+a press fit (slight interference, friction only). The top wall — the thin
+layer of plastic between the magnet face and the outside of the part —
+controls remaining hold force: thinner wall is stronger but more fragile.
+POLARITY is set by which way you insert the magnet; the design must
+dictate which face attracts so two mating parts come together right-side
+up, never repel.
 
 ## Use the helper
 
@@ -35,25 +35,26 @@ part = add_magnet_pocket(
 )
 ```
 
-Magnet stock sizes live in `cadlib/tables.py::MAGNET_TABLE` (keys
-`6x3`, `8x3`, `10x3`, `10x2`, `12x5`, `15x3`, `20x5`). `Read` that file
-for the exact dimensions; the helper raises `ValueError` for an unknown
+The helper reads magnet stock dimensions from
+`cadlib/tables.py::MAGNET_TABLE` — pass `magnet_size=...` with a known key
+and let it supply the geometry. It raises `ValueError` for an unknown
 `magnet_size` or `fit_type`.
 
 ## Hold-force vs top-wall
 
-For a 10x3 N52 magnet pair in PLA, measured pull force through the wall:
+The rule: each additional mm of plastic between the magnets roughly HALVES
+the pull. For a lid closure, **0.4–0.8 mm** is the usable range — strong
+enough to feel a snap, thin enough to bridge-print reliably on a 0.4 mm
+nozzle (1–2 layers at 0.2 mm layer height).
+
+Rough absolute figures for a 10x3 N52 pair in PLA — measured on one setup,
+verify for yours; hold force is highly bridge-quality-dependent (a 0.4 mm
+wall printed with poor bridging behaves like an 0.8 mm wall):
 
 - 0.2 mm top wall: ~2.5–3.5 N pull
 - 0.4 mm top wall: ~1.8–3.0 N pull
 - 0.8 mm top wall: ~1.0–2.0 N pull
 - 1.5 mm top wall: ~0.6–1.2 N pull
-
-Hold force is highly bridge-quality-dependent — a 0.4 mm wall printed with
-poor bridging behaves like an 0.8 mm wall. Each additional mm of plastic
-between magnets roughly halves the force. For a lid closure 0.4-0.8 mm is the sweet spot — strong
-enough to feel snap, thin enough to bridge-print reliably on a 0.4 mm
-nozzle (1-2 layers at 0.2 mm layer height).
 
 ## Polarity protocol
 

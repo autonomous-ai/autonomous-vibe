@@ -1,14 +1,18 @@
 # Component integration — make it actually assemble and work
 
-A part that is a valid solid and looks premium can still be **useless** if you
-can't install the components into it. The classic failure: a MagSafe phone stand
-with a neat recess for the puck — but the puck has a **captive cable with a
-strain-relief connector collar** that won't pass the opening, so the charger can
-never be fitted. Geometry was fine; the *product* was broken.
+A part that is a valid solid and looks premium can still be **useless** in two
+ways: it can't be **installed** (a MagSafe stand with a neat puck recess, but the
+puck's **captive cable + strain-relief collar** won't pass the opening), or it
+can't **function** (mating features that don't engage or can't transmit force — a
+dial coupling sitting clear of its drive pegs, a smooth pocket over round pegs
+that can't carry torque, a tooth perched over a void). Geometry was fine; the
+*product* was broken.
 
-This doc is the discipline that prevents that. It is **function-first** — these
+This doc is the discipline that prevents both. It is **function-first** — these
 checks outrank looks, and a `validate()` assert or a `functional` warning that
-fails means the design is not done.
+fails means the design is not done. Two rules generalize across every interface:
+**every mating pair must engage and transmit its intended force**, and **every
+feature must sit on solid material** (not over a void, hole, or notch).
 
 ## 1. Model the WHOLE real component, not a bounding box
 
@@ -23,9 +27,10 @@ down everything physically attached to it that must also fit:
 - **Buttons, ports, lenses, vents** — must stay accessible after assembly.
 - **Mating hardware** — screw heads, nuts, inserts need access + tool clearance.
 
-Look the component up in `references/hobbyist-defaults.md` (MagSafe puck,
-connector collars, phones, bearings, motors). If it isn't there, state the
-dimensions you're assuming as assumptions in the plan.
+**Web-search the component's real dimensions** (body, cable Ø, connector-collar
+Ø×len, mount pattern) and **state them as assumptions the user can correct** in
+the plan — don't recall them from memory. For hardware a cadlib helper covers
+(bearings, screws, nuts, magnets, inserts), pass the helper a named size instead.
 
 ## 2. Write the assembly / setup sequence
 
@@ -49,8 +54,9 @@ wrong — fix the geometry, not the sequence.
   `cadlib.cutouts.add_open_cable_channel` (see
   `references/patterns/cable-channel.md`), never a bored hole.
 - **Size the opening for the CONNECTOR, not the jacket.** The widest thing that
-  must pass is the strain-relief collar / connector body. A channel sized for
-  the 3.6 mm cable blocks the 9 mm collar.
+  must pass is the strain-relief collar / connector body: `opening Ø = collar Ø +
+  0.5–1.0 mm`. A channel sized for the cable jacket blocks the wider collar (e.g.
+  a 3.6 mm cable vs. its ~9 mm collar).
 - **Insertion path must be straight + reachable.** A pocket the part itself
   walls off (no approach for the component or a tool) can't be loaded.
 - **Removable when it must be removable.** If the user swaps the component, don't
@@ -84,10 +90,22 @@ Encode each requirement so it can't silently regress (see the project template
 
 See `assets/example_magsafe_stand.py` for the whole pattern done right.
 
-## 5. Verify against the render
+## 5. Verify against the render — the two-group checklist
 
-In the build loop (SKILL.md step 6), after `scripts/review`, walk the assembly
-sequence against the per-part PNGs: for each step, can the component (and its
-cable/connector) actually get to where it needs to be? Fix and re-run until both
-`validate()` passes and `functional_checks()` returns empty. **Never declare done
-while a `functional` warning or a failed assert remains.**
+In the build loop (SKILL.md step 6), after `scripts/review`, clear the plan's
+Verification checklist item by item, each with a sanity check (a `validate()`
+assert or a `functional` warning) AND a visual check:
+
+- **Per component** — every feature sits on solid material (no tooth / peg / boss
+  / rib over a void, hole, or notch); depths reach; no half-supported overhang.
+- **Per interface** — each mating pair (peg/socket, clutch, gear, tab/slot,
+  lip/groove, cable/opening) actually meets in the right axis, can transmit its
+  force (form-fitting, not a smooth pocket over round pegs), has the right
+  clearance, and a reachable assembly path.
+
+Exterior PNGs can't show an interior interface — render a cross-section with
+`python scripts/review <project_dir> --section <x|y|z>[@offset]` (add
+`--part <name>` to cut one part) and look at whether the features actually engage.
+Fix and re-run until every item is cleared, `validate()` passes, and
+`functional_checks()` returns empty. **Never declare done while a `functional`
+warning or a failed assert remains.**

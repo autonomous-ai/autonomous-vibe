@@ -37,32 +37,25 @@ part = add_screw_post(
 )
 ```
 
-Screw dimensions (clearance / self_tap / cap_head_dia / cap_head_h) live in
-`cadlib/tables.py::SCREW_TABLE` (`M2`, `M2.5`, `M3`, `M4`, `M5`). `Read` that
-file for the exact numbers; the helper raises `ValueError` for an unknown
-`screw_size`. For `countersink="cbore"` the helper sizes the head recess from
-`cap_head_dia` plus a fit margin — don't restate a separate number, defer to
-the helper.
+Screw dimensions (clearance / self_tap / cap_head_dia / cap_head_h) are owned by
+`cadlib/tables.py::SCREW_TABLE` and keyed by `screw_size`; the helper reads them
+for you. `Read` that file if you need the raw numbers — don't transcribe them
+into your model. The helper raises `ValueError` for an unknown `screw_size`. For
+`countersink="cbore"` the helper sizes the head recess from `cap_head_dia` plus a
+fit margin — don't restate a separate number, defer to the helper.
 
 ## Boss diameter sizing rule
 
 If you pass `boss_od=None` the helper sizes it for you; pass an explicit value
-only to override. The rule is OD = `2 x screw_clearance + 2 x wall`, where
-`wall >= 1.5 mm`:
-
-- M3 clearance (3.4 mm hole): OD >= 8.8 mm → use **8-10 mm** in practice.
-- M4 clearance (4.5 mm hole): OD >= 11.0 mm → use **10-12 mm**.
+only to override. The rule is `boss OD = 2 x screw_clearance + 2 x wall`, with
+`wall >= 1.5 mm`. Worked example: an M3 clearance hole of 3.4 mm gives
+`OD >= 3.4 + 3.0 = 8.8 mm` (round up to ~10 mm in practice).
 
 ## Pull-out strength rule
 
-For self-tap into PLA/PETG, engagement length = `2 x screw_diameter`. Make
-`boss_height` at least this or the screw strips on first fastening:
-
-- M2: 4 mm engaged
-- M2.5: 5 mm engaged
-- M3: 6 mm engaged
-- M4: 8 mm engaged
-- M5: 10 mm engaged
+For self-tap into PLA/PETG, `engagement length ≈ 2 x screw-Ø`. Make `boss_height`
+at least this or the screw strips on first fastening — e.g. an M3 wants ~6 mm
+engaged, an M5 ~10 mm.
 
 ## Beyond the helper
 
@@ -97,7 +90,7 @@ Make `rib_height` ~0.5x `boss_height`. This is a candidate to promote into
 ## Pitfalls
 
 - Self-tap hole too big -> screw spins free; too small -> cracks the boss.
-  Stick to the table.
+  Let the helper supply the self_tap diameter from `SCREW_TABLE`.
 - No ribs on tall bosses (height > 1.5x OD) -> boss snaps off when
   side-loaded. The helper has none — add them (see "Beyond the helper").
 - Cap-head counter-bore: `cbore_depth` must be deeper than `cap_head_h` or the

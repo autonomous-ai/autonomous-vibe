@@ -45,18 +45,18 @@ that doc covers *how* to land them without crashing OCCT.
 
 ## Sizing rule
 
-For a high-stress corner where two features meet (h = thinner feature
-thickness at that junction):
+Size the fillet relative to the feature, not from a lookup. For a
+high-stress corner where two features meet (h = thinner feature thickness
+at that junction):
 
-| Feature size (h) | Min fillet (r) | Best fillet (r) |
-|---|---|---|
-| 1 mm | 0.3 mm | 0.5 mm |
-| 2 mm | 0.5 mm | 1.0 mm |
-| 4 mm | 1.0 mm | 2.0 mm |
-| 8 mm | 1.5 mm | 3.0 mm |
+    r ≈ 0.25–0.5 × h
 
-Past r = 0.5 * h, returns diminish quickly. Going larger mostly costs
-material and print time without meaningfully easing the stress riser.
+The lower end already buys most of the relief; past `r ≈ 0.5 × h` returns
+diminish quickly (the same diminishing-returns rule from the mechanics
+above). Going larger mostly costs material and print time without
+meaningfully easing the stress riser. Worked example: a 2 mm-thick wall at
+a loaded corner wants `r ≈ 0.5–1.0 mm`. Cap at `r ≤ wall/2` regardless, so
+the fillet never eats through the wall.
 
 ## Pitfalls
 

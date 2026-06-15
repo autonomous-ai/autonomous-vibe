@@ -7,14 +7,21 @@ plastic-on-plastic engagement that should hold without screws.
 ## Why this exists (the mechanics)
 
 A cantilever snap is a beam fixed at one end with a catch nub at the free end.
-Tip deflection under load: `y = (F * L^3) / (3 * E * I)`, with rectangular
-`I = (b * h^3) / 12`. Stress at the root: `sigma = (3 * E * h * y) / (2 * L^2)`, so
-strain `epsilon = (3 * h * y) / (2 * L^2)`. Material `E`: PLA ~3.5 GPa,
-PETG ~2.0 GPa, ABS ~2.3 GPa, TPU ~0.05 GPa. Keep strain under ~1% for filled
-PLA, ~2% for PETG/ABS, or the root crazes after a few insertions. Practical
-rule: deflection-to-length ratio `y / L <= 0.1`, root thickness `h >= 1.5 mm`
-for FDM, and the catch must protrude no more than the beam can clear within
-that ratio (typically 0.5–1.5 mm).
+
+**Mechanics.** Tip deflection under load: `y = (F * L^3) / (3 * E * I)`, with
+rectangular `I = (b * h^3) / 12`. Stress at the root: `sigma = (3 * E * h * y) /
+(2 * L^2)`, so strain `epsilon = (3 * h * y) / (2 * L^2)`. The arm fails when
+that root strain exceeds the material's limit.
+
+**Material constants (typical — verify/web-search for your filament).** Modulus
+`E` ≈ PLA 3.5 GPa, PETG 2.0 GPa, ABS 2.3 GPa, TPU 0.05 GPa. Strain limit ≈ 1%
+for filled PLA, ~2% for PETG/ABS; past it the root crazes after a few
+insertions. These are ballpark starting figures, not datasheet values — confirm
+for the actual material before trusting a tight design.
+
+**Design rules.** Deflection-to-length ratio `y / L <= 0.1`; root thickness
+`h >= 1.5 mm` for FDM; and the catch must protrude no more than the beam can
+clear within that ratio (typically 0.5–1.5 mm).
 
 ## Use the helper
 

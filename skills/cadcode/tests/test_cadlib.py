@@ -209,6 +209,34 @@ def test_heat_set_pocket_cuts_rim_relief():
     )
 
 
+def test_mating_fits_derive_both_halves_from_one_nominal():
+    """The fit primitive picks the correct FDM clearance for a named class and
+    derives the female (``slot_for``) and male (``peg_for``) halves from ONE
+    nominal, so a tab and its slot can never drift apart. Unknown fit classes
+    raise (the spec is wrong), not silently default."""
+    from cadlib.fits import FIT_TABLE, mating_clearance, peg_for, slot_for
+
+    # slip is the default assembled fit; classes are ordered tight -> loose.
+    assert mating_clearance("slip") == pytest.approx(0.20)
+    assert (
+        mating_clearance("snug")
+        < mating_clearance("slip")
+        < mating_clearance("free")
+    )
+    # A female opening for a 10 mm male grows by 2x clearance; a male peg for a
+    # 10 mm female shrinks by 2x clearance — symmetric around the nominal.
+    assert slot_for(10.0, "slip") == pytest.approx(10.40)
+    assert peg_for(10.0, "slip") == pytest.approx(9.60)
+    assert slot_for(10.0, "slip") - 10.0 == pytest.approx(10.0 - peg_for(10.0, "slip"))
+    # Every class is a real per-side clearance value.
+    assert set(FIT_TABLE) >= {"snug", "slip", "free"}
+    # Bad inputs point at the spec, not at OCCT five frames deep.
+    with pytest.raises(ValueError):
+        mating_clearance("snug-ish")
+    with pytest.raises(ValueError):
+        peg_for(0.1, "free")  # clearance larger than the hole
+
+
 def test_solve_fourbar_closes_the_loop():
     """solve_fourbar returns the one joint both links reach: |C-B| == coupler
     and |C-D| == rocker. The two branches are distinct elbows, and link lengths
@@ -254,6 +282,54 @@ def test_place_two_point_rejects_rigid_mismatch():
             p0_local=(0, 0, 0), p1_local=(20, 0, 0),
             p0_world=(0, 0, 0), p1_world=(30, 0, 0),   # 30 != 20
         )
+
+
+# -- The canonical multi-part exemplar fits, assembles, stays collision-clean --
+
+
+def test_snap_lid_box_is_multipart_and_collision_and_fit_clean():
+    """The canonical two-part exemplar must export as a real assembly (base+lid),
+    seat in its assembled position WITHOUT interpenetration (collision-clean),
+    and pass its own functional fit check — the whole 'parts work together' bar
+    end to end. Regression for the multi-part fit discipline."""
+    asset = SKILL_DIR / "assets" / "example_snap_lid_box.py"
+    with tempfile.TemporaryDirectory() as tmp:
+        payload = _run_cad(str(asset), "--out-dir", tmp)
+    assert payload.get("ok"), payload
+    names = {p["name"] for p in payload.get("parts", [])}
+    assert names == {"base", "lid"}, f"expected a 2-part assembly, got {names}"
+    kinds = {w["kind"] for w in payload.get("warnings", [])}
+    assert "collision" not in kinds, payload.get("warnings")
+    assert "functional" not in kinds, payload.get("warnings")
+
+
+def test_drifted_lip_trips_the_collision_check():
+    """Sizing the lid lip to the cavity OUTER (the classic 'forgot the wall +
+    clearance' drift) makes it ram the base walls in the seated position. The
+    deterministic collision check must catch it — proving the gate guards real
+    mating geometry, which is exactly what ``peg_for`` prevents by construction."""
+    code = """
+import cadquery as cq
+from cadlib.enclosure import hollow_box
+
+def gen_step():
+    L, W, H, wall, t, lip_h = 80, 60, 25, 2.0, 3.0, 10.0
+    base = hollow_box(length=L, width=W, height=H, wall=wall)
+    plate = cq.Workplane("XY").box(L, W, t)
+    lip = cq.Workplane("XY").box(L, W, lip_h).translate((0, 0, -(t + lip_h) / 2))
+    lid = plate.union(lip)
+    asm = cq.Assembly()
+    asm.add(base, name="base")
+    asm.add(lid, name="lid", loc=cq.Location((0, 0, H / 2 + t / 2)))
+    return asm
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "drifted_lid.py"
+        src.write_text(code)
+        payload = _run_cad(str(src), "--out-dir", tmp)
+    assert payload.get("ok"), payload
+    kinds = {w["kind"] for w in payload.get("warnings", [])}
+    assert "collision" in kinds, f"drift bug should collide; got {payload.get('warnings')}"
 
 
 # -- Sandbox still blocks third-party imports ---------------------------------

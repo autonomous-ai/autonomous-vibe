@@ -118,6 +118,33 @@ class CheckUnitTests(unittest.TestCase):
         self.assertIn("sliver", kinds)
 
 
+class CollisionUnitTests(unittest.TestCase):
+    """``intersection_volume`` measures how much two placed solids interpenetrate.
+
+    Zero for parts that merely touch at a shared mating face (a lid on a lip);
+    positive only when one part's body sits inside another's.
+    """
+
+    def test_overlapping_boxes_report_intersection_volume(self) -> None:
+        # Two 10mm cubes offset 5mm in X overlap in a 5x10x10 slab => 500 mm^3.
+        a = cq.Workplane("XY").box(10, 10, 10).val().wrapped
+        b = cq.Workplane("XY").box(10, 10, 10).translate((5, 0, 0)).val().wrapped
+        self.assertAlmostEqual(checks.intersection_volume(a, b), 500.0, delta=1.0)
+
+    def test_face_touching_boxes_have_negligible_intersection(self) -> None:
+        # Offset exactly 10mm => the two cubes share a face but no volume.
+        a = cq.Workplane("XY").box(10, 10, 10).val().wrapped
+        b = cq.Workplane("XY").box(10, 10, 10).translate((10, 0, 0)).val().wrapped
+        self.assertLess(
+            checks.intersection_volume(a, b), checks.COLLISION_MIN_VOLUME_MM3
+        )
+
+    def test_disjoint_boxes_have_zero_intersection(self) -> None:
+        a = cq.Workplane("XY").box(10, 10, 10).val().wrapped
+        b = cq.Workplane("XY").box(10, 10, 10).translate((50, 0, 0)).val().wrapped
+        self.assertEqual(checks.intersection_volume(a, b), 0.0)
+
+
 class GenerateStepWarningTests(unittest.TestCase):
     def _run(self, project_dir: Path, out_dir: Path, body: str) -> dict:
         (project_dir / "main.py").write_text(dedent(body).lstrip(), encoding="utf-8")
@@ -197,6 +224,74 @@ class GenerateStepWarningTests(unittest.TestCase):
                 w["kind"] for w in meta["validation"].get("warnings", [])
             }
             self.assertIn("disconnected_bodies", sidecar_kinds)
+
+
+class CollisionSceneTests(unittest.TestCase):
+    """End-to-end: a ``cq.Assembly`` whose placed parts interpenetrate must
+    surface a blocking ``collision`` warning; parts that mate (touch) or sit at a
+    clearance gap must not."""
+
+    def _run(self, project_dir: Path, out_dir: Path, body: str) -> dict:
+        (project_dir / "main.py").write_text(dedent(body).lstrip(), encoding="utf-8")
+        return generation.generate_step(
+            project_dir=project_dir,
+            output_path=out_dir / "model.step",
+            mesh_tolerance=0.1,
+            mesh_angular_tolerance=math.radians(3.0),
+        )
+
+    _ASSEMBLY = """
+        import cadquery as cq
+
+        def gen_step():
+            base = cq.Workplane("XY").box(20, 20, 10)   # z in [-5, 5]
+            lid = cq.Workplane("XY").box(20, 20, 10)
+            asm = cq.Assembly()
+            asm.add(base, name="base")
+            asm.add(lid, name="lid", loc=cq.Location((0, 0, {dz})))
+            return asm
+    """
+
+    def test_overlapping_parts_flag_blocking_collision(self) -> None:
+        # lid dropped to z in [0, 10] => overlaps base by a 20x20x5 slab.
+        with tempfile.TemporaryDirectory(prefix="cadpy-collide-") as td:
+            tp = Path(td)
+            (tp / "project").mkdir()
+            (tp / "out").mkdir()
+            result = self._run(
+                tp / "project", tp / "out", self._ASSEMBLY.format(dz=5)
+            )
+            coll = [w for w in result.get("warnings", []) if w["kind"] == "collision"]
+            self.assertEqual(len(coll), 1, result.get("warnings"))
+            self.assertEqual(coll[0]["severity"], "error")
+            meta = json.loads((tp / "out" / "model.step.json").read_text())
+            self.assertIn(
+                "collision",
+                {w["kind"] for w in meta["validation"].get("warnings", [])},
+            )
+
+    def test_face_touching_parts_do_not_flag_collision(self) -> None:
+        # lid at z in [5, 15] => rests on the base's top face (a real mate).
+        with tempfile.TemporaryDirectory(prefix="cadpy-collide-") as td:
+            tp = Path(td)
+            (tp / "project").mkdir()
+            (tp / "out").mkdir()
+            result = self._run(
+                tp / "project", tp / "out", self._ASSEMBLY.format(dz=10)
+            )
+            coll = [w for w in result.get("warnings", []) if w["kind"] == "collision"]
+            self.assertEqual(coll, [], result.get("warnings"))
+
+    def test_clearance_gap_parts_do_not_flag_collision(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="cadpy-collide-") as td:
+            tp = Path(td)
+            (tp / "project").mkdir()
+            (tp / "out").mkdir()
+            result = self._run(
+                tp / "project", tp / "out", self._ASSEMBLY.format(dz=10.4)
+            )
+            coll = [w for w in result.get("warnings", []) if w["kind"] == "collision"]
+            self.assertEqual(coll, [], result.get("warnings"))
 
 
 class ProjectDeclaredWarningTests(unittest.TestCase):

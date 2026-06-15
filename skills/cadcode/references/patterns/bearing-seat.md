@@ -9,14 +9,15 @@ bearing, 688 / 6800 / 6900-series, or any "rotating shaft needs a bearing".
 Ball bearings have a strictly toleranced outer race that needs a
 snug-but-not-crushing fit in its pocket. Too loose and the bearing wobbles
 or the race spins in the pocket under load; too tight and the outer race
-deforms inward, the balls bind, and the bearing is destroyed. For FDM the
-working interference range is roughly +0.05 to +0.15 mm undersize on the
-pocket diameter (i.e. pocket ~0.10 mm smaller than nominal OD). A small
+deforms inward, the balls bind, and the bearing is destroyed. The generic
+rule: `seat = OD − 0.05 mm` (a light interference press fit). A small
 shoulder (a lip beneath the outer race) supports the bearing so axial load
-on the shaft doesn't push it through the part. Print orientation matters:
-XY tolerance is tighter than Z because layer height quantises vertical
-features, so always seat the bearing with its axis along Z — that puts the
-circular pocket in the XY plane where the printer is most accurate.
+on the shaft doesn't push it through the part.
+
+Print orientation matters: XY tolerance is tighter than Z because layer
+height quantises vertical features, so always seat the bearing with its axis
+along Z — that puts the circular pocket in the XY plane where the printer is
+most accurate.
 
 ## Use the helper
 
@@ -37,27 +38,28 @@ part = add_bearing_seat(
 )
 ```
 
-Bearing dimensions + the FDM-tested pocket/shoulder values live in
-`cadlib/tables.py::BEARING_TABLE` (`608`, `608ZZ`, `624`, `625`, `688`,
-`6800`, `6803`, `6900`). `Read` that file for the exact numbers; the helper
-raises `ValueError` for an unknown bearing key.
+The helper reads bearing OD, width, and the FDM-tested pocket/shoulder
+values from `cadlib/tables.py::BEARING_TABLE` — pass `bearing=...` with a
+known key and let it supply the geometry. It raises `ValueError` for an
+unknown bearing key.
 
 ## Why the shoulder matters
 
 A bearing pressed into a flat-bottomed pocket has its inner AND outer race
 both touching the bottom. The inner race can't rotate → the whole bearing
 spins in the pocket → defeats the bearing. The shoulder MUST be smaller
-than the outer race seat AND larger than the inner race (typically
-OD − 8 to OD − 10 mm — the table's `shoulder_id`), sized to clear the
+than the outer race seat AND larger than the inner race, sized to clear the
 seal/dust shield but not touch the inner race, so it only contacts the
-outer race; the inner race floats in the relief and can rotate freely.
+outer race; the inner race floats in the relief and can rotate freely. The
+helper takes the right `shoulder_id` from `BEARING_TABLE` per bearing.
 
 ## Pull-through prevention
 
 For axial load (shaft pushing on the bearing), the shoulder holds the
-bearing. `shoulder_h >= 0.8 mm` or it shears off under load. For higher
-loads (skateboard wheels, e-bike hubs) the table's larger seats use
-1.0 mm; add a wall thickness of at least 2.0 mm around the pocket OD.
+bearing. The rule: `shoulder_h >= 0.8 mm` or it shears off under load;
+higher loads (skateboard wheels, e-bike hubs) want more. The helper sizes
+`shoulder_h` per bearing from the table. Add a wall thickness of at least
+2.0 mm around the pocket OD.
 
 ## Pitfalls
 

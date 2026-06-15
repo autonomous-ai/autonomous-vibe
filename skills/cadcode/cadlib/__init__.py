@@ -31,6 +31,7 @@ Each module is its own focused topic:
 - ``cadlib.mounting``    — screw bosses, heat-set pockets, nut traps
 - ``cadlib.cutouts``     — press-fit / magnet / bearing / cable channels
 - ``cadlib.mechanical``  — snap fits, dovetails, rib stiffeners
+- ``cadlib.fits``        — FDM mating clearances: derive a slot/peg from one nominal
 - ``cadlib.styling``     — unified radius language: soften / chamfer edges, derive radii
 - ``cadlib.layout``      — point generators (corner / grid / circle)
 - ``cadlib.export``      — STEP + STL writers

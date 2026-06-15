@@ -198,7 +198,21 @@ pub const PLAN_SYSTEM_PROMPT: &str = concat!(
     "pulling across the layer lines is far weaker, so state how the part is ",
     "printed. Confirm the part fits the build volume (Bambu ≈ 256 mm cube). End ",
     "with an explicit one-line verdict that it is stable / load-safe / printable ",
-    "under the stated assumptions, or what would make it fail.\n\n",
+    "under the stated assumptions, or what would make it fail.\n",
+    "- **Verification checklist** — the explicit list the build will clear one by ",
+    "one; pair every item with how it is checked: a SANITY check (a number, a ",
+    "`validate()` assert, or a `functional` warning) AND a VISUAL check (which ",
+    "render or cross-section confirms it). Two groups. **(A) Per component** — for ",
+    "each part, the functional details that must hold: every feature sits on SOLID ",
+    "material (no tooth / peg / boss / rib over a void, hole, or notch), ",
+    "engagement / wall / floor depths are actually reached, no half-supported ",
+    "overhang. **(B) Per interface** — for each mating pair (peg/socket, ",
+    "dog-clutch, gear mesh, tab/slot, lip/groove): the features actually MEET in ",
+    "the right axis (engagement > 0 with real overlap), can TRANSMIT the intended ",
+    "force/torque (form-fitting, not a smooth pocket over round pegs), have the ",
+    "right clearance, and a reachable assembly path. An interior interface is ",
+    "verified with a CROSS-SECTION, not an exterior view ",
+    "(`scripts/review <dir> --section <x|y|z>`).\n\n",
     "PREFERENCES FIRST. For a NEW product (not a trivial edit), open the turn by ",
     "asking the user a short round of 2-4 preference questions — the choices that ",
     "are genuinely theirs (e.g. target device/model, material, size/footprint, ",
@@ -227,14 +241,18 @@ pub const IMPLEMENT_SYSTEM_PROMPT: &str = concat!(
     "produce the STL/STEP artifacts for each part described in the ",
     "plan. Follow the cadcode protocol. Do not re-plan or ask further ",
     "questions unless a blocking ambiguity remains.\n\n",
-    "Make it actually ASSEMBLE and WORK, not just be a valid solid — apply ",
-    "`references/component-integration.md`: model the whole real component incl. ",
-    "any captive cable / connector collar, give captive cables an OPEN route ",
-    "sized for the connector (`cadlib.cutouts.add_open_cable_channel`), and keep ",
-    "insertion paths reachable. Enforce it: hard `validate()` asserts for ",
-    "impossible fits, and soft `functional` warnings returned from `gen_step()` ",
-    "(`return {\"shape\": shape, \"warnings\": functional_checks(p)}`) for assembly ",
-    "feasibility. Function wins every conflict.\n\n",
+    "Make it actually ASSEMBLE and WORK, not just be a valid solid — clear the ",
+    "plan's Verification Checklist item by item (every per-component detail and ",
+    "every mating interface), applying `references/component-integration.md`: each ",
+    "interface must engage and transmit its force, each feature must sit on solid ",
+    "material, and any captive cable / connector collar needs an OPEN route sized ",
+    "for the connector (`cadlib.cutouts.add_open_cable_channel`) with a reachable ",
+    "insertion path. For an interior interface, render a CROSS-SECTION ",
+    "(`scripts/review <dir> --section <x|y|z>`) and look. Enforce it: hard ",
+    "`validate()` asserts for impossible fits, and soft `functional` warnings ",
+    "returned from `gen_step()` ",
+    "(`return {\"shape\": shape, \"warnings\": functional_checks(p)}`). Function ",
+    "wins every conflict.\n\n",
     "Hit the premium-product look the plan committed to — apply the cadcode ",
     "skill's `references/industrial-design.md` and its `cadlib.styling` helpers ",
     "(`design_radius_for`, `soften_edges`, `break_edges`): a consistent radius ",
@@ -273,14 +291,16 @@ pub const REVIEW_SYSTEM_PROMPT: &str = concat!(
     "`references/patterns/anchor-to-body.md`). Also fix any part a render shows ",
     "poking through a plate, malformed, or serving no purpose.\n\n",
     "FUNCTIONAL issues (when this message lists `functional` problems) are also ",
-    "blocking: the part is a valid solid but won't assemble or work as intended ",
-    "(e.g. a captive cable's connector collar can't pass the opening). For each, ",
-    "physically reason about the assembly step against ",
-    "`references/component-integration.md` — model the whole component incl. its ",
-    "cable/connector, make the route open and sized for the connector, keep the ",
-    "insertion path reachable — then fix the geometry/params AND tighten the ",
-    "`validate()`/`functional_checks()` so it stays enforced. Regenerate until no ",
-    "`functional` warning remains.\n\n",
+    "blocking: the part is a valid solid but won't assemble or work as intended — ",
+    "mating features that don't engage or can't transmit force (a smooth pocket ",
+    "over round pegs, a coupling sitting clear of its pegs), a feature perched ",
+    "over a void, or a captive cable's connector collar that can't pass its ",
+    "opening. Walk every interface in the plan's Verification Checklist against ",
+    "`references/component-integration.md`; for an interior interface render a ",
+    "CROSS-SECTION (`scripts/review <dir> --section <x|y|z>`) and look — confirm ",
+    "the features actually meet, sit on solid material, and can drive. Then fix ",
+    "the geometry/params AND tighten `validate()`/`functional_checks()` so it ",
+    "stays enforced. Regenerate until no `functional` warning remains.\n\n",
     "AESTHETIC polish (when this message asks for it): judge each render against ",
     "the premium-product rubric in `references/industrial-design.md` — a unified ",
     "radius language on visible convex edges, blended transitions, calm primary ",
@@ -2223,6 +2243,31 @@ mod tests {
         let fns: Vec<GeometryWarning> =
             warnings.into_iter().filter(is_functional).collect();
         assert_eq!(fns.len(), 1);
+    }
+
+    #[test]
+    fn geometry_gate_blocks_on_collision_warnings() {
+        // cadpy's pairwise collision check emits kind:"collision" severity:"error"
+        // when two assembled parts interpenetrate. It is neither advisory (info)
+        // nor functional, so it must land in the blocking geometry gate and drive
+        // the "regenerate until clean" review loop. Regression for an interpene-
+        // trating multi-part model being handed back as done.
+        let collision = GeometryWarning {
+            part: "base|lid".into(),
+            kind: "collision".into(),
+            detail: "parts 'base' and 'lid' interpenetrate by 2000.0 mm^3".into(),
+            severity: "error".into(),
+        };
+        assert!(!is_advisory(&collision));
+        assert!(!is_functional(&collision));
+        let blocking: Vec<GeometryWarning> = vec![collision]
+            .into_iter()
+            .filter(|w| !is_advisory(w) && !is_functional(w))
+            .collect();
+        assert_eq!(blocking.len(), 1);
+        let prompt = build_review_prompt(&blocking).expect("collision -> prompt");
+        assert!(prompt.contains("collision"));
+        assert!(prompt.contains("interpenetrate"));
     }
 
     #[test]

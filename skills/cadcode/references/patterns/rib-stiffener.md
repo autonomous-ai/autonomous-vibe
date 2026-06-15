@@ -50,15 +50,17 @@ rib by endpoints. Map the per-rib terms:
 | `rib_count` / `rib_pitch` | — | loop the call yourself (see below) |
 | `rib_taper` | — | not exposed (see below) |
 
-## Sizing rules
+## Sizing rules of thumb
 
-- **Rib thickness**: `0.5-0.6 x wall_thickness`. Thicker ribs sink-mark
+All ratios, not hard law — they scale off the wall they brace:
+
+- **Rib thickness**: `~0.5-0.6 x wall_thickness`. Thicker ribs sink-mark
   the opposite face during injection moulding; for FDM, thicker is fine
   but wasteful and prints slower.
 - **Rib height**: `<= 3x rib_thickness` for moulded parts (sink marks);
   FDM can go to `4-6x` without issue. So for a 2 mm wall: ribs
-  1.0-1.2 mm thick x 4-8 mm tall.
-- **Rib pitch (spacing)**: typically `5-10x rib_thickness`. Less = closer
+  ~1.0-1.2 mm thick x 4-8 mm tall.
+- **Rib pitch (spacing)**: roughly `5-10x rib_thickness`. Less = closer
   to a solid plate (wastes plastic); more = panel buckles between ribs.
 - **Rib fillet at root**: `>= 0.5 mm`. Without it, the panel cracks at
   the rib-to-panel junction under repeated load (stress concentration).

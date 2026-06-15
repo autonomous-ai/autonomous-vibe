@@ -1613,6 +1613,21 @@ where
             &cancel,
         )
         .await;
+
+        // A generate/edit just finished and the review loop has settled the
+        // geometry. Auto-save a `Version N` snapshot of the result, capturing the
+        // Claude session transcript beside the model — so every build lands a
+        // restorable version with its conversation (the Saved States panel
+        // reloads its list when opened). Done here, after the review loop, so the
+        // snapshot reflects the final fixed files and the fully-flushed session
+        // JSONL (every subprocess in this turn has exited by now). Best-effort:
+        // the turn never fails on a snapshot error.
+        let live = session_jsonl_path(workspace_dir, &session_id.to_string());
+        if let Err(e) =
+            crate::commands::snapshot::save_snapshot_at(workspace_dir, live.as_deref(), None)
+        {
+            eprintln!("auto-snapshot after build failed: {e:?}");
+        }
     }
 
     // Land the auto-generated project name (if any) before TurnEnd so the

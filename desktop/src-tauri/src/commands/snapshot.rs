@@ -247,27 +247,45 @@ pub async fn snapshot_save(
     label: Option<String>,
 ) -> IpcResult<SnapshotSummary> {
     validate_id(&project_id)?;
-    let dir = project_dir(&project_id);
-    if !dir.exists() {
+    save_snapshot_at(
+        &project_dir(&project_id),
+        live_session_path(&project_id).as_deref(),
+        label,
+    )
+}
+
+/// Core of [`snapshot_save`], split out from the tauri command and the
+/// `project_id` → path mapping so the chat driver can auto-snapshot a finished
+/// build directly (it already holds the project dir and session path, not a bare
+/// id). `project` is the project dir; `live_session` is the live Claude
+/// transcript to capture beside the model (None / missing → the save just can't
+/// rewind chat on restore). `label` is trimmed; empty/missing falls back to
+/// `Version N`. Synchronous: it only does quick blocking IO.
+pub(crate) fn save_snapshot_at(
+    project: &Path,
+    live_session: Option<&Path>,
+    label: Option<String>,
+) -> IpcResult<SnapshotSummary> {
+    if !project.exists() {
         return Err(IpcError::new(
             "PROJECT_NOT_FOUND",
-            format!("no project {project_id}"),
+            format!("no project at {}", project.display()),
         ));
     }
-    let mut history = read_history(&dir);
+    let mut history = read_history(project);
     let label = label
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| format!("Version {}", history.snapshots.len() + 1));
     let id = Uuid::new_v4().to_string();
-    copy_scope(&dir, &snapshots_dir(&dir).join(&id)).map_err(IpcError::from)?;
+    copy_scope(project, &snapshots_dir(project).join(&id)).map_err(IpcError::from)?;
     // Capture the conversation too: the Claude session transcript lives outside
     // the project dir, so snapshot it explicitly alongside the model. Best-effort
     // — a missing/unreadable session just means this save can't rewind the chat
     // on restore (the restore then keeps the chat linear).
-    if let Some(live) = live_session_path(&project_id) {
+    if let Some(live) = live_session {
         if live.exists() {
-            let _ = std::fs::copy(&live, session_snapshot_path(&dir, &id));
+            let _ = std::fs::copy(live, session_snapshot_path(project, &id));
         }
     }
     let summary = SnapshotSummary {
@@ -276,7 +294,7 @@ pub async fn snapshot_save(
         created_at: Utc::now().timestamp_millis(),
     };
     history.snapshots.push(summary.clone());
-    write_history(&dir, &history)?;
+    write_history(project, &history)?;
     Ok(summary)
 }
 
@@ -500,6 +518,55 @@ mod tests {
         let back = read_history(&dir);
         assert_eq!(back.snapshots.len(), 1);
         assert_eq!(back.snapshots[0].label, "Version 1");
+    }
+
+    #[test]
+    fn save_snapshot_at_auto_labels_and_captures_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = scaffold_project(tmp.path());
+        // A live session transcript living outside the project dir, like the real
+        // `~/.claude/projects/<enc>/<uuid>.jsonl`.
+        let live = tmp.path().join("home/.claude/projects/enc/uuid.jsonl");
+        write(&live, r#"{"transcript":true}"#);
+
+        // Two back-to-back auto-saves (label omitted) increment "Version N" and
+        // each captures the session transcript beside its model dir.
+        let v1 = save_snapshot_at(&project, Some(&live), None).unwrap();
+        let v2 = save_snapshot_at(&project, Some(&live), None).unwrap();
+        assert_eq!(v1.label, "Version 1");
+        assert_eq!(v2.label, "Version 2");
+
+        let history = read_history(&project);
+        assert_eq!(history.snapshots.len(), 2);
+        // Model files copied into the snapshot, transcript captured as a sibling.
+        assert!(snapshots_dir(&project).join(&v2.id).join("main.py").is_file());
+        assert!(session_snapshot_path(&project, &v2.id).is_file());
+        assert_eq!(
+            std::fs::read_to_string(session_snapshot_path(&project, &v2.id)).unwrap(),
+            r#"{"transcript":true}"#
+        );
+    }
+
+    #[test]
+    fn save_snapshot_at_without_session_still_saves_model() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = scaffold_project(tmp.path());
+        let missing = tmp.path().join("nope.jsonl");
+
+        // No live transcript (e.g. an unreadable session) → the model still saves;
+        // the restore just can't rewind chat (no sibling transcript written).
+        let v1 = save_snapshot_at(&project, Some(&missing), None).unwrap();
+        assert_eq!(v1.label, "Version 1");
+        assert!(snapshots_dir(&project).join(&v1.id).join("main.py").is_file());
+        assert!(!session_snapshot_path(&project, &v1.id).exists());
+    }
+
+    #[test]
+    fn save_snapshot_at_rejects_missing_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("does-not-exist");
+        let err = save_snapshot_at(&missing, None, None).unwrap_err();
+        assert_eq!(err.code, "PROJECT_NOT_FOUND");
     }
 
     #[test]

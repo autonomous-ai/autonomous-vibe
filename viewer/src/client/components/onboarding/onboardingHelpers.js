@@ -639,6 +639,19 @@ export function describePandaLoginProgress(event) {
 export const buildPandaLoginFlow = buildClaudeInstallFlow;
 
 /**
+ * App-entry gate: does this profile still need the Welcome wizard? Gates solely
+ * on `hasOnboarded`. Earlier this also required a `pandaToken` (v1 forced the
+ * Panda proxy), which sent legacy local-Claude users back through onboarding —
+ * but now that bring-your-own Claude Code is the primary path, an onboarded
+ * local-only user is fully valid and must be left alone. "At least one working
+ * method" is enforced inside the wizard (finish() is only reachable via a ready
+ * local Claude Code or a completed Panda sign-in), not here.
+ */
+export function shouldOnboard(settings) {
+  return !Boolean(settings?.hasOnboarded);
+}
+
+/**
  * Build the settings object that completes onboarding, preserving the rest of
  * `existing` (re-read just before writing so we never clobber a token the
  * sign-in step persisted) and forcing `hasOnboarded: true`. `overrides` carries

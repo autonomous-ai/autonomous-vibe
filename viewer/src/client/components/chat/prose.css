@@ -7,7 +7,7 @@
 .chat-prose {
   --prose-marker: color-mix(in srgb, currentColor 55%, transparent);
   --prose-check: #2cad7e; /* filled-accent "done" state */
-  font-size: 0.8125rem;
+  font-size: 0.9rem;
   line-height: 1.65;
   overflow-wrap: break-word;
 }

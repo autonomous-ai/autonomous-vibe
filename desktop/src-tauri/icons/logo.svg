@@ -1,0 +1,27 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Panda">
+  <!-- Panda app mark — minimal black-and-white panda matching the app's monochrome zinc theme -->
+  <rect width="1024" height="1024" rx="232" fill="#18181B"/>
+  <!-- ears (white) with dark inner-ear -->
+  <circle cx="330" cy="308" r="112" fill="#FAFAFA"/>
+  <circle cx="694" cy="308" r="112" fill="#FAFAFA"/>
+  <circle cx="330" cy="306" r="48" fill="#111114"/>
+  <circle cx="694" cy="306" r="48" fill="#111114"/>
+  <!-- head (white) -->
+  <circle cx="512" cy="560" r="332" fill="#FAFAFA"/>
+  <!-- eye patches (angled almonds) -->
+  <ellipse cx="396" cy="548" rx="84" ry="113" fill="#111114" transform="rotate(-23 396 548)"/>
+  <ellipse cx="628" cy="548" rx="84" ry="113" fill="#111114" transform="rotate(23 628 548)"/>
+  <!-- eyes -->
+  <circle cx="434" cy="522" r="44" fill="#FAFAFA"/>
+  <circle cx="590" cy="522" r="44" fill="#FAFAFA"/>
+  <circle cx="434" cy="525" r="21" fill="#111114"/>
+  <circle cx="590" cy="525" r="21" fill="#111114"/>
+  <circle cx="430" cy="516" r="8" fill="#FAFAFA"/>
+  <circle cx="586" cy="516" r="8" fill="#FAFAFA"/>
+  <!-- nose -->
+  <rect x="468" y="594" width="88" height="48" rx="26" fill="#111114"/>
+  <polygon points="472,632 552,632 512,676" fill="#111114"/>
+  <!-- mouth -->
+  <path d="M512 670 L512 694" stroke="#111114" stroke-width="9" stroke-linecap="round"/>
+  <path d="M463 700 Q512 726 561 700" stroke="#111114" stroke-width="9" stroke-linecap="round" fill="none"/>
+</svg>

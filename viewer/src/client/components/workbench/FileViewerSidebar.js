@@ -769,7 +769,9 @@ function FileViewerContents({
             Projects
           </span>
           <div className="flex items-center gap-0.5">
-            {onImportFiles ? (
+            {/* Import STL/GLB is hidden for now — wiring is kept (onImportFiles
+                prop + handler) so it's a one-line change to re-enable. */}
+            {false && onImportFiles ? (
               <Button
                 type="button"
                 variant="ghost"

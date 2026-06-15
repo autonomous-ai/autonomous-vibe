@@ -32,9 +32,9 @@ function errMessage(err, fallback) {
 }
 
 export default function PrinterStep({ onAdvance, onSkip }) {
-  // "lan" pairs over the local network; "cloud" signs in to a Bambu account
-  // and reaches printers through Bambu's cloud (works off-LAN); "studio" skips
-  // pairing entirely and hands models off to the local Bambu Studio app.
+  // "lan" pairs over the local network; "studio" skips pairing entirely and
+  // hands models off to the local Bambu Studio app. The Bambu Cloud option is
+  // hidden for now — CloudPairing below is left in place to re-enable it.
   const [mode, setMode] = useState("lan");
 
   return (
@@ -42,8 +42,7 @@ export default function PrinterStep({ onAdvance, onSkip }) {
       <header className="flex flex-col gap-1">
         <h2 className="text-2xl font-semibold">Add your Bambu printer</h2>
         <p className="text-sm text-muted-foreground">
-          Pair over your local network, sign in to Bambu Cloud to reach your
-          printers from anywhere, or hand models off to Bambu Studio.
+          Pair over your local network, or hand models off to Bambu Studio.
         </p>
       </header>
 
@@ -63,17 +62,6 @@ export default function PrinterStep({ onAdvance, onSkip }) {
         </button>
         <button
           type="button"
-          onClick={() => setMode("cloud")}
-          className={cn(
-            "flex items-center gap-2 rounded px-3 py-1.5 text-sm transition-colors",
-            mode === "cloud" ? "bg-muted font-medium" : "text-muted-foreground",
-          )}
-          data-testid="printer-mode-cloud"
-        >
-          <Cloud className="size-4" /> Bambu Cloud
-        </button>
-        <button
-          type="button"
           onClick={() => setMode("studio")}
           className={cn(
             "flex items-center gap-2 rounded px-3 py-1.5 text-sm transition-colors",
@@ -86,7 +74,6 @@ export default function PrinterStep({ onAdvance, onSkip }) {
       </div>
 
       {mode === "lan" ? <LanPairing onAdvance={onAdvance} /> : null}
-      {mode === "cloud" ? <CloudPairing onAdvance={onAdvance} /> : null}
       {mode === "studio" ? <StudioHandoff onAdvance={onAdvance} /> : null}
 
       <div className="mt-2 flex items-center justify-between gap-2">

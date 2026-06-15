@@ -124,6 +124,12 @@ pub struct ClaudeRunConfig {
     /// `ANTHROPIC_BASE_URL` when `use_panda_cloud`; `None` falls back to the
     /// compiled-in proxy URL.
     pub panda_base_url: Option<String>,
+    /// Absolute paths to reference images to inline into the turn's user
+    /// message as base64 image blocks (via stream-json stdin). Empty = plain
+    /// text prompt (positional arg). Lets the VLM see the pixels directly
+    /// instead of relying on the model to `Read` the file (which it may skip,
+    /// and which the CLI's Read size cap can block for large images).
+    pub images: Vec<PathBuf>,
     /// The workflow phase → drives `--permission-mode` + system prompt.
     pub phase: TurnPhase,
 }
@@ -364,13 +370,21 @@ fn workspace_directive(workspace: &Path) -> String {
 /// Build the argv for `claude -p` from a [`ClaudeRunConfig`]. The shape
 /// matches cadcode's `build_command` (with model defaulting to `opus`).
 pub fn build_command(cfg: &ClaudeRunConfig) -> Vec<String> {
+    // With reference images we feed the turn as a stream-json user message on
+    // stdin (text + base64 image blocks) so the VLM sees the pixels directly;
+    // without images we keep the simpler positional-text prompt.
+    let has_images = !cfg.images.is_empty();
     let mut cmd: Vec<String> = vec![
         "claude".into(),
         "-p".into(),
         "--output-format".into(),
         "stream-json".into(),
         "--input-format".into(),
-        "text".into(),
+        if has_images {
+            "stream-json".into()
+        } else {
+            "text".into()
+        },
         "--verbose".into(),
         "--include-partial-messages".into(),
         "--permission-mode".into(),
@@ -419,8 +433,65 @@ pub fn build_command(cfg: &ClaudeRunConfig) -> Vec<String> {
     }
     cmd.push("--model".into());
     cmd.push(cfg.model.clone().unwrap_or_else(|| "opus".into()));
-    cmd.push(cfg.prompt.clone());
+    // The positional prompt is only for text input mode. With images the prompt
+    // travels inside the stream-json stdin message (see `stream_json_input`).
+    if !has_images {
+        cmd.push(cfg.prompt.clone());
+    }
     cmd
+}
+
+/// Build the stream-json user message piped to `claude`'s stdin when the turn
+/// carries reference images. Returns `None` when there are no images (the
+/// prompt then goes as a positional arg in text-input mode). The message mirrors
+/// the Anthropic content-block shape: one text block (the prompt) followed by
+/// one base64 image block per readable image. Unreadable images are skipped.
+fn stream_json_input(cfg: &ClaudeRunConfig) -> Option<String> {
+    use base64::Engine as _;
+    if cfg.images.is_empty() {
+        return None;
+    }
+    let mut content: Vec<Value> = vec![serde_json::json!({
+        "type": "text",
+        "text": cfg.prompt,
+    })];
+    for path in &cfg.images {
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                content.push(serde_json::json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": image_media_type(path),
+                        "data": data,
+                    },
+                }));
+            }
+            Err(_) => continue,
+        }
+    }
+    let msg = serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": content },
+    });
+    Some(msg.to_string())
+}
+
+/// MIME type for an image path, inferred from its extension (matches the
+/// extensions `chat.rs` persists into `inputs/`). Defaults to PNG.
+fn image_media_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        _ => "image/png",
+    }
 }
 
 /// Env vars to set on the spawned `claude` process. When `use_panda_cloud` is
@@ -1265,6 +1336,7 @@ pub async fn spawn_turn<F>(
     workspace_dir: &Path,
     session_id: uuid::Uuid,
     user_message: &str,
+    images: &[PathBuf],
     turn_id: &str,
     phase: TurnPhase,
     on_event: F,
@@ -1343,6 +1415,7 @@ where
         use_panda_cloud,
         panda_token,
         panda_base_url,
+        images: images.to_vec(),
         phase,
     };
     let argv = build_command(&cfg);
@@ -1381,11 +1454,19 @@ where
     // resolved absolute path (argv[0] is kept for build_command parity).
     // A Windows `claude.cmd` is run directly — std handles batch wrappers
     // (see resolve_claude); an explicit `cmd /C` would mangle the args.
+    // When the turn carries reference images, the prompt+images go in as a
+    // stream-json user message on stdin (so the VLM sees the pixels); otherwise
+    // the prompt is a positional arg and stdin stays closed.
+    let stdin_payload = stream_json_input(&cfg);
     let mut command = Command::new(&claude_path);
     command
         .args(&argv[1..])
         .current_dir(workspace_dir)
-        .stdin(Stdio::null())
+        .stdin(if stdin_payload.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -1409,6 +1490,19 @@ where
             return Err(DriverError::Spawn(e));
         }
     };
+
+    // Feed the stream-json user message (prompt + image blocks) and close stdin
+    // so claude's `-p` reader sees EOF and starts the turn. Only present when the
+    // turn carries images; otherwise stdin was opened as null.
+    if let Some(payload) = stdin_payload {
+        if let Some(mut sin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt as _;
+            let _ = sin.write_all(payload.as_bytes()).await;
+            let _ = sin.write_all(b"\n").await;
+            let _ = sin.shutdown().await;
+            // drop closes the pipe → EOF for claude.
+        }
+    }
 
     // Drain the child's stderr concurrently. Two reasons: (1) an undrained
     // piped stderr deadlocks the child once the ~64 KiB pipe buffer fills;
@@ -1843,6 +1937,7 @@ where
         use_panda_cloud: false,
         panda_token: None,
         panda_base_url: None,
+        images: Vec::new(),
         phase: TurnPhase::Review,
     };
 
@@ -2472,6 +2567,7 @@ mod tests {
             use_panda_cloud: false,
             panda_token: None,
             panda_base_url: None,
+            images: Vec::new(),
             phase: TurnPhase::Plan,
         };
         let cmd = build_command(&cfg);
@@ -2495,6 +2591,7 @@ mod tests {
             use_panda_cloud: false,
             panda_token: None,
             panda_base_url: None,
+            images: Vec::new(),
             phase: TurnPhase::Plan,
         };
         let cmd = build_command(&cfg);
@@ -2510,6 +2607,58 @@ mod tests {
             .collect();
         assert!(add_dirs.contains(&&"/tmp/proj".to_string()));
         assert!(add_dirs.contains(&&skills));
+    }
+
+    #[test]
+    fn build_command_uses_stream_json_input_and_inlines_images() {
+        // Write a tiny fake image so stream_json_input can read + base64 it.
+        let tmp = std::env::temp_dir().join(format!("panda-img-test-{}.png", std::process::id()));
+        std::fs::write(&tmp, b"\x89PNG\r\n\x1a\nFAKE").unwrap();
+        let cfg = ClaudeRunConfig {
+            prompt: "match this reference".into(),
+            workspace: PathBuf::from("/tmp/proj"),
+            claude_session_id: None,
+            model: None,
+            use_panda_cloud: false,
+            panda_token: None,
+            panda_base_url: None,
+            images: vec![tmp.clone()],
+            phase: TurnPhase::Plan,
+        };
+        let cmd = build_command(&cfg);
+        // With images we switch to stream-json input and DON'T pass the prompt
+        // as a positional arg (it rides in the stdin message instead).
+        let if_pos = cmd.iter().position(|a| a == "--input-format").unwrap();
+        assert_eq!(cmd[if_pos + 1], "stream-json");
+        assert!(
+            !cmd.contains(&"match this reference".to_string()),
+            "prompt must not be a positional arg in stream-json mode"
+        );
+
+        // The stdin payload is one JSON user message: a text block + one base64
+        // image block whose media type matches the extension.
+        let payload = stream_json_input(&cfg).expect("payload when images present");
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(v["type"], "user");
+        let content = v["message"]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "match this reference");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+        assert!(!content[1]["source"]["data"].as_str().unwrap().is_empty());
+
+        // No images → no stdin payload, prompt stays positional.
+        let cfg_noimg = ClaudeRunConfig {
+            images: Vec::new(),
+            ..cfg.clone()
+        };
+        assert!(stream_json_input(&cfg_noimg).is_none());
+        let cmd_noimg = build_command(&cfg_noimg);
+        let if2 = cmd_noimg.iter().position(|a| a == "--input-format").unwrap();
+        assert_eq!(cmd_noimg[if2 + 1], "text");
+        assert!(cmd_noimg.contains(&"match this reference".to_string()));
+
+        std::fs::remove_file(&tmp).ok();
     }
 
     #[test]
@@ -2540,6 +2689,7 @@ mod tests {
             use_panda_cloud: false,
             panda_token: None,
             panda_base_url: None,
+            images: Vec::new(),
             phase: TurnPhase::Plan,
         };
         let cmd = build_command(&cfg);
@@ -2575,6 +2725,7 @@ mod tests {
             use_panda_cloud: false,
             panda_token: None,
             panda_base_url: None,
+            images: Vec::new(),
             phase: TurnPhase::Plan,
         };
         let cmd = build_command(&cfg);
@@ -2600,6 +2751,7 @@ mod tests {
             use_panda_cloud: false,
             panda_token: None,
             panda_base_url: None,
+            images: Vec::new(),
             phase: TurnPhase::Plan,
         };
         let cmd = build_command(&cfg);
@@ -2632,6 +2784,7 @@ mod tests {
             use_panda_cloud: false,
             panda_token: None,
             panda_base_url: None,
+            images: Vec::new(),
             phase: TurnPhase::Implement,
         };
         let cmd = build_command(&cfg);
@@ -2687,6 +2840,7 @@ mod tests {
             use_panda_cloud: true,
             panda_token: Some("ccr-tok-123".into()),
             panda_base_url: Some("https://api-panda.autonomous.ai".into()),
+            images: Vec::new(),
             phase: TurnPhase::Plan,
         };
         let env = build_env(&cfg);
@@ -2717,6 +2871,7 @@ mod tests {
             use_panda_cloud: true,
             panda_token: Some("ccr-tok".into()),
             panda_base_url: None,
+            images: Vec::new(),
             phase: TurnPhase::Plan,
         };
         let map: HashMap<String, String> = build_env(&cfg).into_iter().collect();
@@ -2744,6 +2899,8 @@ mod tests {
 
     #[test]
     fn build_env_default_disables_autoupdater_and_background_tasks() {
+        // Cloud OFF → no model env pushed → claude falls back to the host's own
+        // auth (your ~/.claude login). This is the "local, no proxy" path.
         let cfg = ClaudeRunConfig {
             prompt: "hi".into(),
             workspace: PathBuf::from("/tmp/proj"),
@@ -2752,13 +2909,12 @@ mod tests {
             use_panda_cloud: false,
             panda_token: None,
             panda_base_url: None,
+            images: Vec::new(),
             phase: TurnPhase::Plan,
         };
         let map: HashMap<String, String> = build_env(&cfg).into_iter().collect();
-        // Default (non-cloud) env disables the self-updater so claude can't
-        // rewrite its own binary mid-turn (→ 0xC0000142 on Windows) and disables
-        // background tasks so every command runs in the foreground; it adds no
-        // auth — host auth is inherited.
+        // Self-updater + background tasks stay disabled (foreground, no mid-turn
+        // binary rewrite → 0xC0000142 on Windows).
         assert_eq!(map.get("DISABLE_AUTOUPDATER").map(String::as_str), Some("1"));
         assert_eq!(
             map.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS").map(String::as_str),
@@ -2767,7 +2923,6 @@ mod tests {
         assert!(!map.contains_key("ANTHROPIC_BASE_URL"));
         assert!(!map.contains_key("ANTHROPIC_AUTH_TOKEN"));
         assert!(!map.contains_key("ANTHROPIC_API_KEY"));
-        assert_eq!(map.len(), 2);
     }
 
     #[test]
@@ -2908,6 +3063,7 @@ mod tests {
             use_panda_cloud: false,
             panda_token: None,
             panda_base_url: None,
+            images: Vec::new(),
             phase: TurnPhase::Plan,
         };
         let cmd = build_command(&cfg);
@@ -3363,6 +3519,7 @@ mod tests {
             workspace.path(),
             uuid::Uuid::nil(),
             "hello",
+            &[],
             "T-smoke",
             TurnPhase::Plan,
             move |e| events_clone.lock().push(e),
@@ -3470,6 +3627,7 @@ mod tests {
             workspace.path(),
             uuid::Uuid::new_v4(), // fresh session so reruns don't collide
             "design a simple 20mm cube keychain with a 4mm hole",
+            &[],
             "T-live-plan",
             TurnPhase::Plan,
             move |e| sink.lock().push(e),

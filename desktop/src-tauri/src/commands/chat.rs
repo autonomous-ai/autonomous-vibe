@@ -123,7 +123,13 @@ fn approved_plan_message(plan_text: &str) -> String {
 /// stopped to ask preference questions) chains straight into a build turn here,
 /// with no `chat_approve_plan` round-trip. The manual approve path still exists
 /// for `auto_build = false`.
-fn spawn_chat_turn(app: AppHandle, project_id: &str, message: String, phase: TurnPhase) -> String {
+fn spawn_chat_turn(
+    app: AppHandle,
+    project_id: &str,
+    message: String,
+    images: Vec<PathBuf>,
+    phase: TurnPhase,
+) -> String {
     let turn_id = Uuid::new_v4().to_string();
     let workspace = project_workspace(project_id);
     let session_id = session_id_for_project(project_id);
@@ -167,6 +173,7 @@ fn spawn_chat_turn(app: AppHandle, project_id: &str, message: String, phase: Tur
             &workspace,
             session_id,
             &message,
+            &images,
             &event_turn_id,
             phase,
             on_event,
@@ -224,6 +231,7 @@ async fn run_auto_build_turn(
         &workspace,
         session_id,
         &approved_plan_message(&plan),
+        &[],
         &turn_id,
         TurnPhase::Implement,
         on_event,
@@ -326,16 +334,19 @@ pub async fn chat_start_turn(
     if let Some(label) = state.take_pending_revert_note(&req.project_id) {
         message.push_str(&revert_note(&label));
     }
+    let mut image_paths: Vec<PathBuf> = Vec::new();
     if !req.images.is_empty() {
-        // Persist the reference images into the project workspace and point the
-        // model at them (it views them with its Read tool). Done here, before
-        // the turn spawns, so they predate the driver's mtime baseline and fire
-        // no `artifact_changed`.
+        // Persist the reference images into the project workspace, inline them
+        // into the turn as base64 image blocks (so the VLM sees the pixels), and
+        // ALSO append a text note pointing at the saved files (a fallback the
+        // model can `Read`). Done here, before the turn spawns, so the files
+        // predate the driver's mtime baseline and fire no `artifact_changed`.
         let workspace = project_workspace(&req.project_id);
         let rels = persist_attachments(&workspace, &req.images).await?;
+        image_paths = rels.iter().map(|r| workspace.join(r)).collect();
         message.push_str(&attachment_note(&rels));
     }
-    let turn_id = spawn_chat_turn(app, &req.project_id, message, TurnPhase::Plan);
+    let turn_id = spawn_chat_turn(app, &req.project_id, message, image_paths, TurnPhase::Plan);
     Ok(StartTurnResponse { turn_id })
 }
 
@@ -350,7 +361,7 @@ pub async fn chat_approve_plan(
     // text back honors any edits without diffing. (Manual path — autopilot
     // chains the build automatically in spawn_chat_turn.)
     let message = approved_plan_message(&req.plan_text);
-    let turn_id = spawn_chat_turn(app, &req.project_id, message, TurnPhase::Implement);
+    let turn_id = spawn_chat_turn(app, &req.project_id, message, Vec::new(), TurnPhase::Implement);
     Ok(StartTurnResponse { turn_id })
 }
 
@@ -362,7 +373,7 @@ pub async fn chat_request_plan_changes(
 ) -> IpcResult<StartTurnResponse> {
     // Stay in planning mode; the resumed session remembers the prior plan,
     // so the feedback alone is enough for the model to revise and re-propose.
-    let turn_id = spawn_chat_turn(app, &req.project_id, req.feedback, TurnPhase::Plan);
+    let turn_id = spawn_chat_turn(app, &req.project_id, req.feedback, Vec::new(), TurnPhase::Plan);
     Ok(StartTurnResponse { turn_id })
 }
 

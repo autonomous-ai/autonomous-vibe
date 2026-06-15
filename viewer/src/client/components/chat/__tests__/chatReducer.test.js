@@ -60,8 +60,9 @@ test("hydrate_session rebuilds an assistant turn's blocks and per-block timings"
   assert.equal(asst.blocks.length, 3);
   assert.equal(asst.blocks[1].kind, "tool_use");
   assert.equal(asst.blocks[1].status, "ok");
-  // startedAt/endedAt come from the block timings.
-  assert.equal(asst.startedAt, 1100);
+  // startedAt is floored at the preceding user prompt (1000) so the first
+  // segment counts the pre-first-block thinking; endedAt is the last block time.
+  assert.equal(asst.startedAt, 1000);
   assert.equal(asst.endedAt, 1400);
   // A user turn (no blocks) falls back to one text block from `content`.
   assert.deepEqual(state.history[0].blocks, [{ kind: "text", text: "make a box" }]);

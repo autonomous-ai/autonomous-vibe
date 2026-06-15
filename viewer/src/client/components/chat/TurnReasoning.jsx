@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { Loader2, Sparkles } from "lucide-react";
 import { cn } from "@/ui/utils";
 import Markdown from "./Markdown";
-import { SegmentDuration } from "./liveDuration";
+import { SpanDuration } from "./liveDuration";
 
 // Collapsed reasoning shows roughly six lines before fading; the user expands
 // for the rest. Kept as a class so the fade height can track it.
@@ -37,7 +37,7 @@ function ReasoningBody({ blocks }) {
  * lane also carries the "Thinking… / Thought for Ns" segment-duration caption,
  * so that signal is never lost.
  */
-export default function TurnReasoning({ turn, segment, showDuration, active = false }) {
+export default function TurnReasoning({ turn, segment, span, showDuration, active = false }) {
   const ref = useRef(null);
   const [expanded, setExpanded] = useState(false);
   const [overflowing, setOverflowing] = useState(false);
@@ -75,7 +75,7 @@ export default function TurnReasoning({ turn, segment, showDuration, active = fa
             <Sparkles className="size-3.5" aria-hidden />
           )}
           {active ? "Thinking… " : "Thought for "}
-          <SegmentDuration segment={segment} active={active} />
+          <SpanDuration start={span?.start} end={span?.end} active={active} />
         </span>
       ) : null}
       {hasReasoning ? (

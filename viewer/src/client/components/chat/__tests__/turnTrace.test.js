@@ -12,7 +12,7 @@ import {
   chatReducer,
   thinkingDurationMs,
   segmentTurnBlocks,
-  segmentDurationMs,
+  segmentSpans,
 } from "../../../store/chat.js";
 
 function ev(state, event, now) {
@@ -96,27 +96,35 @@ test("blocks are stamped with creation/end timestamps for per-segment timing", (
   assert.equal(blocks.find((b) => b.kind === "text").at, 5200);
 });
 
-// -- segmentDurationMs -------------------------------------------------------
+// -- segmentSpans ------------------------------------------------------------
 
-test("segmentDurationMs spans the first block's start to the last tool's end", () => {
-  const segment = {
-    reasoning: [{ kind: "thinking", text: "x", at: 1000 }],
-    activity: [
-      { kind: "tool_use", tool: "Read", at: 1200, endedAt: 1800, status: "ok" },
-      { kind: "tool_use", tool: "Write", at: 1900, endedAt: 4000, status: "ok" },
-    ],
-  };
-  assert.equal(segmentDurationMs(segment), 3000); // 4000 - 1000
+test("segmentSpans makes contiguous per-segment spans from the turn start", () => {
+  const segments = [
+    { reasoning: [{ kind: "thinking", at: 1000 }], activity: [{ kind: "tool_use", at: 1200, endedAt: 1800 }] },
+    { reasoning: [{ kind: "thinking", at: 2000 }], activity: [{ kind: "tool_use", at: 2100, endedAt: 5000 }] },
+  ];
+  const spans = segmentSpans(segments, 500);
+  // First segment starts at the turn start (not its first block) — captures the
+  // pre-block thinking gap; next segment starts where the previous ended.
+  assert.deepEqual(spans[0], { start: 500, end: 1800 });
+  assert.deepEqual(spans[1], { start: 1800, end: 5000 });
 });
 
-test("segmentDurationMs counts to `now` for the active (live) segment", () => {
-  const segment = { reasoning: [], activity: [{ kind: "tool_use", at: 1000, status: "running" }] };
-  assert.equal(segmentDurationMs(segment, 4500, true), 3500); // now - start
+test("segmentSpans floors a tool-only first segment at the turn start (no more 0s)", () => {
+  // A lone fast tool (thinking not streamed as a block) reads 0s on its own;
+  // counting from the turn start reflects the real planning time.
+  const segments = [{ reasoning: [], activity: [{ kind: "tool_use", at: 30000, endedAt: 30100 }] }];
+  assert.deepEqual(segmentSpans(segments, 0), [{ start: 0, end: 30100 }]);
 });
 
-test("segmentDurationMs is 0 without timestamps (hydrated history)", () => {
-  assert.equal(segmentDurationMs({ reasoning: [{ kind: "thinking", text: "x" }], activity: [] }), 0);
-  assert.equal(segmentDurationMs(undefined), 0);
+test("segmentSpans falls back to block times when the turn start is unknown", () => {
+  const segments = [{ reasoning: [], activity: [{ kind: "tool_use", at: 1000, endedAt: 2000 }] }];
+  assert.deepEqual(segmentSpans(segments, undefined), [{ start: 1000, end: 2000 }]);
+});
+
+test("segmentSpans tolerates empty / missing input", () => {
+  assert.deepEqual(segmentSpans([], 0), []);
+  assert.deepEqual(segmentSpans(undefined, 0), []);
 });
 
 // -- tool_use_end resultSummary ----------------------------------------------

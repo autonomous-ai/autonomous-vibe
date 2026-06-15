@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Loader2, Check, XCircle, Ban, Wrench, ChevronRight, ChevronDown } from "lucide-react";
 import { cn } from "@/ui/utils";
 import { toolLabel, toolDetail, aggregateActivityStatus, activityDefaultsOpen } from "./activityLabels";
-import { SegmentDuration } from "./liveDuration";
+import { SpanDuration } from "./liveDuration";
 
 // Status glyph for the disclosure header / a tool row. Mirrors the status
 // vocabulary the reducer assigns to tool blocks.
@@ -53,7 +53,7 @@ function ActivityRow({ block }) {
  *
  * Rendered only when the segment actually has tool activity.
  */
-export default function TurnActivity({ segment, active = false }) {
+export default function TurnActivity({ segment, span, active = false }) {
   const [override, setOverride] = useState(null); // null = follow default
   const activity = (segment && segment.activity) || [];
   if (activity.length === 0) return null;
@@ -87,7 +87,7 @@ export default function TurnActivity({ segment, active = false }) {
         <StatusGlyph status={active ? "running" : status} />
         <span className="font-medium text-foreground/90">
           {active ? "Working… " : "Worked for "}
-          <SegmentDuration segment={segment} active={active} />
+          <SpanDuration start={span?.start} end={span?.end} active={active} />
         </span>
         {runningStep ? (
           <span className="min-w-0 truncate">· {toolLabel(runningStep.tool, runningStep.input)}…</span>

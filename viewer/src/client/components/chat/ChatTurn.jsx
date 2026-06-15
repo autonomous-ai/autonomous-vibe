@@ -1,13 +1,14 @@
 import { memo } from "react";
 import { Loader2, Undo2 } from "lucide-react";
 import { cn } from "@/ui/utils";
-import ArtifactBadge from "./ArtifactBadge";
 import PlanBlock from "./PlanBlock";
 import Markdown from "./Markdown";
 import ChatCopyButton from "./ChatCopyButton";
-import ThinkingSummary from "./ThinkingSummary";
-import { phaseLabel, toolLabel } from "./activityLabels";
-import { partitionTurnBlocks } from "@/store/chat";
+import TurnReasoning from "./TurnReasoning";
+import TurnActivity from "./TurnActivity";
+import { LiveDuration } from "./liveDuration";
+import { phaseLabel } from "./activityLabels";
+import { segmentTurnBlocks } from "@/store/chat";
 
 function TextBlock({ text, streaming }) {
   if (streaming) {
@@ -103,7 +104,7 @@ function StatusLine({ turn }) {
   return null;
 }
 
-export default memo(function ChatTurn({ turn, onOpenArtifact }) {
+export default memo(function ChatTurn({ turn }) {
   // A revert marker is its own kind of turn: a single centered, self-explaining
   // line ("↩ Reverted to <label>"), not an assistant message bubble. Render it
   // before the normal turn chrome so it stays visually distinct in the thread.
@@ -133,20 +134,18 @@ export default memo(function ChatTurn({ turn, onOpenArtifact }) {
     turn.blocks.some((block) => block.kind === "artifact");
   const copyText = turnCopyText(turn);
   const showCopyButton = turnShowsCopyButton(turn);
-  // Pre-answer narration (text emitted between tool calls) folds into the
-  // ThinkingSummary trace; only the answer body renders inline here.
-  const bodyBlocks = isUser ? turn.blocks : partitionTurnBlocks(turn.blocks).body;
-  // The ThinkingSummary pill carries the generic "Working…/Thinking…" signal in
-  // the header for the whole run. Here in the body we only surface the *specific*
-  // in-flight step ("Rendering preview…") when a tool is actually mid-run and no
-  // answer text is currently streaming — so there's no dead gap and no duplicate
-  // generic spinner.
+  // An assistant turn reads as a sequence of reasoning→tools segments (each a
+  // visible reasoning block + its own collapsible Activity group), followed by
+  // the always-visible answer body. The last segment is "active" while the turn
+  // runs — its group ticks "Working…"; a reasoning-only last segment carries the
+  // "Thinking…/Thought for Ns" caption since it has no group to own the duration.
   const running = !isUser && turn.status === "running";
-  const answerStreaming = bodyBlocks[bodyBlocks.length - 1]?.kind === "text";
-  const runningTool =
-    running && !answerStreaming
-      ? [...turn.blocks].reverse().find((b) => b.kind === "tool_use" && b.status === "running")
-      : null;
+  const { segments, body: bodyBlocks } = isUser
+    ? { segments: [], body: turn.blocks }
+    : segmentTurnBlocks(turn.blocks);
+  // Before any block has streamed, a running turn still needs a heartbeat so it
+  // never looks stuck — a bare "Thinking… Ns" stands in until the first segment.
+  const showStartupHeartbeat = running && segments.length === 0;
   return (
     <article
       data-slot="chat-turn"
@@ -174,8 +173,6 @@ export default memo(function ChatTurn({ turn, onOpenArtifact }) {
         <header className="mb-1.5 flex items-center justify-between gap-2">
           <span className="flex items-center gap-1.5">
             <PhaseBadge phase={turn.phase} running={turn.status === "running"} />
-            {!isUser ? <ThinkingSummary turn={turn} /> : null}
-
           </span>
           <StatusLine turn={turn} />
         </header>
@@ -194,6 +191,32 @@ export default memo(function ChatTurn({ turn, onOpenArtifact }) {
             ))}
           </div>
         ) : null}
+        {!isUser
+          ? segments.map((segment, i) => {
+              const isLast = i === segments.length - 1;
+              const active = isLast && running;
+              return (
+                <div key={i} data-slot="chat-segment" className="flex flex-col gap-1.5">
+                  <TurnReasoning
+                    turn={turn}
+                    segment={segment}
+                    active={active}
+                    showDuration={segment.activity.length === 0}
+                  />
+                  <TurnActivity segment={segment} active={active} />
+                </div>
+              );
+            })
+          : null}
+        {showStartupHeartbeat ? (
+          <span
+            data-slot="chat-startup-heartbeat"
+            className="inline-flex items-center gap-1.5 text-xs text-foreground"
+          >
+            <Loader2 className="size-3.5 animate-spin" aria-hidden />
+            Thinking… <LiveDuration turn={turn} />
+          </span>
+        ) : null}
         {bodyBlocks.map((block, index) => {
           switch (block.kind) {
             case "text":
@@ -204,39 +227,20 @@ export default memo(function ChatTurn({ turn, onOpenArtifact }) {
                   streaming={turn.status === "running" && index === bodyBlocks.length - 1}
                 />
               );
-            case "thinking":
-            case "tool_use":
-              // Reasoning, tool calls, and pre-answer narration are collapsed
-              // into the ThinkingSummary pill (full trace in a modal) — never
-              // rendered inline. (partitionTurnBlocks keeps them out of body.)
-              return null;
             case "plan":
               return <PlanBlock key={index} plan={block.plan} status={block.status} />;
             case "artifact":
-              return (
-                <div key={index} className="flex">
-                  <ArtifactBadge
-                    file={block.file}
-                    reason={block.reason}
-                    onOpen={onOpenArtifact}
-                  />
-                </div>
-              );
+              // Generated files (the cadcode source, intermediate .json, even the
+              // model itself) aren't shown as chat badges — the result lives in
+              // the 3D viewer / Models rail. The block stays in state for slice
+              // target selection (selectArtifactFiles); it just isn't rendered here.
+              return null;
             case "error":
               return <ErrorBlock key={index} message={block.message} />;
             default:
               return null;
           }
         })}
-        {runningTool ? (
-          <p
-            data-slot="chat-working"
-            className="flex items-center gap-1.5 text-sm text-muted-foreground"
-          >
-            <Loader2 className="size-3.5 animate-spin" aria-hidden />
-            {`${toolLabel(runningTool.tool, runningTool.input)}…`}
-          </p>
-        ) : null}
         {showModifyHint ? (
           <p
             data-slot="chat-modify-hint"
@@ -256,4 +260,4 @@ export default memo(function ChatTurn({ turn, onOpenArtifact }) {
       ) : null}
     </article>
   );
-}, (prev, next) => prev.turn === next.turn && prev.onOpenArtifact === next.onOpenArtifact);
+}, (prev, next) => prev.turn === next.turn);

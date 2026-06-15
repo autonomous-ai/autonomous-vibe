@@ -5,6 +5,7 @@
 //! same commit.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -247,6 +248,40 @@ pub struct ChatHistoryEntry {
     pub role: ChatRole,
     pub content: String,
     pub at: i64,
+    /// Structured blocks for an assistant turn rehydrated from the transcript —
+    /// reasoning (thinking + narration) and tool calls with timings — so a
+    /// reloaded turn rebuilds the same inline trace (segments, tool groups,
+    /// per-segment counters) the live stream produced. Empty for plain user
+    /// turns and text-only assistant turns; the frontend then uses `content`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<HistoryBlock>,
+}
+
+/// One rehydrated block within a [`ChatHistoryEntry`]. Mirrors the frontend
+/// chat block kinds (`text` / `thinking` / `tool_use`) so the reducer can build
+/// turn blocks directly. Timestamps (`at`, `endedAt`) drive per-segment durations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HistoryBlock {
+    Text {
+        text: String,
+    },
+    Thinking {
+        text: String,
+        at: i64,
+    },
+    #[serde(rename_all = "camelCase")]
+    ToolUse {
+        tool: String,
+        tool_use_id: String,
+        input: Value,
+        /// "ok" | "error" — the resolved status from the matching tool_result.
+        status: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result_summary: Option<String>,
+        at: i64,
+        ended_at: i64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

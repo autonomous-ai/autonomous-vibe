@@ -170,36 +170,94 @@ export function thinkingDurationMs(turn, now) {
 }
 
 /**
- * Split a turn's blocks into the collapsed pre-answer trace vs. the visible
- * answer body. The agentic loop emits inter-step narration as plain `text`
- * blocks between tool calls (structurally identical to the final answer); the
- * separating signal is position — any `text` before the last tool/thinking
- * activity is narration, while the trailing text is the real answer.
+ * @typedef {Object} TurnSegment
+ * @property {ChatBlock[]} reasoning thinking + pre-answer narration (shown inline)
+ * @property {ChatBlock[]} activity tool_use blocks (the collapsible group)
+ */
+
+/**
+ * Segment a turn's blocks into chronological reasoning→tools groups plus the
+ * trailing answer body — so the thread reads like the work actually unfolded
+ * ("check the workspace" → 2 reads · "write the parts" → 17 writes) instead of
+ * hoisting all reasoning to the top and lumping every tool into one blob.
  *
- *   trace: thinking + tool_use + intermediate (pre-answer) text — for the pill
- *   body:  final answer text + plan/artifact/error — rendered inline as-is
+ * A segment is a run of reasoning (thinking + narration) followed by the tool
+ * calls that ran after it; the next reasoning block that appears *after* tools
+ * begins a new segment. The agentic loop emits inter-step narration as plain
+ * `text` blocks between tool calls — the separating signal from the real answer
+ * is position: any `text` before the last tool/thinking activity is narration,
+ * the trailing text is the answer.
+ *
+ *   segments: ordered { reasoning, activity } groups
+ *   body:     final answer text + plan/artifact/error — rendered inline as-is
  *
  * @param {ChatBlock[]} blocks
- * @returns {{ trace: ChatBlock[], body: ChatBlock[] }}
+ * @returns {{ segments: TurnSegment[], body: ChatBlock[] }}
  */
-export function partitionTurnBlocks(blocks) {
+export function segmentTurnBlocks(blocks) {
   const list = Array.isArray(blocks) ? blocks : [];
   let lastActivityIdx = -1;
   list.forEach((block, i) => {
     if (block.kind === "thinking" || block.kind === "tool_use") lastActivityIdx = i;
   });
-  const trace = [];
+  const segments = [];
   const body = [];
+  let current = null;
+  const flush = () => {
+    if (current && (current.reasoning.length || current.activity.length)) {
+      segments.push(current);
+    }
+    current = null;
+  };
   list.forEach((block, i) => {
-    if (block.kind === "thinking" || block.kind === "tool_use") {
-      trace.push(block);
-    } else if (block.kind === "text" && i < lastActivityIdx) {
-      trace.push(block); // narration emitted before the answer began
+    const isReasoning =
+      block.kind === "thinking" || (block.kind === "text" && i < lastActivityIdx);
+    if (block.kind === "tool_use") {
+      if (!current) current = { reasoning: [], activity: [] };
+      current.activity.push(block);
+    } else if (isReasoning) {
+      // Reasoning that follows tool calls opens a fresh segment; consecutive
+      // reasoning blocks accumulate into the same one.
+      if (current && current.activity.length > 0) flush();
+      if (!current) current = { reasoning: [], activity: [] };
+      current.reasoning.push(block);
     } else {
+      // Trailing answer text, plan, artifact, error.
       body.push(block);
     }
   });
-  return { trace, body };
+  flush();
+  return { segments, body };
+}
+
+/**
+ * Wall-clock span of one segment, in ms, from its blocks' per-block timestamps:
+ * start = the earliest block's `at`; end = the latest tool `endedAt` (or block
+ * `at`). For the turn's live/active segment it counts to `now` so it ticks.
+ * Returns 0 when the segment has no timestamped blocks (e.g. hydrated history,
+ * which is flat `text` with no `at`).
+ *
+ * @param {TurnSegment} segment
+ * @param {number=} now epoch ms — used only when `active`
+ * @param {boolean=} active whether this is the turn's live segment
+ * @returns {number}
+ */
+export function segmentDurationMs(segment, now, active) {
+  const reasoning = (segment && segment.reasoning) || [];
+  const activity = (segment && segment.activity) || [];
+  const starts = [];
+  for (const b of reasoning) if (typeof b.at === "number") starts.push(b.at);
+  for (const b of activity) if (typeof b.at === "number") starts.push(b.at);
+  if (!starts.length) return 0;
+  const start = Math.min(...starts);
+  if (active && typeof now === "number") return Math.max(0, now - start);
+  const ends = [start];
+  for (const b of reasoning) if (typeof b.at === "number") ends.push(b.at);
+  for (const b of activity) {
+    if (typeof b.endedAt === "number") ends.push(b.endedAt);
+    else if (typeof b.at === "number") ends.push(b.at);
+  }
+  return Math.max(0, Math.max(...ends) - start);
 }
 
 // Injected (model-facing only) when the user sends a highlighted view with no
@@ -258,9 +316,10 @@ function appendTextDelta(turn, text, now) {
   const blocks = [...turn.blocks];
   const last = blocks[blocks.length - 1];
   if (last && last.kind === "text") {
-    blocks[blocks.length - 1] = { kind: "text", text: last.text + text };
+    blocks[blocks.length - 1] = { ...last, text: last.text + text };
   } else {
-    blocks.push({ kind: "text", text });
+    // `at` (creation time) drives per-segment durations.
+    blocks.push({ kind: "text", text, ...(typeof now === "number" ? { at: now } : {}) });
   }
   // Stamp when the final answer begins — closes the "thinking window" so the
   // collapsed indicator can show how long pre-answer work took. Set once.
@@ -275,24 +334,25 @@ function withActivity(turn, now) {
   return typeof now === "number" ? { ...turn, lastActivityAt: now } : turn;
 }
 
-function appendThinkingDelta(turn, text) {
+function appendThinkingDelta(turn, text, now) {
   if (!text) return turn;
   const blocks = [...turn.blocks];
   const last = blocks[blocks.length - 1];
   if (last && last.kind === "thinking") {
-    blocks[blocks.length - 1] = { kind: "thinking", text: last.text + text };
+    blocks[blocks.length - 1] = { ...last, text: last.text + text };
   } else {
-    blocks.push({ kind: "thinking", text });
+    blocks.push({ kind: "thinking", text, ...(typeof now === "number" ? { at: now } : {}) });
   }
   return { ...turn, blocks };
 }
 
-function appendToolUseStart(turn, tool, input, toolUseId) {
+function appendToolUseStart(turn, tool, input, toolUseId, now) {
   return {
     ...turn,
     blocks: [
       ...turn.blocks,
-      { kind: "tool_use", tool, toolUseId, input, status: "running" },
+      // `at` (start time) anchors this segment's duration.
+      { kind: "tool_use", tool, toolUseId, input, status: "running", ...(typeof now === "number" ? { at: now } : {}) },
     ],
   };
 }
@@ -302,19 +362,25 @@ function appendToolUseStart(turn, tool, input, toolUseId) {
 // by name would flip the wrong block and strand the real one on "Running");
 // fall back to name only for legacy/id-less events. An end with no matching
 // start is still recorded, for observability.
-function markToolUseEnd(turn, toolUseId, tool, ok, resultSummary) {
+function markToolUseEnd(turn, toolUseId, tool, ok, resultSummary, now) {
   const summary = resultSummary ? { resultSummary } : {};
+  const ended = typeof now === "number" ? { endedAt: now } : {};
   const blocks = [...turn.blocks];
   for (let i = blocks.length - 1; i >= 0; i -= 1) {
     const block = blocks[i];
     if (block.kind !== "tool_use" || block.status !== "running") continue;
     const matches = toolUseId ? block.toolUseId === toolUseId : block.tool === tool;
     if (matches) {
-      blocks[i] = { ...block, status: ok ? "ok" : "error", ...summary };
+      blocks[i] = { ...block, status: ok ? "ok" : "error", ...summary, ...ended };
       return { ...turn, blocks };
     }
   }
-  blocks.push({ kind: "tool_use", tool, toolUseId, status: ok ? "ok" : "error", ...summary });
+  // No matching start. Record it for observability only if we have a tool name
+  // to show; a nameless orphan (a stray result for an intercepted built-in the
+  // driver suppressed the start for) would render as a meaningless "Working"
+  // error chip, so drop it.
+  if (!tool) return turn;
+  blocks.push({ kind: "tool_use", tool, toolUseId, status: ok ? "ok" : "error", ...summary, ...ended });
   return { ...turn, blocks };
 }
 
@@ -493,7 +559,7 @@ function applyChatEventToSession(session, event, now) {
         history: updateAssistantTurn(
           ensureAssistantTurn(session.history, turnId, now),
           turnId,
-          (turn) => withActivity(appendThinkingDelta(turn, event.text), now),
+          (turn) => withActivity(appendThinkingDelta(turn, event.text, now), now),
         ),
       };
     case "tool_use_start":
@@ -502,7 +568,7 @@ function applyChatEventToSession(session, event, now) {
         history: updateAssistantTurn(
           ensureAssistantTurn(session.history, turnId, now),
           turnId,
-          (turn) => withActivity(appendToolUseStart(turn, event.tool, event.input, event.toolUseId), now),
+          (turn) => withActivity(appendToolUseStart(turn, event.tool, event.input, event.toolUseId, now), now),
         ),
       };
     case "tool_use_end":
@@ -511,7 +577,7 @@ function applyChatEventToSession(session, event, now) {
         history: updateAssistantTurn(
           ensureAssistantTurn(session.history, turnId, now),
           turnId,
-          (turn) => withActivity(markToolUseEnd(turn, event.toolUseId, event.tool, event.ok, event.resultSummary), now),
+          (turn) => withActivity(markToolUseEnd(turn, event.toolUseId, event.tool, event.ok, event.resultSummary, now), now),
         ),
       };
     case "artifact_changed":
@@ -635,15 +701,34 @@ export function chatReducer(state, action, now = Date.now()) {
       };
     }
     case "hydrate_session": {
-      const history = action.session.history.map((item, index) => ({
-        id: `hydrated-${index}`,
-        role: item.role,
-        blocks: [{ kind: "text", text: item.content }],
-        status: "complete",
-        startedAt: item.at,
-        endedAt: item.at,
-        userText: item.role === "user" ? item.content : undefined,
-      }));
+      const history = action.session.history.map((item, index) => {
+        // A rehydrated assistant turn carries structured `blocks` (reasoning +
+        // tool calls with timings) so the inline trace rebuilds exactly as it
+        // streamed live; user and text-only turns fall back to a single text
+        // block from `content`.
+        const blocks =
+          Array.isArray(item.blocks) && item.blocks.length > 0
+            ? item.blocks
+            : [{ kind: "text", text: item.content }];
+        // startedAt/endedAt from the block timings drive per-segment durations;
+        // flat turns (no timestamps) fall back to the entry's own timestamp.
+        const times = [];
+        for (const b of blocks) {
+          if (typeof b.at === "number") times.push(b.at);
+          if (typeof b.endedAt === "number") times.push(b.endedAt);
+        }
+        const startedAt = times.length ? Math.min(...times) : item.at;
+        const endedAt = times.length ? Math.max(...times) : item.at;
+        return {
+          id: `hydrated-${index}`,
+          role: item.role,
+          blocks,
+          status: "complete",
+          startedAt,
+          endedAt,
+          userText: item.role === "user" ? item.content : undefined,
+        };
+      });
       return {
         ...state,
         history,

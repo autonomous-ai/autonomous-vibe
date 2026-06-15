@@ -329,7 +329,29 @@ function chat_cancel_turn(turnId: string): Promise<void>;
 interface ChatSessionState {
   sessionId: string;
   turnInProgress: boolean;
-  history: Array<{ role: "user" | "assistant"; content: string; at: number }>;
+  history: Array<{
+    role: "user" | "assistant";
+    content: string;
+    at: number;
+    // Additive + optional — structured blocks for a rehydrated assistant turn so
+    // a reloaded turn rebuilds the same inline trace (reasoning + tool groups +
+    // per-segment timers) the live stream produced. Absent for user turns and
+    // text-only assistant turns (fall back to `content`). Added 2026-06-15.
+    blocks?: Array<
+      | { kind: "text"; text: string }
+      | { kind: "thinking"; text: string; at: number }
+      | {
+          kind: "tool_use";
+          tool: string;
+          toolUseId: string;
+          input: unknown;
+          status: "ok" | "error";
+          resultSummary?: string;
+          at: number;
+          endedAt: number;
+        }
+    >;
+  }>;
 }
 function chat_session_state(projectId: string): Promise<ChatSessionState>;
 

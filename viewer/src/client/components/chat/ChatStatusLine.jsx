@@ -18,8 +18,8 @@ function scrollToAwaitingCard() {
 /**
  * A line just above the composer that flags when the active project is blocked
  * on the user — the one state the chat didn't already make obvious. (The
- * "working" state is left to the turn header's PLANNING/Building pill +
- * ThinkingSummary, so this doesn't duplicate it.)
+ * "working" state is left to the turn header's PLANNING/Building badge + the
+ * inline reasoning/Activity lanes, so this doesn't duplicate it.)
  *
  *  - waiting: "Waiting for your answer / approval ↑", clickable to jump to the
  *    card. Autopilot-aware via `awaitingNeedsUser` — under autopilot a proposed

@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { phaseLabel, toolLabel, toolDetail } from "../activityLabels.js";
+import {
+  phaseLabel,
+  toolLabel,
+  toolDetail,
+  aggregateActivityStatus,
+  activityDefaultsOpen,
+  formatDuration,
+} from "../activityLabels.js";
 
 test("toolLabel maps known tools to friendly phrases", () => {
   assert.equal(toolLabel("cadcode"), "Designing");
@@ -56,4 +63,43 @@ test("phaseLabel maps plan/implement and empty otherwise", () => {
   assert.equal(phaseLabel("implement"), "Building");
   assert.equal(phaseLabel(undefined), "");
   assert.equal(phaseLabel("idle"), "");
+});
+
+test("formatDuration floors to whole seconds under a minute, Nm Ns above", () => {
+  assert.equal(formatDuration(0), "0s");
+  assert.equal(formatDuration(1999), "1s"); // floors, not rounds
+  assert.equal(formatDuration(59000), "59s");
+  assert.equal(formatDuration(60000), "1m");
+  assert.equal(formatDuration(61000), "1m 1s");
+  assert.equal(formatDuration(125000), "2m 5s");
+});
+
+test("aggregateActivityStatus rolls up tool statuses with running > error > cancelled > ok", () => {
+  const ok = [{ status: "ok" }, { status: "ok" }];
+  const withError = [{ status: "ok" }, { status: "error" }];
+  const withCancelled = [{ status: "ok" }, { status: "cancelled" }];
+  const running = [{ status: "error" }, { status: "running" }];
+  assert.equal(aggregateActivityStatus(ok), "ok");
+  assert.equal(aggregateActivityStatus(withError), "error");
+  assert.equal(aggregateActivityStatus(withCancelled), "cancelled");
+  // A live step outranks a prior failure — the group still reads as working.
+  assert.equal(aggregateActivityStatus(running), "running");
+  // Error outranks cancelled when both are present.
+  assert.equal(aggregateActivityStatus([{ status: "cancelled" }, { status: "error" }]), "error");
+  // Empty / missing → ok (nothing to flag).
+  assert.equal(aggregateActivityStatus([]), "ok");
+  assert.equal(aggregateActivityStatus(undefined), "ok");
+});
+
+test("activityDefaultsOpen opens the active group and any finished group with an error", () => {
+  // The active (live) group expands so progress is watchable.
+  assert.equal(activityDefaultsOpen([], true), true);
+  // Finished, all ok → collapsed.
+  assert.equal(activityDefaultsOpen([{ status: "ok" }], false), false);
+  // Finished but a tool errored → stays expanded so the failure isn't hidden.
+  assert.equal(activityDefaultsOpen([{ status: "ok" }, { status: "error" }], false), true);
+  // A cancelled tool is not an error — collapses like a clean group.
+  assert.equal(activityDefaultsOpen([{ status: "cancelled" }], false), false);
+  // Defensive: missing activity list.
+  assert.equal(activityDefaultsOpen(undefined, false), false);
 });

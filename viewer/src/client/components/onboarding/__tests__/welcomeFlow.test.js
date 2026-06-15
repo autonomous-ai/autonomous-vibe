@@ -3,9 +3,42 @@ import test from "node:test";
 import {
   buildOnboardedSettings,
   buildPandaLoginFlow,
+  describeClaudeLoginProgress,
   describePandaLoginProgress,
   evaluateWelcomeState,
+  shouldOnboard,
 } from "../onboardingHelpers.js";
+
+test("shouldOnboard gates only on hasOnboarded (no Panda-token mandate)", () => {
+  // Fresh / never-onboarded → show the wizard.
+  assert.equal(shouldOnboard(null), true);
+  assert.equal(shouldOnboard({}), true);
+  assert.equal(shouldOnboard({ hasOnboarded: false }), true);
+  // Onboarded with their own Claude Code (no Panda token) → into the app.
+  // This is the key change: a local-only user is no longer forced back.
+  assert.equal(shouldOnboard({ hasOnboarded: true }), false);
+  assert.equal(
+    shouldOnboard({ hasOnboarded: true, usePandaCloud: false }),
+    false,
+  );
+  // Onboarded Panda user → into the app.
+  assert.equal(
+    shouldOnboard({ hasOnboarded: true, pandaToken: "ccr-x" }),
+    false,
+  );
+});
+
+test("describeClaudeLoginProgress labels each stage", () => {
+  assert.equal(describeClaudeLoginProgress({ stage: "starting" }), "Starting sign-in…");
+  assert.equal(
+    describeClaudeLoginProgress({ stage: "awaiting_browser", url: "https://x" }),
+    "Waiting for you to approve in your browser…",
+  );
+  assert.equal(describeClaudeLoginProgress({ stage: "verifying" }), "Finishing sign-in…");
+  assert.equal(describeClaudeLoginProgress({ stage: "done" }), "Signed in");
+  assert.equal(describeClaudeLoginProgress({ stage: "error", message: "nope" }), "nope");
+  assert.equal(describeClaudeLoginProgress(undefined), "Working…");
+});
 
 test("evaluateWelcomeState gates 'use own' on CLI present AND authenticated", () => {
   const ready = evaluateWelcomeState({

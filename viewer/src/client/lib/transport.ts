@@ -120,10 +120,32 @@ export interface RequestPlanChangesRequest {
   feedback: string;
 }
 
+// A rehydrated assistant turn carries structured `blocks` so a reloaded turn
+// rebuilds the same inline trace (reasoning + tool groups + per-segment timers)
+// the live stream produced. Absent/empty for user turns and text-only turns.
+export type ChatHistoryBlock =
+  | { kind: "text"; text: string }
+  | { kind: "thinking"; text: string; at: number }
+  | {
+      kind: "tool_use";
+      tool: string;
+      toolUseId: string;
+      input: unknown;
+      status: "ok" | "error";
+      resultSummary?: string;
+      at: number;
+      endedAt: number;
+    };
+
 export interface ChatSessionState {
   sessionId: string;
   turnInProgress: boolean;
-  history: Array<{ role: "user" | "assistant"; content: string; at: number }>;
+  history: Array<{
+    role: "user" | "assistant";
+    content: string;
+    at: number;
+    blocks?: ChatHistoryBlock[];
+  }>;
 }
 
 export type TurnPhase = "plan" | "implement";

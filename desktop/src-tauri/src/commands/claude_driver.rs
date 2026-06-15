@@ -1188,10 +1188,16 @@ fn from_user(o: &Value, turn_id: &str, state: &mut StreamState) -> Vec<ChatEvent
             .get("tool_use_id")
             .and_then(Value::as_str)
             .unwrap_or("");
-        let tool_name = state
-            .pending_tools
-            .remove(tu_id)
-            .unwrap_or_default();
+        // Pair the result back to its start by id. A miss means this result
+        // belongs to a tool whose `ToolUseStart` was deliberately suppressed —
+        // the intercepted built-ins `AskUserQuestion` / `ExitPlanMode`, which
+        // become a questions fence / PlanProposed instead of a tool chip. Their
+        // (often error) results must be dropped: with no matching start, the
+        // chat reducer would otherwise fabricate a phantom, unnamed "Working"
+        // error row and make the app look like it's malfunctioning.
+        let Some(tool_name) = state.pending_tools.remove(tu_id) else {
+            continue;
+        };
         let is_error = block
             .get("is_error")
             .and_then(Value::as_bool)
@@ -1229,8 +1235,10 @@ fn tool_result_text(content: Option<&Value>) -> String {
 
 /// Short human summary of a tool's output for the trace timeline — a line
 /// count ("3 lines"). `None` when the result is empty or non-text, so the UI
-/// simply omits it rather than showing "0 lines".
-fn summarize_tool_result(content: Option<&Value>) -> Option<String> {
+/// simply omits it rather than showing "0 lines". Shared with the session
+/// rehydrator (`chat::parse_session_history`) so live and reloaded traces read
+/// the same.
+pub(crate) fn summarize_tool_result(content: Option<&Value>) -> Option<String> {
     let text = tool_result_text(content);
     let trimmed = text.trim_end();
     if trimmed.is_empty() {
@@ -3111,6 +3119,22 @@ mod tests {
         let evs = parse_stream_line(asst, "T1", &mut state);
         assert!(evs.is_empty());
         assert!(!state.questions_asked);
+    }
+
+    #[test]
+    fn orphan_tool_result_for_intercepted_builtin_emits_no_tool_use_end() {
+        // AskUserQuestion / ExitPlanMode are intercepted in `from_assistant`
+        // and deliberately never registered as pending tools (no ToolUseStart).
+        // When the model retries a malformed AskUserQuestion, the CLI sends an
+        // error `tool_result` for a tool_use_id the driver never started. That
+        // orphan end must be dropped — otherwise the chat reducer fabricates a
+        // phantom, unnamed ("Working") error row, making the app look broken.
+        let mut state = StreamState::default();
+        let asst = r##"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_q","name":"AskUserQuestion","input":{"questions":[]}}]}}"##;
+        let _ = parse_stream_line(asst, "T1", &mut state);
+        let user = r##"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_q","is_error":true,"content":[{"type":"text","text":"need at least one question\nretry"}]}]}}"##;
+        let end = parse_stream_line(user, "T1", &mut state);
+        assert!(end.is_empty(), "orphan tool_result must not emit ToolUseEnd, got {end:?}");
     }
 
     #[test]

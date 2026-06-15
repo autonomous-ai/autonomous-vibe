@@ -27,6 +27,46 @@ function applyEvents(state, events) {
   return cursor;
 }
 
+test("hydrate_session rebuilds an assistant turn's blocks and per-block timings", () => {
+  const session = {
+    history: [
+      { role: "user", content: "make a box", at: 1000 },
+      {
+        role: "assistant",
+        content: "Let me check.\n\nDone.",
+        at: 1100,
+        blocks: [
+          { kind: "text", text: "Let me check." },
+          {
+            kind: "tool_use",
+            tool: "Read",
+            toolUseId: "u1",
+            input: { file_path: "a.py" },
+            status: "ok",
+            resultSummary: "3 lines",
+            at: 1100,
+            endedAt: 1400,
+          },
+          { kind: "text", text: "Done." },
+        ],
+      },
+    ],
+  };
+  const state = chatReducer(INITIAL_CHAT_STATE, { type: "hydrate_session", session }, FIXED_NOW);
+  const asst = state.history[1];
+  assert.equal(asst.role, "assistant");
+  assert.equal(asst.status, "complete");
+  // Structured blocks are preserved (they drive segment/duration rendering).
+  assert.equal(asst.blocks.length, 3);
+  assert.equal(asst.blocks[1].kind, "tool_use");
+  assert.equal(asst.blocks[1].status, "ok");
+  // startedAt/endedAt come from the block timings.
+  assert.equal(asst.startedAt, 1100);
+  assert.equal(asst.endedAt, 1400);
+  // A user turn (no blocks) falls back to one text block from `content`.
+  assert.deepEqual(state.history[0].blocks, [{ kind: "text", text: "make a box" }]);
+});
+
 test("set_project clears history but preserves pendingTokens", () => {
   const state = {
     ...INITIAL_CHAT_STATE,
@@ -345,6 +385,18 @@ test("tool_use_end without a running start is still recorded for observability",
   assert.equal(blocks.length, 1);
   assert.equal(blocks[0].kind, "tool_use");
   assert.equal(blocks[0].status, "error");
+});
+
+test("a nameless orphan tool_use_end is dropped, not shown as a phantom row", () => {
+  // The driver suppresses ToolUseStart for intercepted built-ins
+  // (AskUserQuestion / ExitPlanMode); should a nameless end still slip through,
+  // it must not fabricate an unnamed "Working" error chip in the thread.
+  const events = [
+    { kind: "turn_start", turnId: "t-4b" },
+    { kind: "tool_use_end", turnId: "t-4b", tool: "", ok: false, resultSummary: "2 lines" },
+  ];
+  const state = applyEvents(INITIAL_CHAT_STATE, events);
+  assert.equal(state.history[0].blocks.length, 0, "no phantom block for a nameless orphan end");
 });
 
 test("interleaved same-name tools resolve by tool_use_id, not by name/recency", () => {

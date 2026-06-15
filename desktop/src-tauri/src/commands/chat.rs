@@ -7,7 +7,7 @@ use crate::commands::claude_driver;
 use crate::commands::claude_driver::TurnPhase;
 use crate::ipc::types::{
     ApprovePlanRequest, ChatEvent, ChatEventEnvelope, ChatHistoryEntry, ChatRole, ChatSessionState,
-    ImageAttachment, PlanChangesRequest, StartTurnRequest, StartTurnResponse,
+    HistoryBlock, ImageAttachment, PlanChangesRequest, StartTurnRequest, StartTurnResponse,
 };
 use crate::ipc::{IpcError, IpcResult};
 use crate::paths;
@@ -410,12 +410,45 @@ pub async fn chat_session_state(
 
 /// Parse a Claude Code session JSONL transcript into the chat history the
 /// sidebar rehydrates from. Emits one [`ChatHistoryEntry`] per user prompt and
-/// per assistant message that carries visible text; `thinking`/`tool_use`
-/// blocks, tool-result user turns, `isMeta` system injections, and the
-/// synthetic approve-plan prompt are all dropped. Pure so it's unit-testable
-/// without the real `~/.claude/projects` path.
+/// one *grouped* assistant turn per response — all the assistant messages and
+/// tool-result turns between two user prompts fold into a single entry whose
+/// `blocks` carry the reasoning (thinking + narration) and tool calls (with
+/// `tool_result`-resolved status/summary and start/end timings). This lets a
+/// reloaded turn rebuild the same inline trace (segments, tool groups,
+/// per-segment counters) the live stream produced. `isMeta` system injections,
+/// the synthetic approve-plan prompt, and the intercepted `ExitPlanMode` /
+/// `AskUserQuestion` tool calls are dropped (the latter aren't tool chips live
+/// either). Pure so it's unit-testable without the real `~/.claude/projects`.
 fn parse_session_history(contents: &str) -> Vec<ChatHistoryEntry> {
-    let mut history = Vec::new();
+    let mut history: Vec<ChatHistoryEntry> = Vec::new();
+    // The in-progress assistant turn: a response spans several assistant
+    // messages + tool-result user turns until the next real user prompt.
+    let mut blocks: Vec<HistoryBlock> = Vec::new();
+    let mut text_parts: Vec<String> = Vec::new();
+    let mut turn_at: i64 = 0;
+    // tool_use_id -> index into `blocks`, to resolve a later tool_result.
+    let mut pending: HashMap<String, usize> = HashMap::new();
+
+    fn flush(
+        history: &mut Vec<ChatHistoryEntry>,
+        blocks: &mut Vec<HistoryBlock>,
+        text_parts: &mut Vec<String>,
+        turn_at: &mut i64,
+        pending: &mut HashMap<String, usize>,
+    ) {
+        if !blocks.is_empty() {
+            history.push(ChatHistoryEntry {
+                role: ChatRole::Assistant,
+                content: text_parts.join("\n\n"),
+                at: *turn_at,
+                blocks: std::mem::take(blocks),
+            });
+        }
+        text_parts.clear();
+        *turn_at = 0;
+        pending.clear();
+    }
+
     for line in contents.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -424,7 +457,6 @@ fn parse_session_history(contents: &str) -> Vec<ChatHistoryEntry> {
         let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        // Skip Claude Code's injected meta turns (system reminders, etc.).
         if obj.get("isMeta").and_then(Value::as_bool) == Some(true) {
             continue;
         }
@@ -433,25 +465,137 @@ fn parse_session_history(contents: &str) -> Vec<ChatHistoryEntry> {
             Some("assistant") => ChatRole::Assistant,
             _ => continue,
         };
-        let mut text = obj
+        let ts = obj
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+            .map(|dt| dt.timestamp_millis())
+            .unwrap_or(0);
+        let content = obj
             .get("message")
             .and_then(Value::as_object)
-            .map(|message| extract_visible_text(message.get("content")))
-            .unwrap_or_default();
-        // Strip the machine-readable notes the build appends to a user message
-        // (image attachments, model-revert) — everything from the earliest
-        // marker on — so the rehydrated bubble shows only what the user typed.
-        if role == ChatRole::User {
-            if let Some(idx) = [
-                text.find(ATTACHMENT_NOTE_MARKER),
-                text.find(REVERT_NOTE_MARKER),
-            ]
-            .into_iter()
-            .flatten()
-            .min()
-            {
-                text.truncate(idx);
+            .and_then(|m| m.get("content"));
+
+        if role == ChatRole::Assistant {
+            if turn_at == 0 {
+                turn_at = ts;
             }
+            if let Some(Value::Array(items)) = content {
+                for block in items {
+                    match block.get("type").and_then(Value::as_str).unwrap_or("") {
+                        "thinking" => {
+                            if let Some(t) = block.get("thinking").and_then(Value::as_str) {
+                                if !t.is_empty() {
+                                    blocks.push(HistoryBlock::Thinking {
+                                        text: t.to_string(),
+                                        at: ts,
+                                    });
+                                }
+                            }
+                        }
+                        "text" => {
+                            if let Some(t) = block.get("text").and_then(Value::as_str) {
+                                if !t.is_empty() {
+                                    text_parts.push(t.to_string());
+                                    blocks.push(HistoryBlock::Text { text: t.to_string() });
+                                }
+                            }
+                        }
+                        "tool_use" => {
+                            let name = block
+                                .get("name")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string();
+                            // Not tool chips live — they become a plan / question card.
+                            if name == "ExitPlanMode" || name == "AskUserQuestion" {
+                                continue;
+                            }
+                            let id = block
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string();
+                            let input = block
+                                .get("input")
+                                .cloned()
+                                .unwrap_or_else(|| Value::Object(Default::default()));
+                            if !id.is_empty() {
+                                pending.insert(id.clone(), blocks.len());
+                            }
+                            blocks.push(HistoryBlock::ToolUse {
+                                tool: name,
+                                tool_use_id: id,
+                                input,
+                                // Resolved by the matching tool_result; defaults to ok
+                                // for the rare result-less tool in a completed turn.
+                                status: "ok".to_string(),
+                                result_summary: None,
+                                at: ts,
+                                ended_at: ts,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            continue;
+        }
+
+        // A user turn carrying tool_result blocks isn't a prompt — it resolves
+        // the current assistant turn's pending tools and continues it.
+        let is_tool_result = matches!(
+            content,
+            Some(Value::Array(items))
+                if items.iter().any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+        );
+        if is_tool_result {
+            if let Some(Value::Array(items)) = content {
+                for b in items {
+                    if b.get("type").and_then(Value::as_str) != Some("tool_result") {
+                        continue;
+                    }
+                    let id = b.get("tool_use_id").and_then(Value::as_str).unwrap_or("");
+                    let Some(&idx) = pending.get(id) else { continue };
+                    let is_error = b.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+                    let summary = claude_driver::summarize_tool_result(b.get("content"));
+                    if let Some(HistoryBlock::ToolUse {
+                        status,
+                        ended_at,
+                        result_summary,
+                        ..
+                    }) = blocks.get_mut(idx)
+                    {
+                        *status = if is_error { "error" } else { "ok" }.to_string();
+                        *ended_at = ts;
+                        *result_summary = summary;
+                    }
+                }
+            }
+            continue;
+        }
+
+        // A real user prompt closes the previous assistant turn, then lands.
+        flush(
+            &mut history,
+            &mut blocks,
+            &mut text_parts,
+            &mut turn_at,
+            &mut pending,
+        );
+        let mut text = extract_visible_text(content);
+        // Strip the machine-readable notes the build appends to a user message
+        // (image attachments, model-revert) so the bubble shows only what the
+        // user typed.
+        if let Some(idx) = [
+            text.find(ATTACHMENT_NOTE_MARKER),
+            text.find(REVERT_NOTE_MARKER),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        {
+            text.truncate(idx);
         }
         let trimmed = text.trim();
         if trimmed.is_empty() {
@@ -459,21 +603,23 @@ fn parse_session_history(contents: &str) -> Vec<ChatHistoryEntry> {
         }
         // Drop the synthetic "implement the approved plan" prompt the build
         // phase injects — it isn't something the user typed.
-        if role == ChatRole::User && trimmed.starts_with(APPROVE_PLAN_PREAMBLE) {
+        if trimmed.starts_with(APPROVE_PLAN_PREAMBLE) {
             continue;
         }
-        let at = obj
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .and_then(|ts| DateTime::parse_from_rfc3339(ts).ok())
-            .map(|dt| dt.timestamp_millis())
-            .unwrap_or(0);
         history.push(ChatHistoryEntry {
-            role,
+            role: ChatRole::User,
             content: trimmed.to_string(),
-            at,
+            at: ts,
+            blocks: Vec::new(),
         });
     }
+    flush(
+        &mut history,
+        &mut blocks,
+        &mut text_parts,
+        &mut turn_at,
+        &mut pending,
+    );
     history
 }
 
@@ -637,7 +783,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_session_history_skips_meta_tool_and_synthetic_lines() {
+    fn parse_session_history_drops_meta_and_synthetic_but_keeps_tool_calls() {
+        // isMeta system turns, the synthetic approve-plan prompt, and an orphan
+        // tool_result (no matching tool_use) are dropped; a real tool call still
+        // rehydrates as a tool block.
         let jsonl = concat!(
             r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"<system-reminder>noise</system-reminder>"},"timestamp":"2026-06-03T05:00:00.000Z"}"#,
             "\n",
@@ -645,13 +794,74 @@ mod tests {
             "\n",
             r#"{"type":"user","message":{"role":"user","content":"The plan below is approved. Implement it now, generating all parts and STL/STEP artifacts as described.\n\nBuild a box."},"timestamp":"2026-06-03T05:00:02.000Z"}"#,
             "\n",
-            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"cadcode","input":{}}]},"timestamp":"2026-06-03T05:00:03.000Z"}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"u1","name":"cadcode","input":{}}]},"timestamp":"2026-06-03T05:00:03.000Z"}"#,
             "\n",
         );
         let history = parse_session_history(jsonl);
+        assert_eq!(history.len(), 1, "got {history:?}");
+        assert_eq!(history[0].role, ChatRole::Assistant);
+        assert_eq!(history[0].blocks.len(), 1);
         assert!(
-            history.is_empty(),
-            "meta/tool/synthetic lines must be dropped, got {history:?}"
+            matches!(&history[0].blocks[0], HistoryBlock::ToolUse { tool, .. } if tool == "cadcode"),
+            "got {:?}",
+            history[0].blocks,
+        );
+    }
+
+    #[test]
+    fn parse_session_history_rebuilds_grouped_assistant_trace_with_tool_timings() {
+        // Several assistant messages + tool-result turns between two prompts fold
+        // into ONE assistant entry; tool_results resolve status/summary/timings.
+        let jsonl = concat!(
+            r#"{"type":"user","message":{"role":"user","content":"make a box"},"timestamp":"2026-06-03T05:00:00.000Z"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Let me check."},{"type":"tool_use","id":"u1","name":"Read","input":{"file_path":"a.py"}}]},"timestamp":"2026-06-03T05:00:01.000Z"}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"u1","is_error":false,"content":[{"type":"text","text":"x\ny\nz"}]}]},"timestamp":"2026-06-03T05:00:04.000Z"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Now writing."},{"type":"tool_use","id":"u2","name":"Write","input":{}}]},"timestamp":"2026-06-03T05:00:05.000Z"}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"u2","is_error":true,"content":"boom"}]},"timestamp":"2026-06-03T05:00:06.000Z"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]},"timestamp":"2026-06-03T05:00:07.000Z"}"#,
+            "\n",
+        );
+        let history = parse_session_history(jsonl);
+        assert_eq!(history.len(), 2, "user + one grouped assistant turn, got {history:?}");
+        assert_eq!(history[0].role, ChatRole::User);
+        let asst = &history[1];
+        assert_eq!(asst.role, ChatRole::Assistant);
+        assert_eq!(asst.content, "Let me check.\n\nNow writing.\n\nDone.");
+        let kinds: Vec<&str> = asst
+            .blocks
+            .iter()
+            .map(|b| match b {
+                HistoryBlock::Text { .. } => "text",
+                HistoryBlock::Thinking { .. } => "thinking",
+                HistoryBlock::ToolUse { .. } => "tool_use",
+            })
+            .collect();
+        assert_eq!(kinds, ["text", "tool_use", "text", "tool_use", "text"]);
+        match &asst.blocks[1] {
+            HistoryBlock::ToolUse {
+                tool,
+                status,
+                result_summary,
+                at,
+                ended_at,
+                ..
+            } => {
+                assert_eq!(tool, "Read");
+                assert_eq!(status, "ok");
+                assert_eq!(result_summary.as_deref(), Some("3 lines"));
+                assert!(ended_at > at, "tool end ({ended_at}) after start ({at})");
+            }
+            other => panic!("expected Read ToolUse, got {other:?}"),
+        }
+        assert!(
+            matches!(&asst.blocks[3], HistoryBlock::ToolUse { tool, status, .. } if tool == "Write" && status == "error"),
+            "Write must resolve to error, got {:?}",
+            asst.blocks[3],
         );
     }
 

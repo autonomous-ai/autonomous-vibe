@@ -2,6 +2,16 @@
 // the model is doing without reading raw tool names. Pure functions — unit
 // tested without React.
 
+// Human duration: whole seconds under a minute, "Nm Ns" above. Floors so a
+// fresh turn reads "0s" rather than rounding up mid-first-second.
+export function formatDuration(ms) {
+  const total = Math.floor(ms / 1000);
+  if (total < 60) return `${total}s`;
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
 function titleize(name) {
   const s = String(name || "").trim();
   if (!s) return "Working";
@@ -117,4 +127,42 @@ export function phaseLabel(phase) {
   if (phase === "plan") return "Planning";
   if (phase === "implement") return "Building";
   return "";
+}
+
+/**
+ * Roll a turn's tool-activity statuses into one summary status for the Activity
+ * disclosure header glyph. A live step outranks everything (the group still
+ * reads as working); otherwise a failure outranks a cancellation, which
+ * outranks all-clear. Empty/missing → "ok" (nothing to flag).
+ *
+ * @param {{status?: string}[]|undefined} activity
+ * @returns {"running"|"error"|"cancelled"|"ok"}
+ */
+export function aggregateActivityStatus(activity) {
+  const list = Array.isArray(activity) ? activity : [];
+  let seenError = false;
+  let seenCancelled = false;
+  for (const block of list) {
+    if (block?.status === "running") return "running";
+    if (block?.status === "error") seenError = true;
+    else if (block?.status === "cancelled") seenCancelled = true;
+  }
+  if (seenError) return "error";
+  if (seenCancelled) return "cancelled";
+  return "ok";
+}
+
+/**
+ * Whether a segment's Activity disclosure should default to open: the active
+ * (live) group expands so progress is watchable, and any finished group with a
+ * failed tool expands so the error is never hidden behind a collapsed summary.
+ * A cancelled tool is not an error and collapses like a clean group.
+ *
+ * @param {{status?: string}[]|undefined} activity this segment's tool blocks
+ * @param {boolean} active whether this is the turn's live/active group
+ * @returns {boolean}
+ */
+export function activityDefaultsOpen(activity, active) {
+  if (active) return true;
+  return (Array.isArray(activity) ? activity : []).some((b) => b?.status === "error");
 }

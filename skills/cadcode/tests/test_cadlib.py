@@ -237,6 +237,34 @@ def test_mating_fits_derive_both_halves_from_one_nominal():
         peg_for(0.1, "free")  # clearance larger than the hole
 
 
+def test_print_in_place_gap_is_open_on_every_face_and_larger_in_z():
+    """Parts printed together must leave an OPEN gap on every face or they fuse.
+    The helper gives looser-than-assembled per-face gaps, a vertical gap STRICTLY
+    larger than the horizontal one (the gap ceiling sags and bonds), a bottom
+    chamfer for elephant's foot, and an ooze bump for PETG."""
+    from cadlib.fits import PIP_FIT_TABLE, print_in_place_gap
+
+    g = print_in_place_gap()  # default: sliding, PLA, 0.2 layer
+    assert g["xy"] == pytest.approx(0.30)
+    # Z MUST exceed XY — the core print-in-place rule (bridge sag + elephant foot).
+    assert g["z"] > g["xy"]
+    assert g["z"] == pytest.approx(0.30 + 0.2)
+    assert g["bottom_chamfer"] > 0
+    # Print-in-place fits are looser than the tightest assembled fit, and ordered.
+    assert PIP_FIT_TABLE["tight"] < PIP_FIT_TABLE["sliding"] < PIP_FIT_TABLE["loose"]
+    # Ooze-prone filaments get a little more XY gap.
+    assert print_in_place_gap(material="PETG")["xy"] > print_in_place_gap()["xy"]
+    # The Z > XY invariant holds across every fit class.
+    for fit in PIP_FIT_TABLE:
+        gg = print_in_place_gap(fit)
+        assert gg["z"] > gg["xy"], fit
+    # Bad inputs point at the spec.
+    with pytest.raises(ValueError):
+        print_in_place_gap("snug")  # an assembled-fit name, not a PiP class
+    with pytest.raises(ValueError):
+        print_in_place_gap(layer_height=0)
+
+
 def test_solve_fourbar_closes_the_loop():
     """solve_fourbar returns the one joint both links reach: |C-B| == coupler
     and |C-D| == rocker. The two branches are distinct elbows, and link lengths

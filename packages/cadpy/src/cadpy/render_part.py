@@ -8,7 +8,8 @@ misses: a strut poking through a plate, a part floating disconnected, wrong
 proportions.
 
 Two primitives:
-- ``render_stl_to_png`` renders one STL from the default exterior viewpoints.
+- ``render_stl_to_png`` renders one STL from the default exterior viewpoints
+  (a 3/4 isometric plus all six axis-aligned faces), laid out as a grid.
 - ``render_stl_section_to_png`` cuts the mesh with an axis-aligned plane and
   renders the capped half so *interior* engagement reads — a peg seated in a
   socket, a tooth sitting on solid disc, a lip inside its groove. Exterior views
@@ -22,9 +23,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# Default viewpoints: a 3/4 isometric (reveals protrusions and depth) and a
-# top-down (reveals footprint / floating features beyond the body outline).
-DEFAULT_VIEWS = (("iso", 24.0, -58.0), ("top", 89.0, -90.0))
+# Default viewpoints: a 3/4 isometric (reveals protrusions and depth) plus the
+# six axis-aligned faces (top/bottom/front/back/left/right) so a part is checked
+# from every direction — a defect that hides behind the body on one view (a spike
+# under the floor, a feature off the back face) shows on another. Laid out as a
+# grid by ``_render_tris``.
+DEFAULT_VIEWS = (
+    ("iso", 24.0, -58.0),
+    ("top", 89.0, -90.0),
+    ("bottom", -89.0, -90.0),
+    ("front", 0.0, -90.0),
+    ("back", 0.0, 90.0),
+    ("right", 0.0, 0.0),
+    ("left", 0.0, 180.0),
+)
 
 # Cut-plane normals and the view that looks roughly down each normal so the
 # exposed cross-section face dominates the frame (a small elev tilt keeps depth
@@ -81,9 +93,13 @@ def _render_tris(tris, png_path, *, views, size: int):
     half = (float((hi - lo).max()) or 1.0) * 0.55
 
     n = len(views)
-    fig = plt.figure(figsize=(size / 100.0 * n, size / 100.0), dpi=100)
+    # Lay the views out in a near-square grid rather than one wide strip, so a
+    # 7-view montage stays readable instead of becoming an ultra-wide band.
+    cols = int(np.ceil(np.sqrt(n)))
+    rows = int(np.ceil(n / cols))
+    fig = plt.figure(figsize=(size / 100.0 * cols, size / 100.0 * rows), dpi=100)
     for i, (label, elev, azim) in enumerate(views):
-        ax = fig.add_subplot(1, n, i + 1, projection="3d")
+        ax = fig.add_subplot(rows, cols, i + 1, projection="3d")
         coll = Poly3DCollection(
             tris,
             facecolors=facecolors,

@@ -266,6 +266,7 @@ PATTERN_NAMES = [
     "four-bar-linkage",
     "unified-radius",
     "surface-continuity",
+    "print-in-place",
 ]
 
 
@@ -286,6 +287,7 @@ HELPER_BACKED_PATTERNS = {
     "four-bar-linkage",
     "unified-radius",
     "surface-continuity",
+    "print-in-place",
 }
 # Patterns with no helper: the doc IS the deliverable, so it carries a real
 # CadQuery template. `fillet-stress-relief` is the lone knowledge-only doc — it

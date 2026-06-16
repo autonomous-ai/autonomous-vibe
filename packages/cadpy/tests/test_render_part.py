@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from cadpy.render_part import render_stl_section_to_png, render_stl_to_png
+from cadpy.render_part import DEFAULT_VIEWS, render_stl_section_to_png, render_stl_to_png
 
 
 def _box_stl(tmp: Path) -> Path:
@@ -23,8 +23,24 @@ def _box_stl(tmp: Path) -> Path:
     return stl
 
 
+def test_default_views_cover_all_directions():
+    # The default exterior render must show a part from every direction so a
+    # defect hiding behind the body on one view shows on another: a 3/4 iso plus
+    # all six axis-aligned faces.
+    labels = {v[0] for v in DEFAULT_VIEWS}
+    assert {"iso", "top", "bottom", "front", "back", "left", "right"} <= labels
+
+
 def test_render_exterior_png(tmp_path):
     out = render_stl_to_png(_box_stl(tmp_path), tmp_path / "box.png")
+    assert out is not None
+    assert Path(out).is_file() and Path(out).stat().st_size > 0
+
+
+def test_render_grid_many_views(tmp_path):
+    # The grid layout must handle the full default view set (7 views) without a
+    # row/col indexing error and produce a non-empty montage.
+    out = render_stl_to_png(_box_stl(tmp_path), tmp_path / "grid.png", views=DEFAULT_VIEWS)
     assert out is not None
     assert Path(out).is_file() and Path(out).stat().st_size > 0
 

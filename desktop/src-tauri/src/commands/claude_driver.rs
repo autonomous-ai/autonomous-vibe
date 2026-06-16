@@ -262,12 +262,15 @@ pub const IMPLEMENT_SYSTEM_PROMPT: &str = concat!(
     "load path needs, round a functional/mating edge, or add a fillet that ",
     "creates an unprintable overhang or a sliver.\n\n",
     "Before you finish, do a render-and-self-critique pass: run ",
-    "`python ~/.claude/skills/cadcode/scripts/review <project_dir>` to render the ",
-    "assembled model and every named part, `Read` each PNG, and judge it against ",
-    "the industrial-design rubric (the `.step.json` `sharp_edges` advisory counts ",
+    "`python ~/.claude/skills/cadcode/scripts/review <project_dir>` — it renders ",
+    "the assembled model and every named part from all directions and auto-cuts ",
+    "the assembly's x/y/z cross-sections. `Read` every PNG and judge each part AND ",
+    "the assembly for correctness (nothing floating, poking through, or perched ",
+    "over a void; interfaces actually engage in the sections) and against the ",
+    "industrial-design rubric (the `.step.json` `sharp_edges` advisory counts ",
     "un-softened convex arrises). Refine the source and regenerate for any part ",
-    "that reads cheap, blocky, or unresolved — within printability limits — then ",
-    "stop.",
+    "that reads broken, cheap, blocky, or unresolved — within printability limits ",
+    "— then stop.",
 );
 
 /// Review-phase system prompt. Runs automatically after a build. It covers three
@@ -282,9 +285,10 @@ pub const REVIEW_SYSTEM_PROMPT: &str = concat!(
     "SILENTLY: do not greet, explain, summarize, ask questions, or re-plan. Just ",
     "improve the parts and regenerate.\n\n",
     "Use the `cadcode` skill. Run ",
-    "`python ~/.claude/skills/cadcode/scripts/review <project_dir>` to render the ",
-    "assembled model AND every named part to per-part PNGs, then `Read` each PNG ",
-    "and look.\n\n",
+    "`python ~/.claude/skills/cadcode/scripts/review <project_dir>` — it renders ",
+    "the assembled model AND every named part from ALL directions (a 3/4 iso plus ",
+    "all six axis-aligned faces) and auto-cuts the assembly's x/y/z center ",
+    "cross-sections. `Read` EVERY PNG it produces and look.\n\n",
     "GEOMETRY issues (when this message lists them) are blocking and come first. ",
     "A `disconnected_bodies` warning means a feature is floating — placed outside ",
     "the body's footprint or never fused to it; anchor it (see ",
@@ -301,14 +305,21 @@ pub const REVIEW_SYSTEM_PROMPT: &str = concat!(
     "the features actually meet, sit on solid material, and can drive. Then fix ",
     "the geometry/params AND tighten `validate()`/`functional_checks()` so it ",
     "stays enforced. Regenerate until no `functional` warning remains.\n\n",
-    "AESTHETIC polish (when this message asks for it): judge each render against ",
-    "the premium-product rubric in `references/industrial-design.md` — a unified ",
-    "radius language on visible convex edges, blended transitions, calm primary ",
-    "surfaces, minimized fasteners — using the `cadlib.styling` helpers. Refine ",
-    "ONLY within printability and strength limits: never thin a wall below its ",
-    "minimum, remove load-bearing material, round a functional/mating edge, or ",
-    "add an unprintable overhang or a sliver for looks. If a part already reads ",
-    "clean and premium, change nothing.\n\n",
+    "VISUAL VERIFICATION (when this message asks for it): this pass ALWAYS runs, ",
+    "warnings or not — you MUST look at every part and the assembly and fix what ",
+    "the renders reveal. Check two things. (1) CORRECTNESS the geometry checks ",
+    "miss: a part floating or poking through a plate, a feature perched over a ",
+    "void, a mating interface that doesn't actually engage — for any interface a ",
+    "center cut misses, render a targeted section (`scripts/review <dir> --section ",
+    "<x|y|z>@<offset> --part <name>`) and confirm it seats and can drive. (2) ",
+    "PREMIUM LOOK against the rubric in `references/industrial-design.md` — a ",
+    "unified radius language on visible convex edges, blended transitions, calm ",
+    "primary surfaces, minimized fasteners — using the `cadlib.styling` helpers. ",
+    "Refine ONLY within printability and strength limits: never thin a wall below ",
+    "its minimum, remove load-bearing material, round a functional/mating edge, ",
+    "or add an unprintable overhang or a sliver for looks. Fix, regenerate, and ",
+    "re-render to confirm. If every part and the assembly already read correct ",
+    "and premium, change nothing.\n\n",
     "Edit the Python source (never the STEP/STL), re-run ",
     "`scripts/cad <project_dir>`, and stop as soon as the parts are clean and ",
     "look right.",
@@ -419,6 +430,13 @@ pub fn build_command(cfg: &ClaudeRunConfig) -> Vec<String> {
     }
     cmd.push("--model".into());
     cmd.push(cfg.model.clone().unwrap_or_else(|| "opus".into()));
+    // Run every phase at low reasoning effort. Quality on CAD turns comes from
+    // the plan → build → review-fix iteration loop, not from a high per-turn
+    // effort budget — low effort is faster/cheaper and the review phase
+    // re-renders, inspects, and fixes geometry until warnings clear. Applies to
+    // all phases (plan, build, review). Canonical Claude Code flag for Opus 4.8.
+    cmd.push("--effort".into());
+    cmd.push("low".into());
     cmd.push(cfg.prompt.clone());
     cmd
 }
@@ -1668,14 +1686,18 @@ where
 /// (fix, then verify) without risking a long unattended loop.
 pub const MAX_REVIEW_ROUNDS: usize = 2;
 
-/// Max automatic aesthetic-polish rounds, run after geometry is clean. Polish is
-/// subjective and prone to cosmetic churn, so it is capped tighter than the
-/// geometry loop: a single render-critique-refine pass on top of the model's own
-/// in-build pass. The loop also breaks early the instant a round changes nothing.
-pub const MAX_POLISH_ROUNDS: usize = 1;
+/// Max automatic visual-verification rounds, run after geometry + function are
+/// clean. This is the ALWAYS-ON pass that guarantees steps 3 & 4 of the flow —
+/// look at every part from all directions + the assembly + interior
+/// cross-sections, then fix anything wrong (correctness AND premium look) and
+/// regenerate. Unlike the geometry/functional phases it is NOT gated on a
+/// warning: a zero-warning build still gets one forced render-inspect-fix round.
+/// Capped at 2 (one fix + one verify) and breaks early the instant a round
+/// changes nothing, so a clean part pays a single extra round.
+pub const MAX_VISUAL_ROUNDS: usize = 2;
 
 /// Max automatic functional/assembly-fix rounds, run after geometry is clean and
-/// before aesthetic polish. A `functional` warning means the part can't be
+/// before visual verification. A `functional` warning means the part can't be
 /// assembled/used (e.g. a connector that won't fit its opening), so — like
 /// geometry — the loop runs until they're gone, with a generous cap (the user's
 /// "guarantee it works"). Re-collects each round and stops the instant they clear.
@@ -1791,21 +1813,35 @@ pub fn build_functional_prompt(warnings: &[GeometryWarning]) -> Option<String> {
     Some(body)
 }
 
-/// Build the silent aesthetic-polish prompt. Unlike [`build_review_prompt`] this
-/// is not gated on warnings — it always asks for one critique-and-refine pass.
-/// The optional `soft_edge_hint` (the `sharp_edges` advisories) seeds the model
-/// with concrete candidates so the critique has somewhere to start; an empty
-/// slice yields a purely visual prompt.
-pub fn build_polish_prompt(soft_edge_hint: &[GeometryWarning]) -> String {
+/// Build the silent visual-verification prompt. Unlike [`build_review_prompt`]
+/// this is NOT gated on warnings — it always asks for one render-inspect-fix pass
+/// covering BOTH correctness-by-eye and premium look, so a zero-warning build is
+/// still visually checked from every direction. The optional `soft_edge_hint`
+/// (the `sharp_edges` advisories) seeds the aesthetic critique with concrete
+/// candidates; an empty slice yields a purely visual prompt.
+pub fn build_visual_prompt(soft_edge_hint: &[GeometryWarning]) -> String {
     let mut body = String::from(
-        "The geometry is clean. Do ONE aesthetic polish pass now: render the model \
-         with `scripts/review`, `Read` every PNG, and judge each part against the \
-         premium-product rubric in `references/industrial-design.md` (unified \
-         radius language, blended transitions, calm primary surfaces, minimized \
-         fasteners). Refine the source ONLY within printability and strength \
-         limits — soften un-softened convex edges, clean up primary surfaces — and \
-         leave functional/mating arrises sharp. If a part already reads clean and \
-         premium, change nothing. Then stop.\n",
+        "Geometry and function are clean. Do ONE visual verification pass now. \
+         Run `python ~/.claude/skills/cadcode/scripts/review <project_dir>` — it \
+         renders the assembled model AND every named part from ALL directions (a \
+         3/4 iso plus all six axis-aligned faces) and auto-cuts the assembly's x, \
+         y, and z center cross-sections. `Read` EVERY PNG it produces and look. \
+         Check two things on every part and on the assembly:\n\
+         1. CORRECTNESS the renders expose that the geometry checks miss — a part \
+         floating or poking through a plate, a feature perched over a void, a \
+         mating interface that doesn't actually engage. For any interface a center \
+         cut misses, render a targeted section (`scripts/review <dir> --section \
+         <x|y|z>@<offset> --part <name>`) and confirm it seats and can transmit \
+         its force.\n\
+         2. PREMIUM LOOK against the rubric in `references/industrial-design.md` \
+         (unified radius language, blended transitions, calm primary surfaces, \
+         minimized fasteners).\n\
+         Fix anything wrong in the source and regenerate (`scripts/cad`), then \
+         re-render to confirm. Refine ONLY within printability and strength limits \
+         — never thin a wall below its minimum, remove load-bearing material, \
+         round a functional/mating edge, or add an unprintable overhang or sliver; \
+         leave functional arrises sharp. If every part and the assembly already \
+         read correct and premium, change nothing. Then stop.\n",
     );
     if !soft_edge_hint.is_empty() {
         body.push_str(
@@ -1891,7 +1927,7 @@ fn emit_unresolved_note<F>(
 }
 
 /// Automatic post-build review, run silently inside the build turn. Three phases,
-/// in priority order — geometry → functional → aesthetic:
+/// in priority order — geometry → functional → visual verification:
 ///
 /// 1. **Geometry fix** — while the deterministic check still reports blocking
 ///    geometry warnings, resume in [`TurnPhase::Review`] and render-inspect-fix
@@ -1899,10 +1935,13 @@ fn emit_unresolved_note<F>(
 /// 2. **Functional fix** — while any project-declared `functional` warning
 ///    remains (the part is a valid solid but won't assemble/work), fix it (up to
 ///    [`MAX_FUNCTIONAL_ROUNDS`]). If it can't converge, surface a user-visible
-///    note (the part won't work) + stop — don't polish a non-working part.
-/// 3. **Aesthetic polish** — once geometry + function are clean, up to
-///    [`MAX_POLISH_ROUNDS`] passes against the premium rubric. Gated on a
-///    `sharp_edges` advisory; breaks early the instant a round changes nothing.
+///    note (the part won't work) + stop — don't fix-up a non-working part.
+/// 3. **Visual verification** — once geometry + function are clean, an ALWAYS-ON
+///    render-inspect-fix pass (up to [`MAX_VISUAL_ROUNDS`]) over every part from
+///    all directions + the assembly + interior cross-sections, checking both
+///    correctness-by-eye and premium look. NOT gated on a warning — a
+///    zero-warning build still gets one forced visual pass; `sharp_edges` only
+///    seeds the aesthetic hint. Breaks early the instant a round changes nothing.
 ///
 /// Best-effort throughout — any failure here must never fail the build turn.
 /// Returns whether any artifacts changed.
@@ -2002,21 +2041,21 @@ where
         return changed;
     }
 
-    // Phase 3 — aesthetic polish. Skip entirely when nothing deterministic
-    // suggests it's needed, so an already-clean build pays no extra round. (The
-    // model's own in-build render-critique pass still covers ungated builds.)
-    let mut candidates: Vec<GeometryWarning> = collect_workspace_warnings(workspace_dir)
+    // Phase 3 — visual verification. ALWAYS runs at least one round, even on a
+    // zero-warning build: this is the guaranteed render-inspect-fix pass over
+    // every part (all directions) + the assembly + interior cross-sections that
+    // closes steps 3 & 4 of the flow. `sharp_edges` advisories only seed the
+    // aesthetic hint — they do not gate the phase. The "a round changed nothing"
+    // guard keeps a clean part to a single round.
+    let mut soft_edges: Vec<GeometryWarning> = collect_workspace_warnings(workspace_dir)
         .into_iter()
         .filter(|w| is_advisory(w))
         .collect();
-    if candidates.is_empty() {
-        return changed;
-    }
-    for round in 0..MAX_POLISH_ROUNDS {
+    for round in 0..MAX_VISUAL_ROUNDS {
         if cancel.is_cancelled() {
             return changed;
         }
-        let prompt = build_polish_prompt(&candidates);
+        let prompt = build_visual_prompt(&soft_edges);
         let round_changed = run_review_round(
             claude_path,
             workspace_dir,
@@ -2028,16 +2067,16 @@ where
         )
         .await;
         changed |= round_changed;
-        // Cosmetic-churn guard: a round that changed nothing means the model
-        // judged the parts good enough — stop rather than re-prompting.
+        // Churn guard: a round that changed nothing means the model judged every
+        // part and the assembly correct and premium — stop rather than re-prompting.
         if !round_changed {
             break;
         }
         // Re-read so the NEXT round's hint reflects the freshly refined geometry.
         // Skip on the final round — the result would never be read (avoids a
         // wasted workspace walk).
-        if round + 1 < MAX_POLISH_ROUNDS {
-            candidates = collect_workspace_warnings(workspace_dir)
+        if round + 1 < MAX_VISUAL_ROUNDS {
+            soft_edges = collect_workspace_warnings(workspace_dir)
                 .into_iter()
                 .filter(|w| is_advisory(w))
                 .collect();
@@ -2157,12 +2196,14 @@ mod tests {
         assert_eq!(TurnPhase::Review.system_prompt(), REVIEW_SYSTEM_PROMPT);
         let prompt = TurnPhase::Review.system_prompt();
         assert!(prompt.contains("scripts/review"));
-        // Generalized to cover geometry repair, functional fixes, and polish.
+        // Generalized to cover geometry repair, functional fixes, and the
+        // always-on visual verification pass (correctness-by-eye + premium look).
         assert!(prompt.contains("industrial-design"));
         assert!(prompt.contains("component-integration"));
         assert!(prompt.contains("GEOMETRY"));
         assert!(prompt.contains("FUNCTIONAL"));
-        assert!(prompt.contains("AESTHETIC"));
+        assert!(prompt.contains("VISUAL VERIFICATION"));
+        assert!(prompt.contains("ALL directions"));
     }
 
     #[test]
@@ -2328,10 +2369,14 @@ mod tests {
     }
 
     #[test]
-    fn build_polish_prompt_is_unconditional_and_seeds_hint() {
-        // No hint → still a full polish prompt (not gated on warnings).
-        let bare = build_polish_prompt(&[]);
-        assert!(bare.contains("aesthetic polish"));
+    fn build_visual_prompt_is_unconditional_and_seeds_hint() {
+        // No hint → still a full visual-verification prompt (not gated on
+        // warnings): it must cover both correctness-by-eye and the premium look,
+        // and ask for all-direction renders.
+        let bare = build_visual_prompt(&[]);
+        assert!(bare.contains("visual verification"));
+        assert!(bare.contains("ALL directions"));
+        assert!(bare.contains("CORRECTNESS"));
         assert!(bare.contains("industrial-design"));
         assert!(!bare.contains("candidates"));
 
@@ -2342,7 +2387,7 @@ mod tests {
             detail: "7 un-softened convex arris(es)".into(),
             severity: "info".into(),
         }];
-        let seeded = build_polish_prompt(&hint);
+        let seeded = build_visual_prompt(&hint);
         assert!(seeded.contains("candidates"));
         assert!(seeded.contains("lid"));
         assert!(seeded.contains("sharp_edges"));
@@ -2915,6 +2960,9 @@ mod tests {
         assert!(!cmd.contains(&"--resume".to_string()));
         assert!(cmd.contains(&"--model".to_string()));
         assert!(cmd.contains(&"opus".to_string()));
+        // Effort is pinned low; quality comes from the review-fix loop.
+        let effort = cmd.iter().position(|a| a == "--effort").expect("--effort");
+        assert_eq!(cmd[effort + 1], "low");
     }
 
     // -- stream-json parser --------------------------------------------------

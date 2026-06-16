@@ -13,12 +13,19 @@ Prints a single JSON line on stdout::
     "warnings": [ { "part", "kind", "detail", "severity" }, ... ],
     "assembled_png": "<abs path>",          // may be null if render failed
     "renders": [ { "part", "stl_path", "png_path" }, ... ],
-    "section_png": "<abs path>"             // null unless --section was passed
+    "section_png": "<abs path>",            // first cross-section, back-compat
+    "section_pngs": [ { "axis", "part", "png_path" }, ... ]
   }
 
-Pass ``--section <x|y|z>[@offset]`` (optionally ``--part <name>``) to also render
-an INTERIOR cross-section so mating interiors read — a peg seated in a socket, a
-tooth on solid material, a lip inside its groove — which exterior views hide.
+Each per-part PNG is a grid of the part seen from every direction (a 3/4 iso plus
+all six axis-aligned faces), so a defect that hides behind the body on one view
+shows on another.
+
+By default the assembly is cut through its x, y, and z center planes so INTERIOR
+engagement always reads — a peg seated in a socket, a tooth on solid material, a
+lip inside its groove — which exterior views hide. Pass ``--section
+<x|y|z>[@offset]`` (optionally ``--part <name>``) to target a single plane (e.g.
+to hit an interface the center cuts miss), or ``--no-sections`` to skip them.
 
 The PNGs are QA artifacts (the viewer renders the STL); they land in
 ``<stem>_review/`` next to the model. Rendering never raises — a failed render
@@ -75,6 +82,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--part",
         default=None,
         help="With --section, cut this named part instead of the assembled model.",
+    )
+    p.add_argument(
+        "--no-sections",
+        action="store_true",
+        help=(
+            "Skip the automatic interior cross-sections. By default (when "
+            "--section is not given) the assembly is cut through its x, y, and z "
+            "center planes so interior engagement is always visible."
+        ),
     )
     return p
 
@@ -164,10 +180,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         )
 
-    # Optional interior cross-section (opt-in via --section). Cuts the assembled
-    # model, or a named part with --part, so a reviewer can SEE inside a mating
-    # interface instead of inferring engagement from an exterior view.
-    section_png = None
+    # Interior cross-sections so mating interiors read — a peg seated in a socket,
+    # a tooth on solid material, a lip inside its groove — which exterior views
+    # hide. An explicit `--section` cuts one targeted plane (assembly or --part);
+    # otherwise we auto-cut the assembly through its x, y, and z centers so
+    # interior engagement is ALWAYS visible without the reviewer having to ask.
+    # `--no-sections` opts out for speed.
+    section_pngs: list[dict] = []
     if args.section:
         try:
             axis, offset = _parse_section(args.section)
@@ -192,7 +211,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 axis=axis,
                 offset=offset,
             )
-            section_png = str(out) if out else None
+            section_pngs.append(
+                {"axis": axis, "part": sec_name, "png_path": str(out) if out else None}
+            )
+    elif not args.no_sections and assembled_stl.is_file():
+        for axis in ("x", "y", "z"):
+            out = render_stl_section_to_png(
+                assembled_stl,
+                review_dir / f"{stem}_section_{axis}.png",
+                axis=axis,
+                offset=None,
+            )
+            section_pngs.append(
+                {"axis": axis, "part": stem, "png_path": str(out) if out else None}
+            )
 
     print(
         json.dumps(
@@ -202,7 +234,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "warnings": warnings,
                 "assembled_png": assembled_png,
                 "renders": renders,
-                "section_png": section_png,
+                # First cross-section path, kept for back-compat with callers that
+                # read a single `section_png`; `section_pngs` carries all of them.
+                "section_png": next(
+                    (s["png_path"] for s in section_pngs if s["png_path"]), None
+                ),
+                "section_pngs": section_pngs,
             }
         )
     )

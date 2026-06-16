@@ -717,8 +717,12 @@ const ImplicitCadViewer = forwardRef(function ImplicitCadViewer({
       controls.rotateSpeed = 1;
       controls.panSpeed = 1.35;
       controls.zoomSpeed = DEFAULT_ZOOM_SPEED;
+      // Keep zoom-to-cursor OFF so the orbit pivot stays on the model and the
+      // mouse always rotates the object. With it on, each wheel zoom re-pins
+      // controls.target to screen center and the pivot drifts off the model as
+      // you zoom out, making rotation orbit empty space.
       if ("zoomToCursor" in controls) {
-        controls.zoomToCursor = true;
+        controls.zoomToCursor = false;
       }
       setRenderError("");
       onViewerAlertChange?.(null);

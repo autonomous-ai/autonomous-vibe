@@ -6,6 +6,7 @@ import { CHAT_MIN_WIDTH, maxChatWidth } from "./workbench/chatLayout.js";
 import { bindCadRefSelectionToChatInput } from "./components/chat/cadRefEvents";
 import WindowMenuBar from "./components/WindowMenuBar.jsx";
 import WelcomeScreen from "./components/onboarding/WelcomeScreen.jsx";
+import { shouldOnboard } from "./components/onboarding/onboardingHelpers.js";
 import UpdateNotifier from "./components/update/UpdateNotifier.jsx";
 import faviconUrl from "./assets/favicon.ico";
 import "./styles/globals.css";
@@ -90,15 +91,11 @@ function useOnboardingGate() {
       .app_settings_read()
       .then((settings) => {
         if (cancelled) return;
-        // v1 forces the Panda proxy. A user who finished onboarding but has no
-        // Panda token is a legacy local-Claude user from before the proxy was
-        // mandatory — send them back through Welcome to sign in with Panda.
-        // Developers who picked local via the AuthModeControl backdoor still
-        // carry the token from their required Panda sign-in, so this leaves
-        // them alone.
-        const onboarded = Boolean(settings?.hasOnboarded);
-        const hasPandaToken = Boolean(settings?.pandaToken);
-        setNeedsOnboarding(!onboarded || !hasPandaToken);
+        // Bring-your-own Claude Code is the primary path now, so the gate keys
+        // solely on hasOnboarded — an onboarded local-only user (no Panda token)
+        // is fully valid and is left alone. "At least one working method" is
+        // enforced inside the wizard, not here. See shouldOnboard().
+        setNeedsOnboarding(shouldOnboard(settings));
       })
       .catch(() => {
         if (cancelled) return;

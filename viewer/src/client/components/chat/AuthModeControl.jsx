@@ -19,13 +19,12 @@ import { useChatStore, selectAnyTurnInProgress } from "@/store/chat.js";
 
 /**
  * Compact badge in the chat header showing which Claude access the next turn
- * will use. Panda's hosted proxy is the default and stays front-and-centre; the
- * badge is deliberately understated so it reads as a status pill, not a primary
- * control. Clicking it opens a small chooser that toggles between the Panda
- * proxy and the user's own local Claude Code (`app_set_auth_mode`) — subtle
- * enough that casual users ignore it, but plainly discoverable by anyone who
- * knows Claude Code and goes looking. Choosing Panda with no stored token runs
- * the full browser sign-in (`app_panda_login`) first.
+ * will use. The user's own local Claude Code is the primary path and reads as
+ * the default in the chooser; Panda's hosted proxy is the quiet fallback. The
+ * badge itself is deliberately understated so it reads as a status pill, not a
+ * primary control. Clicking it opens a small chooser that toggles between the
+ * two (`app_set_auth_mode`). Choosing Panda with no stored token runs the full
+ * browser sign-in (`app_panda_login`) first.
  */
 export default function AuthModeControl() {
   const [settings, setSettings] = useState(null);
@@ -189,8 +188,8 @@ export default function AuthModeControl() {
           <DialogHeader>
             <DialogTitle>AI access</DialogTitle>
             <DialogDescription>
-              Panda’s built-in AI needs no setup of your own. Already have Claude
-              Code? You can connect your own instead.
+              Panda uses the Claude Code you already run. No Claude Code? Use
+              Panda’s built-in AI instead — no account of your own.
             </DialogDescription>
           </DialogHeader>
 
@@ -198,36 +197,34 @@ export default function AuthModeControl() {
             <button
               type="button"
               disabled={busy || turnBusy}
-              onClick={() => void switchTo(true)}
-              data-testid="auth-mode-panda"
+              onClick={() => void switchTo(false)}
+              data-testid="auth-mode-local"
               className="flex items-start gap-2 rounded-md border border-border p-3 text-left transition-colors hover:bg-muted/50 disabled:opacity-50"
             >
-              <Cloud className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <Laptop className="mt-0.5 size-4 shrink-0" aria-hidden />
               <span className="flex flex-1 flex-col">
-                <span className="text-sm font-medium">
-                  Panda{!usePanda && !hasToken ? " · sign in" : ""}
-                </span>
+                <span className="text-sm font-medium">Your Claude Code</span>
                 <span className="text-xs text-muted-foreground">
-                  Use Panda’s built-in AI — no subscription of your own
+                  Use the Claude Code you already run
                 </span>
               </span>
-              {usePanda ? <Check className="mt-0.5 size-4" aria-hidden /> : null}
+              {!usePanda ? <Check className="mt-0.5 size-4" aria-hidden /> : null}
             </button>
 
-            {/* Bring-your-own stays a quiet line, not a second card, so Panda
-                reads as the default and only Claude Code users go looking. */}
+            {/* Panda is now the quiet fallback line, not a second card, so the
+                user's own Claude Code reads as the default. */}
             <button
               type="button"
               disabled={busy || turnBusy}
-              onClick={() => void switchTo(false)}
-              data-testid="auth-mode-local"
+              onClick={() => void switchTo(true)}
+              data-testid="auth-mode-panda"
               className="inline-flex items-center gap-1.5 self-start text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline disabled:opacity-50"
             >
-              <Laptop className="size-3.5 shrink-0" aria-hidden />
+              <Cloud className="size-3.5 shrink-0" aria-hidden />
               {usePanda
-                ? "Use your own Claude Code instead"
-                : "Using your own Claude Code"}
-              {!usePanda ? <Check className="size-3.5" aria-hidden /> : null}
+                ? "Using Panda’s built-in AI"
+                : `Use Panda’s built-in AI instead${!hasToken ? " · sign in" : ""}`}
+              {usePanda ? <Check className="size-3.5" aria-hidden /> : null}
             </button>
           </div>
 

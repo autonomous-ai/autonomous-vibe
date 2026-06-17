@@ -16,6 +16,7 @@ import {
 import { useProjectsStore } from "@/store/projects.ts";
 import { buildSendValue, PLACEHOLDER_PROJECT_NAME } from "./chatInputHelpers";
 import { blobToAttachment, imageFilesFromDataTransfer, MAX_ATTACHMENTS } from "./attachments";
+import ModelControl from "./ModelControl";
 
 export { buildSendValue };
 
@@ -306,6 +307,7 @@ function ChatInput({ className }, ref) {
             >
               <Plus className="size-4" aria-hidden />
             </Button>
+            <ModelControl />
             {notice ? (
               <span className="truncate pl-1 text-[11px] text-muted-foreground">{notice}</span>
             ) : null}

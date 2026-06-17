@@ -39,6 +39,11 @@ test("app_settings_read returns defaults", async () => {
   assert.equal(settings.usePandaCloud, false);
 });
 
+test("app_set_model echoes the chosen model in the dev stub", async () => {
+  const settings = await transport.app_set_model("kimi,moonshotai/kimi-k2.6");
+  assert.equal(settings.model, "kimi,moonshotai/kimi-k2.6");
+});
+
 test("catalog_read returns empty entries", async () => {
   const cat = await transport.catalog_read();
   assert.deepEqual(cat.entries, []);

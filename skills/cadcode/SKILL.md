@@ -520,17 +520,17 @@ visual check (a render — a **cross-section** for any interior interface):
   the clearance once). Then walk the assembly sequence: there must be a real
   ordered path to put it together (lid drops past the lip, captive cable passes
   the opening). A model with valid solids but unchecked mating is **not done**.
-- **Look at every part, not just the assembly.** Run
+- **Look at every part from all directions, AND the assembly.** Run
   ``python scripts/review <project_dir>`` — it renders the assembled model and
-  *each named part* to multi-view (iso + top) PNGs under ``<stem>_review/`` and
-  re-lists the warnings. `Read` each PNG. The top view exposes features that sit
-  outside the body footprint; the iso exposes members poking through plates.
-  A whole-assembly preview hides a floating standoff *inside* a tray or a small
-  spike on one part — per-part views do not. For an **interior** interface (a peg
-  in a socket, a tooth on a disc, a lip in a groove) exterior views can't show
-  whether it engages — render a **cross-section**:
-  ``python scripts/review <project_dir> --section <x|y|z>[@offset_mm]`` (add
-  ``--part <name>`` to cut one part), then `Read` it.
+  *each named part* from **all directions** (a 3/4 iso plus all six axis-aligned
+  faces) under ``<stem>_review/``, auto-cuts the assembly's x/y/z center
+  cross-sections, and re-lists the warnings. You **MUST** `Read` **every** PNG it
+  produces and look. A whole-assembly preview hides a floating standoff *inside* a
+  tray or a small spike on one part — the per-part, all-direction views do not.
+  For an interior interface (a peg in a socket, a tooth on a disc, a lip in a
+  groove) the center cuts may miss the plane — render a targeted **cross-section**
+  there: ``python scripts/review <project_dir> --section <x|y|z>[@offset_mm]``
+  (add ``--part <name>`` to cut one part), then `Read` it.
 - **Justify each part.** For every part, state in one line what it is for and
   what it connects to (which mounting interface / mating face). If you cannot
   justify a part, or it does not connect to anything, it is a defect — fix it.
@@ -605,8 +605,10 @@ assumptions you made.
   opening, a coupling that doesn't engage its drive pegs, or a feature perched
   over a void) — fix it. The advisory `sharp_edges` hint (`severity: "info"`) is not
   blocking — soften what you can within printability and leave functional arrises
-  sharp. For assemblies, run `scripts/review` and inspect **every** per-part
-  render — not just the assembled preview.
+  sharp. Always run `scripts/review` and inspect **every** PNG — every part from
+  **all directions**, the assembled product, and the interior cross-sections —
+  not just the assembled preview; fix what the renders reveal and re-render to
+  confirm before declaring done.
 - Ask the user only about *personal preferences* that change geometry, and ask
   the fewest possible. Decide every *engineering* choice silently from the
   references — never ask about wall thickness, clearance, joint/fastener type,
@@ -761,6 +763,7 @@ language to the trigger column and `Read` the corresponding file.
 | cable channel, wire routing, strain relief, USB cable | `references/patterns/cable-channel.md` |
 | floating part, disconnected bodies, standoff on a curved wall, strut into a plate, "part not attached" | `references/patterns/anchor-to-body.md` |
 | four-bar / 4-bar linkage, crank + coupler + rocker, Hoeken / Klann / Jansen walking leg, scissor lift, pantograph, "joints must meet", legs hanging disconnected | `references/patterns/four-bar-linkage.md` |
+| print-in-place, print-in-one, no-assembly mechanism, captive moving part (slider / drawer / hinge / gear / ball joint), "moving parts in a single print", parts came out fused / "stuck together" | `references/patterns/print-in-place.md` |
 
 Each file has the same shape: **Trigger**, **Why (the mechanics)**, **CadQuery
 template**, parameter ranges, and pitfalls. The template is copy-pasteable

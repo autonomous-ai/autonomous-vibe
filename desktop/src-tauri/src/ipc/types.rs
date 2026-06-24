@@ -848,6 +848,12 @@ pub struct AppSettings {
     /// files written before this field existed (`default_true`).
     #[serde(default = "default_true")]
     pub auto_build: bool,
+    /// Claude model passed to `claude --model`, set from the chat composer's
+    /// model switcher (`app_set_model`). One of `MODEL_CHOICES`. `None` (absent
+    /// in legacy settings files) means the built-in default — `build_command`
+    /// resolves `None → "opus"`, so old settings need no migration.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// serde default for fields that should be `true` when absent from an existing
@@ -871,6 +877,7 @@ impl Default for AppSettings {
             has_onboarded: false,
             auto_update: false,
             auto_build: true,
+            model: None,
         }
     }
 }

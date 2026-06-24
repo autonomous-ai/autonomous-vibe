@@ -390,6 +390,10 @@ export interface AppSettings {
   // parts. false = manual plan → Approve & build. Mirrors
   // ipc/types.rs::AppSettings.auto_build.
   autoBuild?: boolean;
+  // Claude model passed to `claude --model`, set from the composer's model
+  // switcher (app_set_model). undefined = built-in default (opus). Mirrors
+  // ipc/types.rs::AppSettings.model.
+  model?: string;
 }
 
 // Auto-update ----------------------------------------------------------------
@@ -778,6 +782,17 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
         hasOnboarded: true,
         autoUpdate: false,
       } as unknown as T;
+    case "app_set_model":
+      // Echo a settings snapshot reflecting the chosen model so the composer's
+      // switcher updates in browser dev.
+      return {
+        defaultFilament: "PLA",
+        slicerBinaryPath: "",
+        usePandaCloud: false,
+        hasOnboarded: true,
+        autoUpdate: false,
+        model: String(args.model ?? ""),
+      } as unknown as T;
     case "app_panda_logout":
       // Echo a signed-out settings snapshot so the badge falls back to local
       // in browser dev.
@@ -1025,6 +1040,8 @@ const transportBase = {
   // PANDA_NOT_SIGNED_IN otherwise). Returns the updated settings.
   app_set_auth_mode: (usePandaCloud: boolean) =>
     invoke<AppSettings>("app_set_auth_mode", { usePandaCloud }),
+  app_set_model: (model: string) =>
+    invoke<AppSettings>("app_set_model", { model }),
   // Sign out of the Panda proxy: clears the stored token and flips
   // use_panda_cloud off so chat falls back to the user's own local Claude.
   // Returns the updated settings.

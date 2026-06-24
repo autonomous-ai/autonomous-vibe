@@ -1146,6 +1146,43 @@ async fn store_panda_session(key: &str, base_url: &str) -> IpcResult<()> {
     app_settings_write(settings).await
 }
 
+/// The Claude models the chat composer's switcher offers. The stored value is
+/// the exact string passed to `claude --model` (the `provider,model` router
+/// forms route through the Panda proxy). `opus` is the default — `AppSettings.model`
+/// of `None` falls back to it in `build_command`. JS mirrors this list in
+/// `ModelControl.jsx`.
+pub const MODEL_CHOICES: [&str; 3] = [
+    "opus",
+    "kimi,moonshotai/kimi-k2.6",
+    "minimax,minimax/minimax-m3",
+];
+
+/// True when `model` is one of the selectable [`MODEL_CHOICES`] (exact match,
+/// no trimming). `app_set_model` gates on this so settings can never hold an
+/// arbitrary `--model` string from a malformed IPC call.
+fn is_allowed_model(model: &str) -> bool {
+    MODEL_CHOICES.contains(&model)
+}
+
+/// Set the Claude model for subsequent chat turns from the composer's switcher.
+/// Persisted in `AppSettings.model`; the driver reads it fresh at each turn
+/// spawn, so a switch takes effect on the next turn. Rejects any value outside
+/// [`MODEL_CHOICES`]. Returns the updated settings so the UI reflects the choice
+/// immediately (matching [`app_set_auth_mode`]).
+#[tauri::command]
+pub async fn app_set_model(model: String) -> IpcResult<AppSettings> {
+    if !is_allowed_model(&model) {
+        return Err(IpcError::new(
+            "INVALID_MODEL",
+            format!("Unknown model: {model}"),
+        ));
+    }
+    let mut settings = load_settings().await.unwrap_or_default();
+    settings.model = Some(model);
+    app_settings_write(settings.clone()).await?;
+    Ok(settings)
+}
+
 /// Switch the active Claude access mode from the chat UI without re-onboarding.
 /// `use_panda_cloud = true` routes chat through Panda's proxy; `false` uses the
 /// user's own local Claude Code auth. Enabling the proxy requires a stored
@@ -2708,5 +2745,18 @@ mod tests {
         assert!(!minor.contains('+'), "pbs tag leaked: {minor}");
         assert_eq!(minor.split('.').count(), 2, "not major.minor: {minor}");
         assert!(minor.split('.').all(|p| p.parse::<u32>().is_ok()), "non-numeric: {minor}");
+    }
+
+    #[test]
+    fn model_choice_validation_accepts_known_rejects_unknown() {
+        // The three selectable models are the only values app_set_model may
+        // persist; anything else (a typo, an arbitrary --model string from a
+        // tampered IPC call) is rejected before it reaches settings.
+        for ok in MODEL_CHOICES {
+            assert!(is_allowed_model(ok), "should accept {ok}");
+        }
+        assert!(!is_allowed_model("gpt-4"));
+        assert!(!is_allowed_model("opus "), "no trim — exact match only");
+        assert!(!is_allowed_model(""));
     }
 }

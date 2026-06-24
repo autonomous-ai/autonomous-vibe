@@ -634,9 +634,17 @@ interface AppSettings {
   hasOnboarded: boolean;        // gates the first-run wizard (added during Track E merge)
   autoUpdate: boolean;          // false (default) = prompt before downloading an update;
                                 //   true = silently download in the background, notify to restart
+  model?: string;               // Claude model passed to `claude --model`, set from the composer's
+                                //   model switcher (app_set_model). undefined = built-in default (opus)
 }
 function app_settings_read(): Promise<AppSettings>;
 function app_settings_write(s: AppSettings): Promise<void>;
+
+// Set the Claude model for subsequent chat turns from the composer's model
+// switcher. Persisted in AppSettings.model; the driver reads it fresh at each
+// turn spawn, so a switch takes effect on the next turn. Rejects any value
+// outside the offered set with "INVALID_MODEL". Returns the updated settings.
+function app_set_model(model: string): Promise<AppSettings>;
 
 // Panda proxy sign-out: clears pandaToken + pandaBaseUrl and flips usePandaCloud
 // off, so the next chat turn falls back to the user's own local Claude Code auth

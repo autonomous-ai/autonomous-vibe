@@ -1423,13 +1423,16 @@ where
     let settings = crate::commands::app::load_settings().await.ok();
     let use_panda_cloud = settings.as_ref().map(|s| s.use_panda_cloud).unwrap_or(false);
     let panda_base_url = settings.as_ref().and_then(|s| s.panda_base_url.clone());
+    // Model selected in the composer's switcher; `None` → `build_command`
+    // defaults to `opus`. Captured before `settings` is consumed below.
+    let model = settings.as_ref().and_then(|s| s.model.clone());
     let panda_token = settings.and_then(|s| s.panda_token);
 
     let cfg = ClaudeRunConfig {
         prompt: user_message.to_string(),
         workspace: workspace_dir.to_path_buf(),
         claude_session_id: Some(session_id.to_string()),
-        model: Some("opus".into()),
+        model,
         use_panda_cloud,
         panda_token,
         panda_base_url,

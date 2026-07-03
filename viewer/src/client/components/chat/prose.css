@@ -7,7 +7,7 @@
 .chat-prose {
   --prose-marker: color-mix(in srgb, currentColor 55%, transparent);
   --prose-check: #2cad7e; /* filled-accent "done" state */
-  font-size: 0.8125rem;
+  font-size: 0.9rem;
   line-height: 1.65;
   overflow-wrap: break-word;
 }
@@ -277,4 +277,22 @@
 .chat-prose .prose-callout[data-callout="warning"] strong,
 .chat-prose .prose-callout[data-callout="caution"] strong {
   color: var(--ui-warning-text);
+}
+
+/* ---- Reasoning lane vs. answer: the contrast ladder -------------------- */
+/* Reasoning and the final answer both render through `.chat-prose`, whose
+ * paragraphs/list-items are `var(--foreground)` — so on their own they read at
+ * the same weight and the turn looks like one flat wall of text. These two
+ * modifiers split them into tiers: reasoning is demoted to the muted "process"
+ * tone, the answer is pinned to full contrast at the top of the ladder. */
+.chat-prose.chat-reasoning-prose p,
+.chat-prose.chat-reasoning-prose li,
+.chat-prose.chat-reasoning-prose strong {
+  color: var(--muted-foreground);
+  opacity: 1;
+}
+
+.chat-prose.chat-answer-prose p,
+.chat-prose.chat-answer-prose li {
+  opacity: 1;
 }

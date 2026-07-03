@@ -16,15 +16,17 @@ function TextBlock({ text, streaming }) {
     return (
       <div
         data-slot="chat-text"
-        className="chat-prose whitespace-pre-wrap text-sm text-foreground/90"
+        className="chat-prose whitespace-pre-wrap text-sm text-foreground"
       >
         {text}
       </div>
     );
   }
+  // `chat-answer-prose` pins the answer to full contrast — the top of the
+  // reasoning→answer hierarchy (reasoning is demoted to muted in TurnReasoning).
   return (
     <div data-slot="chat-text">
-      <Markdown source={text} />
+      <Markdown source={text} className="chat-answer-prose" />
     </div>
   );
 }
@@ -149,6 +151,12 @@ export default memo(function ChatTurn({ turn }) {
   // Before any block has streamed, a running turn still needs a heartbeat so it
   // never looks stuck — a bare "Thinking… Ns" stands in until the first segment.
   const showStartupHeartbeat = running && segments.length === 0;
+  // A hairline rule separates the reasoning/activity process above from the
+  // answer below, so the eye lands on the answer as the primary content.
+  const showAnswerDivider =
+    !isUser &&
+    segments.length > 0 &&
+    bodyBlocks.some((block) => block.kind === "text" || block.kind === "plan");
   return (
     <article
       data-slot="chat-turn"
@@ -220,6 +228,9 @@ export default memo(function ChatTurn({ turn }) {
             <Loader2 className="size-3.5 animate-spin" aria-hidden />
             Thinking… <LiveDuration turn={turn} />
           </span>
+        ) : null}
+        {showAnswerDivider ? (
+          <div data-slot="chat-answer-divider" className="border-t border-border/40" />
         ) : null}
         {bodyBlocks.map((block, index) => {
           switch (block.kind) {

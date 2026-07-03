@@ -140,7 +140,7 @@ const COMPONENTS = {
  */
 export default function Markdown({ source, className }) {
   return (
-    <div data-slot="chat-markdown" className={cn("chat-prose text-sm text-foreground/90", className)}>
+    <div data-slot="chat-markdown" className={cn("chat-prose text-base text-foreground/90", className)}>
       <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={COMPONENTS}>
         {String(source || "")}
       </ReactMarkdown>

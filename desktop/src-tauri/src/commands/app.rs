@@ -1150,9 +1150,10 @@ async fn store_panda_session(key: &str, base_url: &str) -> IpcResult<()> {
 /// the exact string passed to `claude --model` (the `provider,model` router
 /// forms route through the Panda proxy). `opus` is the default — `AppSettings.model`
 /// of `None` falls back to it in `build_command`. JS mirrors this list in
-/// `ModelControl.jsx`.
-pub const MODEL_CHOICES: [&str; 3] = [
+/// `modelChoices.js`.
+pub const MODEL_CHOICES: [&str; 4] = [
     "opus",
+    "sonnet",
     "kimi,moonshotai/kimi-k2.6",
     "minimax,minimax/minimax-m3",
 ];
@@ -2749,7 +2750,7 @@ mod tests {
 
     #[test]
     fn model_choice_validation_accepts_known_rejects_unknown() {
-        // The three selectable models are the only values app_set_model may
+        // The four selectable models are the only values app_set_model may
         // persist; anything else (a typo, an arbitrary --model string from a
         // tampered IPC call) is rejected before it reaches settings.
         for ok in MODEL_CHOICES {

@@ -5,6 +5,7 @@
 // it reads as the default.
 export const MODEL_CHOICES = [
   { value: "opus", label: "Opus" },
+  { value: "sonnet", label: "Sonnet" },
   { value: "kimi,moonshotai/kimi-k2.6", label: "Kimi K2.6" },
   { value: "minimax,minimax/minimax-m3", label: "MiniMax M3" },
 ];

@@ -710,6 +710,21 @@ pub struct ProjectOpenResponse {
     pub workspace_root: String,
 }
 
+/// Result of publishing a project to panda-social (`project_publish`). Returned
+/// both for a fresh import and when the project was already published
+/// (`already_published = true`, the existing design is returned instead of
+/// creating a duplicate).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishResponse {
+    pub design_id: String,
+    pub slug: String,
+    pub title: String,
+    pub status: String,
+    pub project_url: String,
+    pub already_published: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Snapshots (git-tag-style model save states)
 // ---------------------------------------------------------------------------

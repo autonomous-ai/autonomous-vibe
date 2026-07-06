@@ -90,7 +90,13 @@ x509-parser = "0.16"
 # someone else's feature flags. rustls backend matches the rest of the app
 # (no system OpenSSL needed). `json` powers the Bambu cloud REST calls
 # (login / device bind / print-job) in `commands/cloud.rs`.
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "multipart"] }
+
+# Zip a finished project workspace into the single-file upload the panda-social
+# design-import API expects (multipart `file`). Already resolved transitively by
+# Tauri's stack; pinned here as a direct dep for commands/social.rs. `deflate`
+# keeps STEP/STL zips comfortably under the API's ≤50 MB recommendation.
+zip = { version = "4", default-features = false, features = ["deflate"] }
 
 # Bambu cloud printing (commands/cloud.rs).
 # Real CA trust anchors for the *cloud* MQTT broker (us.mqtt.bambulab.com),

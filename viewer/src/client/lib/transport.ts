@@ -329,6 +329,18 @@ export interface CreateProjectRequest {
   name: string;
 }
 
+// Result of publishing a project to panda-social (project_publish). Mirrors the
+// Rust `PublishResponse`. `alreadyPublished` is true when the project had been
+// imported before and the existing design is returned instead of a duplicate.
+export interface PublishResponse {
+  designId: string;
+  slug: string;
+  title: string;
+  status: string;
+  projectUrl: string;
+  alreadyPublished: boolean;
+}
+
 // Snapshots (git-tag-style model save states) --------------------------------
 
 export interface SnapshotSummary {
@@ -1035,6 +1047,8 @@ const transportBase = {
   project_rename: (id: string, name: string) =>
     invoke<ProjectSummary>("project_rename", { id, name }),
   project_delete: (id: string) => invoke<void>("project_delete", { id }),
+  project_publish: (id: string) =>
+    invoke<PublishResponse>("project_publish", { id }),
 
   // snapshots (model save-states) — see desktop/src-tauri/src/commands/snapshot.rs
   snapshot_list: (projectId: string) =>

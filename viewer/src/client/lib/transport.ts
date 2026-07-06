@@ -1049,6 +1049,9 @@ const transportBase = {
   project_delete: (id: string) => invoke<void>("project_delete", { id }),
   project_publish: (id: string) =>
     invoke<PublishResponse>("project_publish", { id }),
+  social_has_token: () => invoke<boolean>("social_has_token"),
+  social_set_token: (token: string) => invoke<void>("social_set_token", { token }),
+  social_clear_token: () => invoke<void>("social_clear_token"),
 
   // snapshots (model save-states) — see desktop/src-tauri/src/commands/snapshot.rs
   snapshot_list: (projectId: string) =>

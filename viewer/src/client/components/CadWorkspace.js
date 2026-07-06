@@ -272,6 +272,7 @@ import {
 import { emitCadRefSelection } from "@/components/chat/cadRefEvents";
 import { basename, pickPrinterForSlice, PRINT_CONFIG_CHANGED_EVENT } from "@/components/chat/actionButtonsHelpers";
 import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
+import PublishTokenDialog from "@/components/project/PublishTokenDialog.jsx";
 import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, selectSliceTargetStl, getChatState, setPendingViewContext, startTurn, useChatStore, selectAwaitingAnswerProjectIds, awaitingNeedsUser } from "@/store/chat";
 import { useAutopilot } from "@/lib/autopilot";
 import { useProjectsStore } from "@/store/projects.ts";
@@ -743,6 +744,8 @@ export default function CadWorkspace({
   const [publishing, setPublishing] = useState(false);
   const [publishStatus, setPublishStatus] = useState("");
   const [publishStatusError, setPublishStatusError] = useState(false);
+  // Opened when a publish reports SOCIAL_TOKEN_REQUIRED (no/expired token).
+  const [publishTokenOpen, setPublishTokenOpen] = useState(false);
   // Terminal slice toast (success or failure), kept separate from the
   // overloaded `screenshotStatus` so failures can be styled as errors.
   const [sliceStatus, setSliceStatus] = useState("");
@@ -6765,8 +6768,13 @@ export default function CadWorkspace({
       );
     } catch (err) {
       console.error("publish failed", err);
-      setPublishStatusError(true);
-      setPublishStatus(describePublishError(err));
+      // No token / expired token → open the token prompt instead of a toast.
+      if (err?.code === "SOCIAL_TOKEN_REQUIRED" || err?.code === "SOCIAL_NO_TOKEN") {
+        setPublishTokenOpen(true);
+      } else {
+        setPublishStatusError(true);
+        setPublishStatus(describePublishError(err));
+      }
     } finally {
       setPublishing(false);
     }
@@ -7802,6 +7810,15 @@ export default function CadWorkspace({
             setPublishStatus("");
             setPublishStatusError(false);
             lastPersistenceFailureKeyRef.current = "";
+          }}
+        />
+
+        <PublishTokenDialog
+          open={publishTokenOpen}
+          onOpenChange={setPublishTokenOpen}
+          onSaved={() => {
+            // Token saved & validated — retry the publish that prompted it.
+            void handlePublish();
           }}
         />
 

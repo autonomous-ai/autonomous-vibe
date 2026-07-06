@@ -31,16 +31,12 @@ const IMPORT_URL: &str = "https://panda-social-api.autonomous.ai/api/v1/designs/
 /// Token-refresh endpoint: `POST {"refresh_token"}` → `{access_token, refresh_token}`.
 const REFRESH_URL: &str = "https://panda-social-api.autonomous.ai/api/v1/auth/refresh";
 
-/// Long-lived (~30-day) **refresh** JWT for the owner account (peterat617). We
-/// exchange it for a short-lived access token at import time via [`REFRESH_URL`],
-/// so the feature keeps working without pasting a new hourly access token. The
-/// backend verifies refresh tokens statelessly (a rotated token is returned but
-/// the old one stays valid until its own `exp`), so a hardcoded refresh token is
-/// durable until it expires. [`configured_refresh_token`] treats the placeholder
-/// sentinel / empty as "feature disabled".
-///
-/// ⚠️ Expires ~2026-08-02. Replace before then (or move to app settings).
-const REFRESH_TOKEN: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOiI2YTMzYTRjMjM3YWFlNWZiODE0MjRkZTUiLCJ0eXAiOiJyZWZyZXNoIiwiZXhwIjoxNzg1NjUzNjM0LCJpYXQiOjE3ODMwNjE2MzR9.iLC6L4CNzCl7E8LNwUVHFYCbUns9JY-NZg5V5RtCKsg";
+/// Optional compiled-in **refresh** JWT fallback. When left as the placeholder
+/// (the default), there is no baked-in token: [`resolve_refresh_token`] returns
+/// `None` unless the user has saved one via [`social_set_token`], which makes the
+/// Publish flow prompt for a token. Set this to a real refresh token only if you
+/// want a shipped default; the user-saved token always takes precedence.
+const REFRESH_TOKEN: &str = "REPLACE_WITH_PANDA_SOCIAL_REFRESH_TOKEN";
 
 /// Publish state for imported designs. `draft` keeps them owner-only; flip to
 /// `public` to land on the feed immediately (the API's own default).
@@ -54,15 +50,142 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// don't create a duplicate design on the next build/edit turn.
 const IMPORT_MARKER_REL: &str = ".panda/social-import.json";
 
-/// Resolve the configured refresh token, or `None` while it's still the
-/// placeholder / empty — the caller treats `None` as "feature disabled".
-fn configured_refresh_token() -> Option<&'static str> {
-    let t = REFRESH_TOKEN.trim();
-    if t.is_empty() || t == "REPLACE_WITH_PANDA_SOCIAL_REFRESH_TOKEN" {
+/// User-provided auth, persisted to `<app-data>/panda-social-auth.json`. Holds
+/// the long-lived refresh token the user pastes via [`social_set_token`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredAuth {
+    refresh_token: String,
+}
+
+/// Path to the persisted auth file.
+fn auth_path() -> std::path::PathBuf {
+    crate::paths::app_data_dir().join("panda-social-auth.json")
+}
+
+/// The refresh token the user saved, if any.
+fn stored_refresh_token() -> Option<String> {
+    let bytes = std::fs::read(auth_path()).ok()?;
+    let auth: StoredAuth = serde_json::from_slice(&bytes).ok()?;
+    let t = auth.refresh_token.trim().to_string();
+    if t.is_empty() {
         None
     } else {
         Some(t)
     }
+}
+
+/// Persist the user's refresh token (overwrites any previous one).
+fn store_refresh_token(refresh: &str) -> std::io::Result<()> {
+    let path = auth_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let auth = StoredAuth {
+        refresh_token: refresh.to_string(),
+    };
+    let bytes = serde_json::to_vec_pretty(&auth)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    std::fs::write(path, bytes)
+}
+
+/// Forget the saved token (sign out / test the prompt path). Absent file is ok.
+fn clear_stored_token() -> std::io::Result<()> {
+    match std::fs::remove_file(auth_path()) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Resolve the effective refresh token: the user-saved one first, else the
+/// compiled-in default (skipped while it's the placeholder / empty). `None`
+/// means "no token — the UI must prompt for one".
+fn resolve_refresh_token() -> Option<String> {
+    if let Some(t) = stored_refresh_token() {
+        return Some(t);
+    }
+    let baked = REFRESH_TOKEN.trim();
+    if baked.is_empty() || baked == "REPLACE_WITH_PANDA_SOCIAL_REFRESH_TOKEN" {
+        None
+    } else {
+        Some(baked.to_string())
+    }
+}
+
+/// Accept either a raw refresh-token JWT or the web app's auth-state JSON blob
+/// (`{"state":{"refreshToken":…}}`) and pull the refresh token out of it.
+fn parse_refresh_token_input(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    // JSON blob — dig out the refresh token from the common shapes.
+    if s.starts_with('{') {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
+            const PATHS: &[&[&str]] = &[
+                &["state", "refreshToken"],
+                &["state", "refresh_token"],
+                &["refreshToken"],
+                &["refresh_token"],
+            ];
+            for path in PATHS {
+                let mut cur = &v;
+                let mut ok = true;
+                for key in *path {
+                    match cur.get(key) {
+                        Some(next) => cur = next,
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if ok {
+                    if let Some(tok) = cur.as_str() {
+                        if is_jwt(tok) {
+                            return Some(tok.to_string());
+                        }
+                    }
+                }
+            }
+            return None;
+        }
+    }
+    // Bare JWT.
+    if is_jwt(s) {
+        Some(s.to_string())
+    } else {
+        None
+    }
+}
+
+/// Loose JWT shape check: three dot-separated segments, `eyJ…` header.
+fn is_jwt(s: &str) -> bool {
+    s.split('.').count() == 3 && s.starts_with("eyJ")
+}
+
+/// Why we couldn't get an access token — the caller turns both into a
+/// `SOCIAL_TOKEN_REQUIRED` error so the UI prompts for a (new) token.
+enum AuthError {
+    /// No token configured at all.
+    Missing,
+    /// A token exists but the refresh endpoint rejected it (expired/invalid).
+    Rejected(String),
+}
+
+/// Resolve a refresh token and trade it for a fresh access token.
+async fn obtain_access_token(client: &reqwest::Client) -> Result<String, AuthError> {
+    let refresh = resolve_refresh_token().ok_or(AuthError::Missing)?;
+    fetch_access_token(client, &refresh)
+        .await
+        .map_err(|e| AuthError::Rejected(e.to_string()))
+}
+
+/// reqwest client with the shared import timeout.
+fn http_client() -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()?)
 }
 
 /// Exchange the refresh token for a fresh, short-lived access token
@@ -137,10 +260,10 @@ pub async fn maybe_import_after_build(workspace: &Path) {
         .unwrap_or_default();
     log_line(&format!("evaluating project {name}"));
 
-    let Some(token) = configured_refresh_token() else {
-        log_line("skip: no refresh token configured (placeholder)");
+    if resolve_refresh_token().is_none() {
+        log_line("skip: no token configured (publish once from the app to sign in)");
         return;
-    };
+    }
     if !has_model(workspace) {
         log_line(&format!("skip {name}: no .step/.stl model at workspace root"));
         return;
@@ -157,8 +280,27 @@ pub async fn maybe_import_after_build(workspace: &Path) {
         return;
     }
 
+    let client = match http_client() {
+        Ok(c) => c,
+        Err(e) => {
+            log_line(&format!("skip {name}: http client build failed: {e:?}"));
+            return;
+        }
+    };
+    let access = match obtain_access_token(&client).await {
+        Ok(a) => a,
+        Err(AuthError::Missing) => {
+            log_line(&format!("skip {name}: no token configured"));
+            return;
+        }
+        Err(AuthError::Rejected(msg)) => {
+            log_line(&format!("skip {name}: token rejected ({msg})"));
+            return;
+        }
+    };
+
     log_line(&format!("importing {name} → {IMPORT_URL} (status={IMPORT_STATUS})"));
-    match import(workspace, token).await {
+    match import(workspace, &access, &client).await {
         Ok(design) => {
             if let Err(e) = write_marker(workspace, &design) {
                 log_line(&format!("{name}: import ok but marker write failed: {e:?}"));
@@ -189,6 +331,48 @@ pub async fn project_publish(id: String) -> IpcResult<PublishResponse> {
     publish_project(&workspace).await
 }
 
+/// IPC: whether a panda-social token is configured (stored or baked-in). The UI
+/// uses this to decide whether the Publish flow will need to prompt first.
+#[tauri::command]
+pub fn social_has_token() -> bool {
+    resolve_refresh_token().is_some()
+}
+
+/// IPC: save the token the user pasted into the prompt. Accepts a bare refresh
+/// JWT or the web app's auth-state JSON, validates it against the refresh
+/// endpoint (so a bad/expired/access-only token is rejected up front), then
+/// persists it for future publishes.
+#[tauri::command]
+pub async fn social_set_token(token: String) -> IpcResult<()> {
+    let refresh = parse_refresh_token_input(&token).ok_or_else(|| {
+        IpcError::new(
+            "SOCIAL_INVALID_TOKEN",
+            "Couldn't find a token in that text — paste your refresh-token JWT or the sign-in JSON",
+        )
+    })?;
+    let client = http_client().map_err(|e| IpcError::new("SOCIAL_INVALID_TOKEN", format!("{e}")))?;
+    // Validate before persisting: a valid refresh token yields an access token.
+    fetch_access_token(&client, &refresh).await.map_err(|e| {
+        IpcError::new(
+            "SOCIAL_INVALID_TOKEN",
+            format!("panda-social rejected that token ({e}) — make sure it's a current refresh token"),
+        )
+    })?;
+    store_refresh_token(&refresh)
+        .map_err(|e| IpcError::new("SOCIAL_STORE_FAILED", format!("could not save token: {e}")))?;
+    log_line("saved a new panda-social token");
+    Ok(())
+}
+
+/// IPC: forget the saved token (sign out). Baked-in default, if any, still applies.
+#[tauri::command]
+pub fn social_clear_token() -> IpcResult<()> {
+    clear_stored_token()
+        .map_err(|e| IpcError::new("SOCIAL_STORE_FAILED", format!("could not clear token: {e}")))?;
+    log_line("cleared the saved panda-social token");
+    Ok(())
+}
+
 /// Publish a project workspace, returning the created (or already-existing)
 /// design. Maps every skip/failure reason to a typed [`IpcError`] the UI can act
 /// on. Idempotent: if a marker already records an import, the existing design is
@@ -199,13 +383,7 @@ pub async fn publish_project(workspace: &Path) -> IpcResult<PublishResponse> {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    let Some(token) = configured_refresh_token() else {
-        return Err(IpcError::new(
-            "SOCIAL_NO_TOKEN",
-            "panda-social refresh token is not configured",
-        ));
-    };
-
+    // Already published → return the existing design without needing a token.
     if let Some(existing) = read_marker(workspace) {
         log_line(&format!("publish {name}: already imported → returning existing"));
         return Ok(PublishResponse {
@@ -230,8 +408,28 @@ pub async fn publish_project(workspace: &Path) -> IpcResult<PublishResponse> {
         ));
     }
 
+    // Obtain an access token; a missing or rejected token becomes
+    // SOCIAL_TOKEN_REQUIRED so the UI prompts the user to (re)enter one.
+    let client = http_client().map_err(|e| IpcError::new("SOCIAL_IMPORT_FAILED", format!("{e}")))?;
+    let access = match obtain_access_token(&client).await {
+        Ok(a) => a,
+        Err(AuthError::Missing) => {
+            return Err(IpcError::new(
+                "SOCIAL_TOKEN_REQUIRED",
+                "Sign in to panda-social — paste your access token to publish",
+            ));
+        }
+        Err(AuthError::Rejected(msg)) => {
+            log_line(&format!("publish {name}: token rejected ({msg})"));
+            return Err(IpcError::new(
+                "SOCIAL_TOKEN_REQUIRED",
+                "Your panda-social session expired — paste a new token to publish",
+            ));
+        }
+    };
+
     log_line(&format!("publish {name}: importing → {IMPORT_URL} (status={IMPORT_STATUS})"));
-    let design = import(workspace, token).await.map_err(|e| {
+    let design = import(workspace, &access, &client).await.map_err(|e| {
         log_line(&format!("publish {name}: FAILED {e:?}"));
         IpcError::new("SOCIAL_IMPORT_FAILED", format!("{e}"))
     })?;
@@ -311,9 +509,14 @@ fn has_cover(workspace: &Path) -> bool {
         })
 }
 
-/// Zip the workspace and POST it to the import API. Returns the created design
-/// on `201`, otherwise an error carrying the status + body for the log.
-async fn import(workspace: &Path, refresh: &str) -> anyhow::Result<ImportedDesign> {
+/// Zip the workspace and POST it to the import API with an already-obtained
+/// access token. Returns the created design on `201`, otherwise an error
+/// carrying the status + body for the log.
+async fn import(
+    workspace: &Path,
+    access: &str,
+    client: &reqwest::Client,
+) -> anyhow::Result<ImportedDesign> {
     let ws = workspace.to_path_buf();
     let zip_bytes = tokio::task::spawn_blocking(move || zip_workspace(&ws)).await??;
 
@@ -328,14 +531,6 @@ async fn import(workspace: &Path, refresh: &str) -> anyhow::Result<ImportedDesig
     let form = reqwest::multipart::Form::new()
         .part("file", part)
         .text("status", IMPORT_STATUS);
-
-    let client = reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        .build()?;
-
-    // Trade the long-lived refresh token for a fresh access token right before
-    // the upload, so a stale/expired access token can never 401 the import.
-    let access = fetch_access_token(&client, refresh).await?;
 
     let resp = client
         .post(IMPORT_URL)
@@ -522,10 +717,21 @@ mod tests {
     }
 
     #[test]
-    fn token_is_configured() {
-        // A real refresh token is wired in — the feature is enabled. (Guards
-        // against accidentally reverting to the placeholder / empty sentinel.)
-        assert!(configured_refresh_token().is_some());
+    fn parses_token_from_jwt_or_json_blob() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJ0eXAiOiJyZWZyZXNoIn0.sig";
+        // Bare JWT.
+        assert_eq!(parse_refresh_token_input(jwt).as_deref(), Some(jwt));
+        assert_eq!(parse_refresh_token_input(&format!("  {jwt}\n")).as_deref(), Some(jwt));
+        // Web app auth-state blob.
+        let blob = format!(r#"{{"state":{{"status":"authenticated","refreshToken":"{jwt}"}}}}"#);
+        assert_eq!(parse_refresh_token_input(&blob).as_deref(), Some(jwt));
+        // Snake-case top-level.
+        let blob2 = format!(r#"{{"refresh_token":"{jwt}"}}"#);
+        assert_eq!(parse_refresh_token_input(&blob2).as_deref(), Some(jwt));
+        // Garbage / non-JWT → None (prompt stays open).
+        assert!(parse_refresh_token_input("not a token").is_none());
+        assert!(parse_refresh_token_input("{}").is_none());
+        assert!(parse_refresh_token_input("").is_none());
     }
 
     #[test]

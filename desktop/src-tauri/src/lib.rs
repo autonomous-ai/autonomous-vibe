@@ -182,6 +182,9 @@ pub fn run() {
             project::project_delete,
             // panda-social publish (design-import API)
             social::project_publish,
+            social::social_has_token,
+            social::social_set_token,
+            social::social_clear_token,
             // snapshot (git-tag-style model save states)
             snapshot::snapshot_list,
             snapshot::snapshot_save,

@@ -6,10 +6,8 @@
 //! callback, snapshots the workspace before/after for artifact diffs,
 //! and supports external cancellation via `CancellationToken`.
 //!
-//! v1 inherits the user's Claude Code subscription auth from the host
-//! environment. The Panda-Cloud env override (`use_panda_cloud`) is a
-//! v2 hook — wired via [`build_env`] so the v2 settings toggle is a
-//! purely additive change.
+//! Turns inherit the user's own Claude Code subscription auth from the host
+//! environment (see [`build_env`]).
 
 use crate::commands::claude_stream_debug;
 use crate::ipc::types::{ArtifactReason, ChatEvent, TurnPhaseTag};
@@ -118,12 +116,6 @@ pub struct ClaudeRunConfig {
     pub workspace: PathBuf,
     pub claude_session_id: Option<String>,
     pub model: Option<String>,
-    pub use_panda_cloud: bool,
-    pub panda_token: Option<String>,
-    /// Panda proxy base URL (the exchange's `baseUrl`). Used as
-    /// `ANTHROPIC_BASE_URL` when `use_panda_cloud`; `None` falls back to the
-    /// compiled-in proxy URL.
-    pub panda_base_url: Option<String>,
     /// Absolute paths to reference images to inline into the turn's user
     /// message as base64 image blocks (via stream-json stdin). Empty = plain
     /// text prompt (positional arg). Lets the VLM see the pixels directly
@@ -512,12 +504,10 @@ fn image_media_type(path: &Path) -> &'static str {
     }
 }
 
-/// Env vars to set on the spawned `claude` process. When `use_panda_cloud` is
-/// true (set by the "Sign in with Panda" flow), route through Panda's hosted
-/// proxy: `ANTHROPIC_BASE_URL` (the exchange's baseUrl) + `ANTHROPIC_AUTH_TOKEN`
-/// (the `ccr-…` key). Otherwise we inherit the host environment so the user's
-/// existing Claude Code auth applies.
-pub fn build_env(cfg: &ClaudeRunConfig) -> Vec<(String, String)> {
+/// Env vars to set on the spawned `claude` process. We push only the
+/// self-updater / background-task guards and otherwise inherit the host
+/// environment so the user's own Claude Code subscription auth applies.
+pub fn build_env(_cfg: &ClaudeRunConfig) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = Vec::new();
     // Disable Claude Code's self-updater on the spawned CLI. The host `claude`
     // auto-updates by rewriting its own 200+ MB binary in place. If the driver
@@ -537,40 +527,7 @@ pub fn build_env(cfg: &ClaudeRunConfig) -> Vec<(String, String)> {
     // after the turn returns anyway, but disabling the capability outright keeps
     // a turn fully synchronous — no detached shells outliving it.
     env.push(("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS".into(), "1".into()));
-    if cfg.use_panda_cloud {
-        // Route through Panda's hosted proxy (BE contract): the issued `ccr-…`
-        // key is a bearer token, not an Anthropic API key, so it goes in
-        // `ANTHROPIC_AUTH_TOKEN`. The base URL is whatever the sign-in exchange
-        // returned, falling back to the compiled-in proxy URL.
-        let base = cfg
-            .panda_base_url
-            .clone()
-            .unwrap_or_else(|| crate::commands::app::PANDA_PROXY_URL.to_string());
-        env.push(("ANTHROPIC_BASE_URL".into(), base));
-        if let Some(token) = &cfg.panda_token {
-            env.push(("ANTHROPIC_AUTH_TOKEN".into(), token.clone()));
-        }
-    }
     env
-}
-
-/// Heuristic: does this `claude` stderr look like an API authentication
-/// failure? Used only on the Panda proxy path to distinguish a revoked/expired
-/// key (BE returns 401, Anthropic-style `authentication_error` body) from other
-/// silent failures, so the UI can offer a re-login. Matched case-insensitively
-/// against the substrings Anthropic/the proxy emit; the proxy mode gating keeps
-/// false positives from mislabelling a non-auth failure.
-pub fn looks_like_auth_failure(stderr: &str) -> bool {
-    let s = stderr.to_ascii_lowercase();
-    s.contains("authentication_error")
-        || s.contains("invalid api key")
-        || s.contains("invalid x-api-key")
-        || s.contains("invalid bearer token")
-        || s.contains("permission_error")
-        || s.contains("401 unauthorized")
-        || s.contains("status 401")
-        || s.contains("http 401")
-        || s.contains("oauth token has expired")
 }
 
 /// Has Claude Code already persisted a session JSONL for this UUID?
@@ -1415,27 +1372,17 @@ where
 
     let pre_snapshot = snapshot_workspace(workspace_dir);
 
-    // Honor the "Sign in with Panda" path: when the user picked the proxy during
-    // onboarding, route this turn through Panda's hosted Claude server. Settings
-    // are the source of truth (set by `app_panda_login`); `build_env` turns these
-    // fields into `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`. Best-effort: a
-    // settings read failure just falls back to the user's own host auth.
-    let settings = crate::commands::app::load_settings().await.ok();
-    let use_panda_cloud = settings.as_ref().map(|s| s.use_panda_cloud).unwrap_or(false);
-    let panda_base_url = settings.as_ref().and_then(|s| s.panda_base_url.clone());
     // Model selected in the composer's switcher; `None` → `build_command`
-    // defaults to `opus`. Captured before `settings` is consumed below.
+    // defaults to `opus`. Best-effort: a settings read failure just falls back
+    // to the default model and the user's own host auth.
+    let settings = crate::commands::app::load_settings().await.ok();
     let model = settings.as_ref().and_then(|s| s.model.clone());
-    let panda_token = settings.and_then(|s| s.panda_token);
 
     let cfg = ClaudeRunConfig {
         prompt: user_message.to_string(),
         workspace: workspace_dir.to_path_buf(),
         claude_session_id: Some(session_id.to_string()),
         model,
-        use_panda_cloud,
-        panda_token,
-        panda_base_url,
         images: images.to_vec(),
         phase,
     };
@@ -1694,19 +1641,10 @@ where
             .unwrap_or_else(|| {
                 format!("claude exited without output ({status:?})")
             });
-        // On the Panda proxy path, a revoked/expired key surfaces as an auth
-        // error here (the BE returns 401). Emit a dedicated event the chat UI
-        // turns into a "Sign in again" action instead of a cryptic message.
-        if cfg.use_panda_cloud && looks_like_auth_failure(&detail) {
-            on_event(ChatEvent::AuthExpired {
-                turn_id: turn_id.to_string(),
-            });
-        } else {
-            on_event(ChatEvent::Error {
-                turn_id: turn_id.to_string(),
-                message: format!("claude produced no response: {detail}"),
-            });
-        }
+        on_event(ChatEvent::Error {
+            turn_id: turn_id.to_string(),
+            message: format!("claude produced no response: {detail}"),
+        });
     }
 
     // Post-turn workspace diff. Emit artifact_changed for everything
@@ -1973,9 +1911,6 @@ where
         workspace: workspace_dir.to_path_buf(),
         claude_session_id: Some(session_id.to_string()),
         model: Some("opus".into()),
-        use_panda_cloud: false,
-        panda_token: None,
-        panda_base_url: None,
         images: Vec::new(),
         phase: TurnPhase::Review,
     };
@@ -2612,9 +2547,6 @@ mod tests {
             workspace: PathBuf::from("/tmp/proj"),
             claude_session_id: None,
             model: None,
-            use_panda_cloud: false,
-            panda_token: None,
-            panda_base_url: None,
             images: Vec::new(),
             phase: TurnPhase::Plan,
         };
@@ -2636,9 +2568,6 @@ mod tests {
             workspace: PathBuf::from("/tmp/proj"),
             claude_session_id: None,
             model: None,
-            use_panda_cloud: false,
-            panda_token: None,
-            panda_base_url: None,
             images: Vec::new(),
             phase: TurnPhase::Plan,
         };
@@ -2667,9 +2596,6 @@ mod tests {
             workspace: PathBuf::from("/tmp/proj"),
             claude_session_id: None,
             model: None,
-            use_panda_cloud: false,
-            panda_token: None,
-            panda_base_url: None,
             images: vec![tmp.clone()],
             phase: TurnPhase::Plan,
         };
@@ -2734,9 +2660,6 @@ mod tests {
             workspace: PathBuf::from("/tmp/proj"),
             claude_session_id: None,
             model: None,
-            use_panda_cloud: false,
-            panda_token: None,
-            panda_base_url: None,
             images: Vec::new(),
             phase: TurnPhase::Plan,
         };
@@ -2770,9 +2693,6 @@ mod tests {
             workspace: PathBuf::from("/tmp/proj"),
             claude_session_id: None,
             model: None,
-            use_panda_cloud: false,
-            panda_token: None,
-            panda_base_url: None,
             images: Vec::new(),
             phase: TurnPhase::Plan,
         };
@@ -2796,9 +2716,6 @@ mod tests {
             workspace: PathBuf::from("/tmp/proj"),
             claude_session_id: None,
             model: None,
-            use_panda_cloud: false,
-            panda_token: None,
-            panda_base_url: None,
             images: Vec::new(),
             phase: TurnPhase::Plan,
         };
@@ -2829,9 +2746,6 @@ mod tests {
             workspace: PathBuf::from("/tmp/proj"),
             claude_session_id: None,
             model: None,
-            use_panda_cloud: false,
-            panda_token: None,
-            panda_base_url: None,
             images: Vec::new(),
             phase: TurnPhase::Implement,
         };
@@ -2879,84 +2793,14 @@ mod tests {
     }
 
     #[test]
-    fn build_env_panda_cloud_uses_returned_base_url_and_auth_token() {
-        let cfg = ClaudeRunConfig {
-            prompt: "hi".into(),
-            workspace: PathBuf::from("/tmp/proj"),
-            claude_session_id: None,
-            model: None,
-            use_panda_cloud: true,
-            panda_token: Some("ccr-tok-123".into()),
-            panda_base_url: Some("https://api-panda.autonomous.ai".into()),
-            images: Vec::new(),
-            phase: TurnPhase::Plan,
-        };
-        let env = build_env(&cfg);
-        let map: HashMap<String, String> = env.into_iter().collect();
-        // The BE-issued base URL is used verbatim, and the `ccr-…` key is a
-        // bearer token (ANTHROPIC_AUTH_TOKEN), not an API key.
-        assert_eq!(
-            map.get("ANTHROPIC_BASE_URL").map(String::as_str),
-            Some("https://api-panda.autonomous.ai"),
-        );
-        assert_eq!(
-            map.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str),
-            Some("ccr-tok-123"),
-        );
-        // We never set the API-key var on the panda path.
-        assert!(!map.contains_key("ANTHROPIC_API_KEY"));
-        // The self-updater is always disabled, cloud or not.
-        assert_eq!(map.get("DISABLE_AUTOUPDATER").map(String::as_str), Some("1"));
-    }
-
-    #[test]
-    fn build_env_panda_cloud_falls_back_to_compiled_proxy_url() {
-        let cfg = ClaudeRunConfig {
-            prompt: "hi".into(),
-            workspace: PathBuf::from("/tmp/proj"),
-            claude_session_id: None,
-            model: None,
-            use_panda_cloud: true,
-            panda_token: Some("ccr-tok".into()),
-            panda_base_url: None,
-            images: Vec::new(),
-            phase: TurnPhase::Plan,
-        };
-        let map: HashMap<String, String> = build_env(&cfg).into_iter().collect();
-        assert_eq!(
-            map.get("ANTHROPIC_BASE_URL").map(String::as_str),
-            Some(crate::commands::app::PANDA_PROXY_URL),
-        );
-    }
-
-    #[test]
-    fn looks_like_auth_failure_flags_proxy_401() {
-        // Anthropic-style 401 body the proxy returns for a revoked key.
-        assert!(looks_like_auth_failure(
-            "API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}"
-        ));
-        assert!(looks_like_auth_failure("Error: oauth token has expired"));
-        assert!(looks_like_auth_failure("request failed: HTTP 401"));
-        // Non-auth failures must NOT be flagged (they get the generic error).
-        assert!(!looks_like_auth_failure(
-            "Session ID already in use: 1234"
-        ));
-        assert!(!looks_like_auth_failure("spawn node ENOENT"));
-        assert!(!looks_like_auth_failure("overloaded_error: 529"));
-    }
-
-    #[test]
     fn build_env_default_disables_autoupdater_and_background_tasks() {
-        // Cloud OFF → no model env pushed → claude falls back to the host's own
-        // auth (your ~/.claude login). This is the "local, no proxy" path.
+        // No model env pushed → claude falls back to the host's own auth (your
+        // ~/.claude login). This is the local, own-subscription path.
         let cfg = ClaudeRunConfig {
             prompt: "hi".into(),
             workspace: PathBuf::from("/tmp/proj"),
             claude_session_id: None,
             model: None,
-            use_panda_cloud: false,
-            panda_token: None,
-            panda_base_url: None,
             images: Vec::new(),
             phase: TurnPhase::Plan,
         };
@@ -3108,9 +2952,6 @@ mod tests {
             workspace: tmp.path().to_path_buf(),
             claude_session_id: Some("00000000-0000-0000-0000-000000000001".into()),
             model: None,
-            use_panda_cloud: false,
-            panda_token: None,
-            panda_base_url: None,
             images: Vec::new(),
             phase: TurnPhase::Plan,
         };

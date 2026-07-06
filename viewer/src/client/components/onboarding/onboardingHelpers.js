@@ -580,8 +580,6 @@ export const buildInstallFlow = buildClaudeInstallFlow;
 // Welcome screen (single-screen onboarding) helpers
 // ---------------------------------------------------------------------------
 
-export const PANDA_SETUP_URL = CLAUDE_INSTALL_URL;
-
 /**
  * Collapse a prereq check + auth check into the welcome screen's decision
  * state. `canUseOwn` gates the "Use my own Claude Code" path: it's only safe
@@ -607,38 +605,6 @@ export function evaluateWelcomeState({ check, auth } = {}) {
 }
 
 /**
- * Translate a `panda_login_progress` event into a short status label for the
- * "Sign in with Panda" button + progress card. Defensive: unknown stages
- * report a generic "Working…" rather than throwing.
- */
-export function describePandaLoginProgress(event) {
-  if (!event || typeof event !== "object") {
-    return "Working…";
-  }
-  switch (event.stage) {
-    case "starting":
-      return "Starting sign-in…";
-    case "awaiting_browser":
-      return "Waiting for you to approve in your browser…";
-    case "verifying":
-      return "Finishing sign-in…";
-    case "done":
-      return "Signed in";
-    case "error":
-      return String(event.message || "Sign-in failed");
-    default:
-      return "Working…";
-  }
-}
-
-/**
- * The Panda proxy sign-in reuses the generic install/login state machine: it
- * resolves on success (with a `PandaLoginResult`) and an `error` event or a
- * rejection flips it to "error". One tested code path, three call sites.
- */
-export const buildPandaLoginFlow = buildClaudeInstallFlow;
-
-/**
  * App-entry gate: does this profile still need the Welcome wizard? Gates solely
  * on `hasOnboarded`. Earlier this also required a `pandaToken` (v1 forced the
  * Panda proxy), which sent legacy local-Claude users back through onboarding —
@@ -654,20 +620,13 @@ export function shouldOnboard(settings) {
 /**
  * Build the settings object that completes onboarding, preserving the rest of
  * `existing` (re-read just before writing so we never clobber a token the
- * sign-in step persisted) and forcing `hasOnboarded: true`. `overrides` carries
- * the auth choice: `{ usePandaCloud, pandaToken }` for the Panda path, or
- * `{ usePandaCloud: false }` for the bring-your-own-Claude path.
+ * sign-in step persisted) and forcing `hasOnboarded: true`.
  */
-export function buildOnboardedSettings(existing, overrides = {}) {
+export function buildOnboardedSettings(existing) {
   const base = existing || {};
   return {
     defaultFilament: base.defaultFilament ?? "PLA",
     slicerBinaryPath: base.slicerBinaryPath ?? "",
-    usePandaCloud: overrides.usePandaCloud ?? base.usePandaCloud ?? false,
-    pandaToken: overrides.pandaToken ?? base.pandaToken,
-    // Preserve the proxy base URL app_panda_login persisted — dropping it here
-    // would clobber it back to None on the completion write.
-    pandaBaseUrl: overrides.pandaBaseUrl ?? base.pandaBaseUrl,
     claudeOauthToken: base.claudeOauthToken,
     hasOnboarded: true,
     autoUpdate: base.autoUpdate ?? false,

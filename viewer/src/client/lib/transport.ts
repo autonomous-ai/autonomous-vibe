@@ -163,9 +163,6 @@ export type ChatEvent = (
   | { kind: "artifact_changed"; turnId: string; file: string; reason: "new" | "modified" }
   | { kind: "turn_end"; turnId: string }
   | { kind: "error"; turnId: string; message: string }
-  // Panda proxy auth was rejected (revoked/expired key → BE 401). The chat UI
-  // surfaces a "Sign in again" action. Ends the turn like `error`.
-  | { kind: "auth_expired"; turnId: string }
 ) & { projectId: string };
 
 // Slicer ---------------------------------------------------------------------
@@ -369,11 +366,6 @@ export interface AppSettings {
   // Print action targets it; empty/unpaired falls back to auto-pick. Mirrors
   // ipc/types.rs::AppSettings.default_printer_id.
   defaultPrinterId?: string;
-  usePandaCloud: boolean;
-  pandaToken?: string;
-  // Panda proxy base URL captured by app_panda_login (the exchange `baseUrl`);
-  // exported as ANTHROPIC_BASE_URL. Mirrors ipc/types.rs::AppSettings.panda_base_url.
-  pandaBaseUrl?: string;
   // Captured by app_login_claude (`claude setup-token`); exported as
   // CLAUDE_CODE_OAUTH_TOKEN so headless turns authenticate. Mirrors
   // ipc/types.rs::AppSettings.claude_oauth_token.
@@ -461,29 +453,6 @@ export interface ClaudeAuthStatus {
  * "stage", snake_case variants, camelCase fields).
  */
 export type ClaudeLoginProgress =
-  | { stage: "starting" }
-  | { stage: "awaiting_browser"; url: string }
-  | { stage: "verifying" }
-  | { stage: "done" }
-  | { stage: "error"; message: string };
-
-/**
- * Result of `app_panda_login` — the Panda-issued proxy token. Mirrors the serde
- * struct in `desktop/src-tauri/src/ipc/types.rs::PandaLoginResult`. The proxy key
- * is persisted Rust-side (as `panda_token` with `use_panda_cloud = true`) and is
- * intentionally NOT returned to the renderer — the frontend only learns it
- * succeeded.
- */
-export interface PandaLoginResult {
-  ok: boolean;
-}
-
-/**
- * Discriminated union streamed via the `panda_login_progress` Tauri event while
- * `app_panda_login` drives the (TBD) Panda proxy sign-in. Mirrors the serde enum
- * in `desktop/src-tauri/src/ipc/types.rs::PandaLoginProgress`.
- */
-export type PandaLoginProgress =
   | { stage: "starting" }
   | { stage: "awaiting_browser"; url: string }
   | { stage: "verifying" }
@@ -765,43 +734,21 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
       return {
         defaultFilament: "PLA",
         slicerBinaryPath: "",
-        usePandaCloud: false,
         hasOnboarded: true,
         autoUpdate: false,
         autoBuild: true,
       } as unknown as T;
     case "app_settings_write":
       return undefined as unknown as T;
-    case "app_set_auth_mode":
-      // Echo a settings snapshot reflecting the requested mode so the badge
-      // updates in browser dev.
-      return {
-        defaultFilament: "PLA",
-        slicerBinaryPath: "",
-        usePandaCloud: Boolean(args.usePandaCloud),
-        hasOnboarded: true,
-        autoUpdate: false,
-      } as unknown as T;
     case "app_set_model":
       // Echo a settings snapshot reflecting the chosen model so the composer's
       // switcher updates in browser dev.
       return {
         defaultFilament: "PLA",
         slicerBinaryPath: "",
-        usePandaCloud: false,
         hasOnboarded: true,
         autoUpdate: false,
         model: String(args.model ?? ""),
-      } as unknown as T;
-    case "app_panda_logout":
-      // Echo a signed-out settings snapshot so the badge falls back to local
-      // in browser dev.
-      return {
-        defaultFilament: "PLA",
-        slicerBinaryPath: "",
-        usePandaCloud: false,
-        hasOnboarded: true,
-        autoUpdate: false,
       } as unknown as T;
     case "app_install_claude_code":
       // Browser dev stub. The real command runs only inside Tauri — in
@@ -824,28 +771,6 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
     case "app_submit_login_code":
       // Feeds the live PTY — Tauri only. No-op in browser dev.
       return undefined as unknown as T;
-    case "app_cancel_panda_login":
-      // No-op in browser dev (no in-flight Tauri sign-in to cancel).
-      return undefined as unknown as T;
-    case "app_submit_panda_token":
-      // Echo a signed-in settings snapshot so the paste-token fallback completes
-      // onboarding in browser dev without a real Tauri backend.
-      return {
-        defaultFilament: "PLA",
-        slicerBinaryPath: "",
-        usePandaCloud: true,
-        pandaToken: String(args.token ?? ""),
-        hasOnboarded: true,
-        autoUpdate: false,
-      } as unknown as T;
-    case "app_panda_login":
-      // Proxy sign-in talks to Panda's backend — Tauri only. Surface the same
-      // "not available yet" shape the placeholder command returns so the
-      // welcome screen's error/retry path is exercisable in browser dev.
-      throw {
-        code: "PANDA_BACKEND_PENDING",
-        message: `${STUB_TAG} Panda sign-in only runs inside Tauri`,
-      } as IpcError;
     case "catalog_read":
     case "project_catalog_read":
       return {
@@ -1021,31 +946,8 @@ const transportBase = {
   // in-flight `claude setup-token` PTY (see app_login_claude).
   app_submit_login_code: (code: string) =>
     invoke<void>("app_submit_login_code", { code }),
-  // Proxy sign-in to Panda's hosted Claude server ("Sign in with Panda"). On
-  // success Rust persists the token + flips use_panda_cloud; progress streams
-  // via the `panda_login_progress` event (see onPandaLoginProgress).
-  app_panda_login: () => invoke<PandaLoginResult>("app_panda_login"),
-  // Cancel an in-flight Panda sign-in (user closed the browser / chose another
-  // path); the awaiting app_panda_login returns immediately instead of waiting
-  // out the 10-min timeout.
-  app_cancel_panda_login: () => invoke<void>("app_cancel_panda_login"),
-  // Deep-link-independent sign-in fallback: paste the authorized `ccr-…` token
-  // shown on the hosted sign-in page when the OS can't deliver the `myide://`
-  // callback (macOS dev builds, or a browser that blocks the custom scheme).
-  // Persists the session like the deep-link path and returns updated settings.
-  app_submit_panda_token: (token: string) =>
-    invoke<AppSettings>("app_submit_panda_token", { token }),
-  // Switch the active Claude access mode (proxy ↔ own local Claude) without
-  // re-onboarding. Enabling the proxy requires a prior Panda sign-in (errors
-  // PANDA_NOT_SIGNED_IN otherwise). Returns the updated settings.
-  app_set_auth_mode: (usePandaCloud: boolean) =>
-    invoke<AppSettings>("app_set_auth_mode", { usePandaCloud }),
   app_set_model: (model: string) =>
     invoke<AppSettings>("app_set_model", { model }),
-  // Sign out of the Panda proxy: clears the stored token and flips
-  // use_panda_cloud off so chat falls back to the user's own local Claude.
-  // Returns the updated settings.
-  app_panda_logout: () => invoke<AppSettings>("app_panda_logout"),
   app_install_orcaslicer: () =>
     invoke<InstalledSlicer>("app_install_orcaslicer"),
 
@@ -1193,8 +1095,6 @@ const transportBase = {
     listenEvent<ClaudeInstallProgress>("claude_install_progress", handler),
   onClaudeLoginProgress: (handler: (event: ClaudeLoginProgress) => void) =>
     listenEvent<ClaudeLoginProgress>("claude_login_progress", handler),
-  onPandaLoginProgress: (handler: (event: PandaLoginProgress) => void) =>
-    listenEvent<PandaLoginProgress>("panda_login_progress", handler),
   onSlicerInstallProgress: (handler: (event: SlicerInstallProgress) => void) =>
     listenEvent<SlicerInstallProgress>("slicer_install_progress", handler),
   onUpdateEvent: (handler: (event: UpdateEvent) => void) =>

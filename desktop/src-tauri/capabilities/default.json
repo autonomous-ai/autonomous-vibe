@@ -14,7 +14,6 @@
     "shell:default",
     "dialog:default",
     "opener:default",
-    "updater:default",
-    "deep-link:default"
+    "updater:default"
   ]
 }

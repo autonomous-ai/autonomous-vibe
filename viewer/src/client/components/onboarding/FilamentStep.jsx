@@ -24,7 +24,6 @@ export default function FilamentStep({ onAdvance, currentSettings }) {
         ...(existing || {}),
         defaultFilament: selected,
         slicerBinaryPath: existing?.slicerBinaryPath ?? "",
-        usePandaCloud: existing?.usePandaCloud ?? false,
         hasOnboarded: existing?.hasOnboarded ?? false,
       };
       await transport.app_settings_write(nextSettings);

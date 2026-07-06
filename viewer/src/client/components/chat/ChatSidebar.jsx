@@ -8,8 +8,6 @@ import ChatInput from "./ChatInput";
 import ChatStatusLine from "./ChatStatusLine";
 import { FOCUS_CHAT_INPUT_EVENT } from "./chatInputHelpers";
 // import ActionButtons from "./ActionButtons";
-import AuthModeControl from "./AuthModeControl";
-import PandaReauthBanner from "./PandaReauthBanner";
 import { MessageSquare } from "lucide-react";
 
 const SIDEBAR_WIDTH = 440;
@@ -71,7 +69,6 @@ export default function ChatSidebar({
   className,
 }) {
   const lastError = useChatStore((state) => state.lastError);
-  const needsPandaReauth = useChatStore((state) => state.needsPandaReauth);
   const history = useChatStore((state) => state.history);
   const isHydratingSession = useChatStore((state) => state.isHydratingSession);
   const projectId = useChatStore((state) => state.currentProjectId);
@@ -220,9 +217,6 @@ export default function ChatSidebar({
             {summaryTitle}
           </div>
         </div>
-        <div className="ml-auto">
-          <AuthModeControl />
-        </div>
       </header>
 
       <div className="min-h-0 flex-1">
@@ -257,9 +251,7 @@ export default function ChatSidebar({
         )}
       </div>
 
-      <PandaReauthBanner />
-
-      {lastError && !needsPandaReauth ? (
+      {lastError ? (
         <div
           data-slot="chat-error-banner"
           className="border-t border-destructive/40 bg-destructive/10 px-3 py-1 text-xs text-destructive"

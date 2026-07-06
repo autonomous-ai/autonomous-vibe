@@ -349,14 +349,6 @@ pub enum ChatEvent {
         turn_id: String,
         message: String,
     },
-    /// The Panda proxy rejected the turn's auth (revoked/expired `ccr-` key →
-    /// the BE returns 401). Emitted instead of a generic `Error` when
-    /// `use_panda_cloud` is on and the failure looks like an auth error, so the
-    /// chat UI can offer a "Sign in again" action rather than a cryptic message.
-    /// Ends the turn like `Error` does.
-    AuthExpired {
-        turn_id: String,
-    },
 }
 
 /// Emission wrapper for a `chat_event`: a [`ChatEvent`]'s own fields
@@ -810,22 +802,11 @@ pub struct AppSettings {
     /// user choose which device prints a sliced model when several are paired.
     #[serde(default)]
     pub default_printer_id: String,
-    pub use_panda_cloud: bool,
-    /// Panda proxy key (`ccr-…`) captured by `app_panda_login`. Exported as
-    /// `ANTHROPIC_AUTH_TOKEN` into the spawned `claude -p` when
-    /// `use_panda_cloud` is set, so turns route through Panda's hosted proxy.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub panda_token: Option<String>,
-    /// Panda proxy base URL (`baseUrl` returned by the sign-in exchange, e.g.
-    /// `https://api-panda.autonomous.ai`). Exported as `ANTHROPIC_BASE_URL`
-    /// alongside `panda_token`. `None` falls back to the compiled-in proxy URL.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub panda_base_url: Option<String>,
     /// Long-lived (1-year) Claude Code OAuth token captured by
     /// `app_login_claude` (`claude setup-token`). When present it is exported
     /// as `CLAUDE_CODE_OAUTH_TOKEN` into the spawned `claude -p` environment so
     /// headless turns authenticate without an interactive `/login`. Stored here
-    /// (like `panda_token`) rather than in the OS keychain for v1 simplicity;
+    /// rather than in the OS keychain for v1 simplicity;
     /// the file already lives in the per-user app data dir.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub claude_oauth_token: Option<String>,
@@ -870,9 +851,6 @@ impl Default for AppSettings {
             slicer_settings_profile: String::new(),
             slicer_filament_profile: String::new(),
             default_printer_id: String::new(),
-            use_panda_cloud: false,
-            panda_token: None,
-            panda_base_url: None,
             claude_oauth_token: None,
             has_onboarded: false,
             auto_update: false,
@@ -962,44 +940,6 @@ pub enum ClaudeLoginProgress {
         url: String,
     },
     /// Browser flow finished; we captured a token and are persisting it.
-    Verifying,
-    Done,
-    Error {
-        message: String,
-    },
-}
-
-// ---------------------------------------------------------------------------
-// Panda proxy sign-in (placeholder — backend in progress)
-// ---------------------------------------------------------------------------
-
-/// Result of `app_panda_login`. The issued proxy key is **never** returned to
-/// the renderer — it is persisted Rust-side (`panda_token` + `use_panda_cloud`,
-/// see `store_panda_session`) and only ever leaves the process as an env var on
-/// the spawned `claude` child. The renderer just needs to know it succeeded.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PandaLoginResult {
-    pub ok: bool,
-}
-
-/// Streamed via the `panda_login_progress` Tauri event while `app_panda_login`
-/// drives the (TBD) Panda proxy sign-in. Deliberately mirrors
-/// `ClaudeLoginProgress` so the welcome screen can reuse the same
-/// starting/awaiting/verifying/done/error states regardless of which sign-in
-/// UX the backend ultimately ships. Mirrors the TS union in
-/// `viewer/src/client/lib/transport.ts`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "stage", rename_all = "snake_case", rename_all_fields = "camelCase")]
-pub enum PandaLoginProgress {
-    /// Beginning the sign-in flow.
-    Starting,
-    /// A hosted sign-in URL is ready; the UI can surface `url` as a fallback
-    /// link if the browser didn't open. (Only emitted by a browser-OAuth UX.)
-    AwaitingBrowser {
-        url: String,
-    },
-    /// Sign-in finished; we captured a token and are persisting it.
     Verifying,
     Done,
     Error {

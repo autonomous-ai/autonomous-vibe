@@ -2,28 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildOnboardedSettings,
-  buildPandaLoginFlow,
   describeClaudeLoginProgress,
-  describePandaLoginProgress,
   evaluateWelcomeState,
   shouldOnboard,
 } from "../onboardingHelpers.js";
 
-test("shouldOnboard gates only on hasOnboarded (no Panda-token mandate)", () => {
+test("shouldOnboard gates only on hasOnboarded", () => {
   // Fresh / never-onboarded → show the wizard.
   assert.equal(shouldOnboard(null), true);
   assert.equal(shouldOnboard({}), true);
   assert.equal(shouldOnboard({ hasOnboarded: false }), true);
-  // Onboarded with their own Claude Code (no Panda token) → into the app.
-  // This is the key change: a local-only user is no longer forced back.
+  // Onboarded with their own Claude Code → into the app.
   assert.equal(shouldOnboard({ hasOnboarded: true }), false);
   assert.equal(
-    shouldOnboard({ hasOnboarded: true, usePandaCloud: false }),
-    false,
-  );
-  // Onboarded Panda user → into the app.
-  assert.equal(
-    shouldOnboard({ hasOnboarded: true, pandaToken: "ccr-x" }),
+    shouldOnboard({ hasOnboarded: true, claudeOauthToken: "oauth-x" }),
     false,
   );
 });
@@ -80,92 +72,29 @@ test("evaluateWelcomeState tolerates missing inputs", () => {
   assert.equal(state.ownBlockedReason, "not_installed");
 });
 
-test("describePandaLoginProgress labels each stage", () => {
-  assert.equal(describePandaLoginProgress({ stage: "starting" }), "Starting sign-in…");
-  assert.equal(
-    describePandaLoginProgress({ stage: "awaiting_browser", url: "https://x" }),
-    "Waiting for you to approve in your browser…",
-  );
-  assert.equal(describePandaLoginProgress({ stage: "verifying" }), "Finishing sign-in…");
-  assert.equal(describePandaLoginProgress({ stage: "done" }), "Signed in");
-  assert.equal(describePandaLoginProgress({ stage: "error", message: "nope" }), "nope");
-  assert.equal(describePandaLoginProgress(undefined), "Working…");
-});
-
-test("buildOnboardedSettings forces hasOnboarded and applies the Panda choice", () => {
-  const next = buildOnboardedSettings(
-    { defaultFilament: "PETG", slicerBinaryPath: "/orca", autoUpdate: true },
-    { usePandaCloud: true, pandaToken: "tok-123" },
-  );
+test("buildOnboardedSettings forces hasOnboarded and preserves existing settings", () => {
+  const next = buildOnboardedSettings({
+    defaultFilament: "PETG",
+    slicerBinaryPath: "/orca",
+    autoUpdate: true,
+  });
   assert.equal(next.hasOnboarded, true);
-  assert.equal(next.usePandaCloud, true);
-  assert.equal(next.pandaToken, "tok-123");
   // Preserves the rest of the existing settings.
   assert.equal(next.defaultFilament, "PETG");
   assert.equal(next.slicerBinaryPath, "/orca");
   assert.equal(next.autoUpdate, true);
 });
 
-test("buildOnboardedSettings applies the bring-your-own-Claude choice", () => {
-  const next = buildOnboardedSettings(
-    { usePandaCloud: true, pandaToken: "stale" },
-    { usePandaCloud: false },
-  );
+test("buildOnboardedSettings preserves the local Claude OAuth token", () => {
+  const next = buildOnboardedSettings({ claudeOauthToken: "oauth-abc" });
   assert.equal(next.hasOnboarded, true);
-  assert.equal(next.usePandaCloud, false);
-  // pandaToken is left untouched (no override) — harmless when use_panda_cloud is off.
-  assert.equal(next.pandaToken, "stale");
+  assert.equal(next.claudeOauthToken, "oauth-abc");
 });
 
 test("buildOnboardedSettings defaults a fresh profile", () => {
-  const next = buildOnboardedSettings(null, { usePandaCloud: false });
+  const next = buildOnboardedSettings(null);
   assert.equal(next.hasOnboarded, true);
   assert.equal(next.defaultFilament, "PLA");
   assert.equal(next.slicerBinaryPath, "");
-  assert.equal(next.usePandaCloud, false);
   assert.equal(next.autoUpdate, false);
-});
-
-test("buildPandaLoginFlow resolves to done and reports success to onComplete", async () => {
-  let handler = null;
-  let resolveLogin = null;
-  const subscribe = (cb) => {
-    handler = cb;
-    return () => {
-      handler = null;
-    };
-  };
-  const runLogin = () =>
-    new Promise((resolve) => {
-      resolveLogin = resolve;
-    });
-
-  const transitions = [];
-  let completedWith = null;
-  const flow = buildPandaLoginFlow({
-    runInstall: runLogin,
-    subscribe,
-    onComplete: (result) => {
-      completedWith = result;
-    },
-    onChange: ({ state }) => {
-      if (transitions[transitions.length - 1] !== state) transitions.push(state);
-    },
-  });
-
-  const started = flow.start();
-  // Let start() register the listener, then drive the progress stream.
-  await new Promise((r) => setImmediate(r));
-  handler?.({ stage: "starting" });
-  await new Promise((r) => setImmediate(r));
-  handler?.({ stage: "verifying" });
-  await new Promise((r) => setImmediate(r));
-  // The real command returns only `{ ok: true }` — the proxy key never crosses
-  // into JS.
-  resolveLogin?.({ ok: true });
-  await started;
-
-  assert.deepEqual(transitions, ["installing", "done"]);
-  assert.equal(flow.state, "done");
-  assert.deepEqual(completedWith, { ok: true });
 });

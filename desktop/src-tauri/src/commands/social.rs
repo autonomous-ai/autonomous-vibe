@@ -310,6 +310,11 @@ pub async fn maybe_import_after_build(workspace: &Path) {
                 design.id, design.slug, design.status, design.project_url
             ));
         }
+        Err(ImportError::Unauthorized(code)) => {
+            // Token is bad — forget it so the next manual publish prompts.
+            log_line(&format!("import for {name} got {code} — clearing saved token"));
+            let _ = clear_stored_token();
+        }
         Err(e) => {
             // Best-effort — a later build will retry (no marker was written).
             log_line(&format!("import FAILED for {name}: {e:?}"));
@@ -420,7 +425,8 @@ pub async fn publish_project(workspace: &Path) -> IpcResult<PublishResponse> {
             ));
         }
         Err(AuthError::Rejected(msg)) => {
-            log_line(&format!("publish {name}: token rejected ({msg})"));
+            log_line(&format!("publish {name}: token rejected ({msg}) — clearing saved token"));
+            let _ = clear_stored_token();
             return Err(IpcError::new(
                 "SOCIAL_TOKEN_REQUIRED",
                 "Your panda-social session expired — paste a new token to publish",
@@ -429,10 +435,22 @@ pub async fn publish_project(workspace: &Path) -> IpcResult<PublishResponse> {
     };
 
     log_line(&format!("publish {name}: importing → {IMPORT_URL} (status={IMPORT_STATUS})"));
-    let design = import(workspace, &access, &client).await.map_err(|e| {
-        log_line(&format!("publish {name}: FAILED {e:?}"));
-        IpcError::new("SOCIAL_IMPORT_FAILED", format!("{e}"))
-    })?;
+    let design = match import(workspace, &access, &client).await {
+        Ok(d) => d,
+        // 401/403 on the upload itself → the token is bad; forget it and prompt.
+        Err(ImportError::Unauthorized(code)) => {
+            log_line(&format!("publish {name}: upload got {code} — clearing saved token"));
+            let _ = clear_stored_token();
+            return Err(IpcError::new(
+                "SOCIAL_TOKEN_REQUIRED",
+                "panda-social rejected your session — paste a new token to publish",
+            ));
+        }
+        Err(e) => {
+            log_line(&format!("publish {name}: FAILED {e:?}"));
+            return Err(IpcError::new("SOCIAL_IMPORT_FAILED", format!("{e:?}")));
+        }
+    };
     let _ = write_marker(workspace, &design);
     log_line(&format!(
         "publish {name}: ok → design {} (slug={})",
@@ -509,16 +527,42 @@ fn has_cover(workspace: &Path) -> bool {
         })
 }
 
+/// Why an import failed. `Unauthorized` (401/403) means the token is
+/// bad/expired — the caller turns it into `SOCIAL_TOKEN_REQUIRED` so the UI
+/// re-prompts; everything else is a plain `SOCIAL_IMPORT_FAILED`.
+enum ImportError {
+    Unauthorized(u16),
+    Other(anyhow::Error),
+}
+
+impl ImportError {
+    fn other<E: Into<anyhow::Error>>(e: E) -> Self {
+        ImportError::Other(e.into())
+    }
+}
+
+impl std::fmt::Debug for ImportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ImportError::Unauthorized(code) => write!(f, "unauthorized ({code})"),
+            ImportError::Other(e) => write!(f, "{e:?}"),
+        }
+    }
+}
+
 /// Zip the workspace and POST it to the import API with an already-obtained
-/// access token. Returns the created design on `201`, otherwise an error
-/// carrying the status + body for the log.
+/// access token. Returns the created design on `201`; a `401`/`403` becomes
+/// [`ImportError::Unauthorized`], any other non-201 an [`ImportError::Other`].
 async fn import(
     workspace: &Path,
     access: &str,
     client: &reqwest::Client,
-) -> anyhow::Result<ImportedDesign> {
+) -> Result<ImportedDesign, ImportError> {
     let ws = workspace.to_path_buf();
-    let zip_bytes = tokio::task::spawn_blocking(move || zip_workspace(&ws)).await??;
+    let zip_bytes = tokio::task::spawn_blocking(move || zip_workspace(&ws))
+        .await
+        .map_err(ImportError::other)?
+        .map_err(ImportError::other)?;
 
     // Save the exact bytes we're about to upload so the payload can be inspected
     // (`unzip -l <app-data>/social-import-last.zip`). Overwrites each publish;
@@ -527,7 +571,8 @@ async fn import(
 
     let part = reqwest::multipart::Part::bytes(zip_bytes)
         .file_name("design.zip")
-        .mime_str("application/zip")?;
+        .mime_str("application/zip")
+        .map_err(ImportError::other)?;
     let form = reqwest::multipart::Form::new()
         .part("file", part)
         .text("status", IMPORT_STATUS);
@@ -537,14 +582,22 @@ async fn import(
         .bearer_auth(access)
         .multipart(form)
         .send()
-        .await?;
+        .await
+        .map_err(ImportError::other)?;
 
     let status = resp.status();
     if status == reqwest::StatusCode::CREATED {
-        Ok(resp.json::<ImportedDesign>().await?)
+        resp.json::<ImportedDesign>().await.map_err(ImportError::other)
+    } else if status == reqwest::StatusCode::UNAUTHORIZED
+        || status == reqwest::StatusCode::FORBIDDEN
+    {
+        Err(ImportError::Unauthorized(status.as_u16()))
     } else {
         let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("import API returned {status}: {}", body.trim())
+        Err(ImportError::Other(anyhow::anyhow!(
+            "import API returned {status}: {}",
+            body.trim()
+        )))
     }
 }
 

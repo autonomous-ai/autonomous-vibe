@@ -210,6 +210,8 @@ pub fn run() {
             project::project_open,
             project::project_rename,
             project::project_delete,
+            // panda-social publish (design-import API)
+            social::project_publish,
             // snapshot (git-tag-style model save states)
             snapshot::snapshot_list,
             snapshot::snapshot_save,

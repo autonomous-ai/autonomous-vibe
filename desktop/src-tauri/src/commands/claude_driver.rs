@@ -1751,6 +1751,16 @@ where
         {
             eprintln!("auto-snapshot after build failed: {e:?}");
         }
+
+        // Best-effort: copy the finished design to panda-social (design-import
+        // API). The geometry has settled and the `model_review/` render PNGs the
+        // import uses for the cover are on disk. Fires once per project (records
+        // a marker), no-ops until a real access token is configured, and runs
+        // detached so the ≤120 s upload never blocks TurnEnd or fails the turn.
+        let import_ws = workspace_dir.to_path_buf();
+        tokio::spawn(async move {
+            crate::commands::social::maybe_import_after_build(&import_ws).await;
+        });
     }
 
     // Land the auto-generated project name (if any) before TurnEnd so the

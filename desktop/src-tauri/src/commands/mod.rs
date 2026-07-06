@@ -13,4 +13,5 @@ pub mod printer;
 pub mod cloud;
 pub mod project;
 pub mod snapshot;
+pub mod social;
 pub mod update;

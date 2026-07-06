@@ -629,8 +629,6 @@ interface AppSettings {
   slicerFilamentProfile?: string;   // OrcaSlicer --load-filaments path; empty = none
   defaultPrinterId?: string;    // preferred print device (a PrinterCard.id); when paired the Print
                                 //   action targets it, else auto-picks. empty = auto-pick
-  usePandaCloud: boolean;       // v2 hook; default false
-  pandaToken?: string;          // v2 hook
   hasOnboarded: boolean;        // gates the first-run wizard (added during Track E merge)
   autoUpdate: boolean;          // false (default) = prompt before downloading an update;
                                 //   true = silently download in the background, notify to restart
@@ -645,12 +643,6 @@ function app_settings_write(s: AppSettings): Promise<void>;
 // turn spawn, so a switch takes effect on the next turn. Rejects any value
 // outside the offered set with "INVALID_MODEL". Returns the updated settings.
 function app_set_model(model: string): Promise<AppSettings>;
-
-// Panda proxy sign-out: clears pandaToken + pandaBaseUrl and flips usePandaCloud
-// off, so the next chat turn falls back to the user's own local Claude Code auth
-// (the inverse of the app_panda_login sign-in). Idempotent. Returns the updated
-// settings so the UI can reflect the new mode immediately.
-function app_panda_logout(): Promise<AppSettings>;
 
 // Track I — auto-install Claude Code from the first-run wizard.
 //

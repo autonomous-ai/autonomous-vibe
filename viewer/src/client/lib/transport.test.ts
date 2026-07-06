@@ -36,12 +36,12 @@ test("app_prereq_check returns all-false stub", async () => {
 test("app_settings_read returns defaults", async () => {
   const settings = await transport.app_settings_read();
   assert.equal(settings.defaultFilament, "PLA");
-  assert.equal(settings.usePandaCloud, false);
+  assert.equal(settings.hasOnboarded, true);
 });
 
 test("app_set_model echoes the chosen model in the dev stub", async () => {
-  const settings = await transport.app_set_model("kimi,moonshotai/kimi-k2.6");
-  assert.equal(settings.model, "kimi,moonshotai/kimi-k2.6");
+  const settings = await transport.app_set_model("sonnet");
+  assert.equal(settings.model, "sonnet");
 });
 
 test("catalog_read returns empty entries", async () => {

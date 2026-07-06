@@ -2,12 +2,12 @@
 
 use crate::ipc::types::{
     AppInfo, AppSettings, ClaudeAuthStatus, ClaudeCliStatus, ClaudeInstallProgress,
-    ClaudeLoginProgress, InstalledClaude, InstalledSlicer, PandaLoginProgress, PandaLoginResult,
-    PrereqCheck, PythonStatus, SlicerInstallProgress, SlicerStatus,
+    ClaudeLoginProgress, InstalledClaude, InstalledSlicer, PrereqCheck, PythonStatus,
+    SlicerInstallProgress, SlicerStatus,
 };
 use crate::ipc::{IpcError, IpcResult};
 use crate::paths;
-use crate::state::{AppState, PendingPandaLogin};
+use crate::state::AppState;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
@@ -22,9 +22,6 @@ pub const CLAUDE_INSTALL_PROGRESS_EVENT: &str = "claude_install_progress";
 
 /// Tauri event channel for `claude_login_progress` payloads.
 pub const CLAUDE_LOGIN_PROGRESS_EVENT: &str = "claude_login_progress";
-
-/// Tauri event channel for `panda_login_progress` payloads.
-pub const PANDA_LOGIN_PROGRESS_EVENT: &str = "panda_login_progress";
 
 /// How long to wait for the user to finish the browser OAuth flow before
 /// giving up and killing `claude setup-token`. Generous: the user has to
@@ -941,222 +938,11 @@ async fn store_oauth_token(token: &str) -> IpcResult<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// app_panda_login — proxy sign-in to Panda's hosted Claude server
-// ---------------------------------------------------------------------------
-//
-// The "Sign in with Panda" path on the welcome screen. It runs the BE's PKCE +
-// custom-scheme deep-link OAuth flow (see docs `APP_INTEGRATION`): open the
-// hosted login in the system browser, receive the one-time `code` back via the
-// `myide://auth/callback` deep link, exchange it for a `ccr-…` key, and
-// persist `{panda_token, panda_base_url, use_panda_cloud=true}`. The chat driver
-// then routes `claude -p` through the proxy with `ANTHROPIC_BASE_URL` +
-// `ANTHROPIC_AUTH_TOKEN` (see `claude_driver::build_env`), so the user runs
-// Panda's Claude without a Claude subscription of their own. The local `claude`
-// binary is still the runtime — the welcome screen installs it first if missing;
-// the proxy only redirects the API. The user never sees the key.
-
-/// Panda hosted sign-in endpoints (BE contract). WEB hosts the login page the
-/// browser opens; API exchanges the one-time code for the proxy key; PROXY is
-/// the `ANTHROPIC_BASE_URL` the issued key authenticates against (the exchange
-/// also returns it as `baseUrl`, which we prefer and persist).
-const PANDA_WEB_URL: &str = "https://panda.autonomous.ai";
-const PANDA_API_URL: &str = "https://panda-dashboard-api.autonomous.ai";
-pub const PANDA_PROXY_URL: &str = "https://api-panda.autonomous.ai";
-
-/// Custom URL scheme the OS routes back to the app so the browser can hand over
-/// the OAuth `code`. MUST stay in sync with `tauri.conf.json`
-/// (`plugins.deep-link.desktop.schemes`) and the BE redirect allowlist.
-const PANDA_SCHEME: &str = "myide://";
-const PANDA_REDIRECT_URI: &str = "myide://auth/callback";
-
-/// A URL-safe, unpadded base64 of 32 random bytes (two getrandom-backed v4
-/// UUIDs). Used for the PKCE `code_verifier` — avoids pulling in a new RNG dep.
-fn random_b64url_32() -> String {
-    use base64::Engine as _;
-    let mut bytes = Vec::with_capacity(32);
-    bytes.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
-    bytes.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-}
-
-/// PKCE S256 challenge: `BASE64URL(SHA256(verifier))`, unpadded.
-fn pkce_challenge(verifier: &str) -> String {
-    use base64::Engine as _;
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(verifier.as_bytes());
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
-}
-
-/// Build the hosted login URL with the PKCE challenge + CSRF state, percent-
-/// encoding each value.
-fn build_login_url(challenge: &str, state: &str) -> String {
-    use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-    let redirect = utf8_percent_encode(PANDA_REDIRECT_URI, NON_ALPHANUMERIC);
-    let challenge = utf8_percent_encode(challenge, NON_ALPHANUMERIC);
-    let state = utf8_percent_encode(state, NON_ALPHANUMERIC);
-    format!(
-        "{PANDA_WEB_URL}/login?redirect_uri={redirect}&code_challenge={challenge}\
-         &code_challenge_method=S256&state={state}"
-    )
-}
-
-/// Extract `code` + `state` from a deep-link callback URL like
-/// `myide://auth/callback?code=…&state=…`. Tolerant of host/path
-/// variants — only the query matters. `None` if either param is absent.
-fn parse_panda_callback(url: &str) -> Option<(String, String)> {
-    let query = url.split_once('?').map(|(_, q)| q)?;
-    let mut code = None;
-    let mut state = None;
-    for pair in query.split('&') {
-        if let Some((k, v)) = pair.split_once('=') {
-            let value = percent_encoding::percent_decode_str(v)
-                .decode_utf8_lossy()
-                .to_string();
-            match k {
-                "code" => code = Some(value),
-                "state" => state = Some(value),
-                _ => {}
-            }
-        }
-    }
-    match (code, state) {
-        (Some(c), Some(s)) => Some((c, s)),
-        _ => None,
-    }
-}
-
-/// Handle an incoming `myide://auth/callback?…` deep link: match the
-/// CSRF `state` against the armed sign-in and deliver the `code` (or an error)
-/// to the waiting `app_panda_login` via its oneshot. No-op if the URL isn't our
-/// callback or no sign-in is pending. Called from both the deep-link plugin's
-/// `on_open_url` (cold start) and the single-instance callback (Windows/Linux
-/// warm start, where the URL arrives as a second process's argv).
-pub fn handle_panda_deeplink(app: &tauri::AppHandle, url: &str) {
-    use tauri::Manager as _;
-    if !url.starts_with(PANDA_SCHEME) {
-        return;
-    }
-    let Some(pending) = app.state::<AppState>().take_pending_panda_login() else {
-        return;
-    };
-    let result = match parse_panda_callback(url) {
-        Some((code, state)) if state == pending.state => Ok(code),
-        Some(_) => Err(
-            "Sign-in response didn't match this request (state mismatch). Please try again."
-                .to_string(),
-        ),
-        None => Err("Sign-in response was missing its authorization code.".to_string()),
-    };
-    let _ = pending.tx.send(result);
-}
-
-#[derive(serde::Deserialize)]
-struct PandaExchangeResponse {
-    key: String,
-    #[serde(rename = "baseUrl")]
-    base_url: String,
-}
-
-/// POST the one-time `code` + PKCE `verifier` to the Panda exchange endpoint and
-/// return `(key, base_url)`. Maps the documented 400 error codes to friendly
-/// copy.
-///
-/// Retries only on **transient** failures — a transport error (no response) or
-/// an HTTP 5xx/429 — with a short exponential backoff. Terminal responses (the
-/// documented 4xx codes like `code_expired` / `invalid_or_used_code`) are NOT
-/// retried: the `code` is single-use, so re-sending it after the server has
-/// already judged it is pointless and could only ever fail the same way. The
-/// same code is reused across transient retries because a 5xx/transport error
-/// means the server never consumed it.
-async fn exchange_code_for_key(code: &str, verifier: &str) -> IpcResult<(String, String)> {
-    const MAX_ATTEMPTS: u32 = 3;
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(3))
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| IpcError::new("PANDA_EXCHANGE_FAILED", e.to_string()))?;
-    let body = serde_json::json!({ "code": code, "code_verifier": verifier });
-    let url = format!("{PANDA_API_URL}/api/auth/exchange");
-
-    let mut attempt = 0;
-    loop {
-        attempt += 1;
-        let transient_err: String = match client.post(&url).json(&body).send().await {
-            Ok(resp) => {
-                let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
-                if status.is_success() {
-                    let parsed: PandaExchangeResponse =
-                        serde_json::from_str(&text).map_err(|e| {
-                            IpcError::new(
-                                "PANDA_EXCHANGE_FAILED",
-                                format!("unexpected sign-in response: {e}"),
-                            )
-                        })?;
-                    return Ok((parsed.key, parsed.base_url));
-                }
-                // 5xx / 429 → transient; any other non-2xx (e.g. the 400 codes)
-                // is terminal and surfaced immediately.
-                let transient = status.is_server_error()
-                    || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
-                if !transient {
-                    return Err(IpcError::new("PANDA_EXCHANGE_FAILED", map_exchange_error(&text)));
-                }
-                format!("Panda sign-in service returned HTTP {status}")
-            }
-            Err(e) => format!("could not reach Panda sign-in: {e}"),
-        };
-
-        if attempt >= MAX_ATTEMPTS {
-            return Err(IpcError::new("PANDA_EXCHANGE_FAILED", transient_err));
-        }
-        // Exponential backoff: 300ms, then 600ms.
-        let delay = std::time::Duration::from_millis(300 * 2u64.pow(attempt - 1));
-        tokio::time::sleep(delay).await;
-    }
-}
-
-/// Friendly copy for the documented exchange error codes. The body looks like
-/// `{"error":"code_expired"}`; we match on the code as a substring.
-fn map_exchange_error(body: &str) -> String {
-    let b = body.to_ascii_lowercase();
-    if b.contains("code_expired") {
-        "Your sign-in link expired. Please try signing in again.".to_string()
-    } else if b.contains("invalid_or_used_code") {
-        "That sign-in link was already used. Please try signing in again.".to_string()
-    } else if b.contains("pkce_verification_failed") {
-        "Sign-in verification failed. Please try again.".to_string()
-    } else if b.contains("invalid_redirect_uri") {
-        "This app isn't authorized for Panda sign-in yet. Please update the app.".to_string()
-    } else {
-        "Panda sign-in failed. Please try again.".to_string()
-    }
-}
-
-/// Persist a Panda proxy session (key + base URL) and enable `use_panda_cloud`,
-/// preserving the rest of settings. Mirrors [`store_oauth_token`]. The chat
-/// driver reads these to route `claude -p` through Panda's proxy with
-/// `ANTHROPIC_AUTH_TOKEN`.
-async fn store_panda_session(key: &str, base_url: &str) -> IpcResult<()> {
-    let mut settings = load_settings().await.unwrap_or_default();
-    settings.panda_token = Some(key.to_string());
-    settings.panda_base_url = Some(base_url.to_string());
-    settings.use_panda_cloud = true;
-    app_settings_write(settings).await
-}
-
 /// The Claude models the chat composer's switcher offers. The stored value is
-/// the exact string passed to `claude --model` (the `provider,model` router
-/// forms route through the Panda proxy). `opus` is the default — `AppSettings.model`
-/// of `None` falls back to it in `build_command`. JS mirrors this list in
-/// `modelChoices.js`.
-pub const MODEL_CHOICES: [&str; 4] = [
-    "opus",
-    "sonnet",
-    "kimi,moonshotai/kimi-k2.6",
-    "minimax,minimax/minimax-m3",
-];
+/// the exact string passed to `claude --model`. `opus` is the default —
+/// `AppSettings.model` of `None` falls back to it in `build_command`. JS mirrors
+/// this list in `modelChoices.js`.
+pub const MODEL_CHOICES: [&str; 2] = ["opus", "sonnet"];
 
 /// True when `model` is one of the selectable [`MODEL_CHOICES`] (exact match,
 /// no trimming). `app_set_model` gates on this so settings can never hold an
@@ -1169,7 +955,7 @@ fn is_allowed_model(model: &str) -> bool {
 /// Persisted in `AppSettings.model`; the driver reads it fresh at each turn
 /// spawn, so a switch takes effect on the next turn. Rejects any value outside
 /// [`MODEL_CHOICES`]. Returns the updated settings so the UI reflects the choice
-/// immediately (matching [`app_set_auth_mode`]).
+/// immediately.
 #[tauri::command]
 pub async fn app_set_model(model: String) -> IpcResult<AppSettings> {
     if !is_allowed_model(&model) {
@@ -1182,194 +968,6 @@ pub async fn app_set_model(model: String) -> IpcResult<AppSettings> {
     settings.model = Some(model);
     app_settings_write(settings.clone()).await?;
     Ok(settings)
-}
-
-/// Switch the active Claude access mode from the chat UI without re-onboarding.
-/// `use_panda_cloud = true` routes chat through Panda's proxy; `false` uses the
-/// user's own local Claude Code auth. Enabling the proxy requires a stored
-/// `panda_token` (the user must have signed in with Panda). Returns the updated
-/// settings so the UI can reflect the new mode immediately.
-#[tauri::command]
-pub async fn app_set_auth_mode(use_panda_cloud: bool) -> IpcResult<AppSettings> {
-    let mut settings = load_settings().await.unwrap_or_default();
-    let has_token = settings
-        .panda_token
-        .as_deref()
-        .map(|t| !t.trim().is_empty())
-        .unwrap_or(false);
-    if use_panda_cloud && !has_token {
-        return Err(IpcError::new(
-            "PANDA_NOT_SIGNED_IN",
-            "Sign in with Panda before switching to the Panda proxy.".to_string(),
-        ));
-    }
-    settings.use_panda_cloud = use_panda_cloud;
-    app_settings_write(settings.clone()).await?;
-    Ok(settings)
-}
-
-/// Sign out of the Panda proxy: drop the stored `panda_token` + `panda_base_url`
-/// and flip `use_panda_cloud` off, so the next turn falls back to the user's own
-/// local Claude Code auth. The inverse of [`store_panda_session`]; the rest of
-/// settings is preserved. Idempotent — a no-token state logs out to the same
-/// result. Returns the updated settings so the UI can reflect the new mode
-/// immediately (matching [`app_set_auth_mode`]).
-#[tauri::command]
-pub async fn app_panda_logout() -> IpcResult<AppSettings> {
-    let mut settings = load_settings().await.unwrap_or_default();
-    settings.panda_token = None;
-    settings.panda_base_url = None;
-    settings.use_panda_cloud = false;
-    app_settings_write(settings.clone()).await?;
-    Ok(settings)
-}
-
-/// Validate a pasted Panda proxy token. The hosted sign-in page exposes the
-/// issued `ccr-…` key for copy/paste as a fallback when the OS can't deliver the
-/// `myide://` deep link (notably macOS dev builds, or a browser that blocks the
-/// custom scheme). Trims surrounding whitespace and rejects values that aren't
-/// shaped like a single `ccr-…` token — the usual paste mistake is grabbing the
-/// whole "key: …" line or a URL.
-fn validate_panda_token(raw: &str) -> Result<String, IpcError> {
-    let token = raw.trim();
-    if token.is_empty() {
-        return Err(IpcError::new(
-            "PANDA_TOKEN_INVALID",
-            "Paste your sign-in token to continue.".to_string(),
-        ));
-    }
-    if token.split_whitespace().count() != 1 || !token.starts_with("ccr-") {
-        return Err(IpcError::new(
-            "PANDA_TOKEN_INVALID",
-            "That doesn't look like a Panda sign-in token. Copy the token shown on the sign-in page."
-                .to_string(),
-        ));
-    }
-    Ok(token.to_string())
-}
-
-/// Complete a Panda sign-in by pasting the authorized proxy token directly,
-/// bypassing the browser deep-link round-trip. Persists the session exactly like
-/// the deep-link path — same [`store_panda_session`] write, base URL defaulting
-/// to the compiled-in proxy — and returns the updated settings so the UI can
-/// finish onboarding. Independent of any in-flight [`app_panda_login`]: it does
-/// not need the PKCE verifier, so it works even when the deep link never arrives.
-#[tauri::command]
-pub async fn app_submit_panda_token(token: String) -> IpcResult<AppSettings> {
-    let token = validate_panda_token(&token)?;
-    store_panda_session(&token, PANDA_PROXY_URL).await?;
-    let settings = load_settings().await.unwrap_or_default();
-    Ok(settings)
-}
-
-/// Drive the Panda proxy sign-in (PKCE + deep-link OAuth). Opens the browser,
-/// waits for the `myide://auth/callback` deep link, exchanges the code,
-/// and persists the session. Progress streams via `panda_login_progress`. In
-/// debug builds only, setting `PANDA_DEV_TOKEN` skips the browser round-trip and
-/// completes against that token (for local testing before the BE is reachable);
-/// the bypass is compiled out of release builds.
-#[tauri::command]
-pub async fn app_panda_login(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> IpcResult<PandaLoginResult> {
-    let emit = |progress: PandaLoginProgress| {
-        let _ = app.emit(PANDA_LOGIN_PROGRESS_EVENT, &progress);
-    };
-    let fail = |emit: &dyn Fn(PandaLoginProgress), code: &str, msg: String| -> IpcError {
-        emit(PandaLoginProgress::Error { message: msg.clone() });
-        IpcError::new(code, msg)
-    };
-
-    emit(PandaLoginProgress::Starting);
-
-    // Dev escape hatch: bypass the browser round-trip with a fixed token.
-    // Debug-only — `cfg!(debug_assertions)` short-circuits before the env read so
-    // this auth bypass cannot be reached in release (production) builds, matching
-    // the gating convention used for devtools and `PANDA_DEBUG_CLAUDE`.
-    if cfg!(debug_assertions) {
-        if let Ok(token) = std::env::var("PANDA_DEV_TOKEN") {
-            let token = token.trim();
-            if !token.is_empty() {
-                emit(PandaLoginProgress::Verifying);
-                store_panda_session(token, PANDA_PROXY_URL).await?;
-                emit(PandaLoginProgress::Done);
-                return Ok(PandaLoginResult { ok: true });
-            }
-        }
-    }
-
-    // 1. PKCE + CSRF state (kept in RAM only, never logged).
-    let verifier = random_b64url_32();
-    let challenge = pkce_challenge(&verifier);
-    let csrf_state = uuid::Uuid::new_v4().to_string();
-
-    // 2. Arm the pending sign-in BEFORE opening the browser so a fast callback
-    //    can't race the receiver into existence.
-    let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
-    state.set_pending_panda_login(PendingPandaLogin {
-        state: csrf_state.clone(),
-        tx,
-    });
-
-    // 3. Open the hosted login page in the system browser.
-    let url = build_login_url(&challenge, &csrf_state);
-    if let Err(e) = open::that_detached(&url) {
-        state.take_pending_panda_login();
-        return Err(fail(
-            &emit,
-            "PANDA_BROWSER_FAILED",
-            format!("could not open your browser to sign in: {e}"),
-        ));
-    }
-    emit(PandaLoginProgress::AwaitingBrowser { url });
-
-    // 4. Wait for the deep-link handler to deliver the one-time code.
-    let code = match tokio::time::timeout(LOGIN_TIMEOUT, rx).await {
-        Ok(Ok(Ok(code))) => code,
-        Ok(Ok(Err(msg))) => return Err(fail(&emit, "PANDA_LOGIN_FAILED", msg)),
-        Ok(Err(_recv)) => {
-            return Err(fail(
-                &emit,
-                "PANDA_LOGIN_FAILED",
-                "Sign-in was interrupted. Please try again.".to_string(),
-            ))
-        }
-        Err(_elapsed) => {
-            // Clear the still-armed slot so a late callback doesn't find a
-            // closed receiver.
-            state.take_pending_panda_login();
-            return Err(fail(
-                &emit,
-                "PANDA_LOGIN_TIMEOUT",
-                "Timed out waiting for you to finish signing in.".to_string(),
-            ));
-        }
-    };
-
-    // 5. Exchange the code for the proxy key.
-    emit(PandaLoginProgress::Verifying);
-    let (key, base_url) = match exchange_code_for_key(&code, &verifier).await {
-        Ok(pair) => pair,
-        Err(err) => return Err(fail(&emit, "PANDA_EXCHANGE_FAILED", err.message)),
-    };
-
-    // 6. Persist + finish. The key stays Rust-side — only `ok` crosses to JS.
-    store_panda_session(&key, &base_url).await?;
-    emit(PandaLoginProgress::Done);
-    Ok(PandaLoginResult { ok: true })
-}
-
-/// Cancel an in-flight Panda sign-in — the user closed the browser tab or chose
-/// another path and doesn't want to wait out `LOGIN_TIMEOUT`. Taking the pending
-/// slot drops its oneshot sender, which makes the awaiting `app_panda_login`'s
-/// receiver resolve immediately (interrupted) instead of blocking for 10 minutes.
-/// Also stops a late deep-link callback from silently completing a sign-in the
-/// user abandoned (it finds no pending slot → no-op). No-op if nothing pending.
-#[tauri::command]
-pub async fn app_cancel_panda_login(state: tauri::State<'_, AppState>) -> IpcResult<()> {
-    state.take_pending_panda_login();
-    Ok(())
 }
 
 /// Strip ANSI/VT escape sequences (CSI `ESC [ … final` and OSC
@@ -2360,82 +1958,6 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Panda sign-in: PKCE + deep-link parsing
-    // -----------------------------------------------------------------
-
-    #[test]
-    fn pkce_challenge_is_base64url_sha256_of_verifier() {
-        // RFC 7636 Appendix B test vector: verifier → S256 challenge.
-        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-        assert_eq!(
-            pkce_challenge(verifier),
-            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
-        );
-    }
-
-    #[test]
-    fn random_verifier_is_unpadded_and_unique() {
-        let a = random_b64url_32();
-        let b = random_b64url_32();
-        assert_ne!(a, b, "two verifiers must differ");
-        assert!(!a.contains('='), "no base64 padding");
-        assert!(!a.contains('+') && !a.contains('/'), "url-safe alphabet");
-        // 32 bytes → 43 base64url chars (no padding).
-        assert_eq!(a.len(), 43);
-    }
-
-    #[test]
-    fn build_login_url_encodes_params() {
-        let url = build_login_url("chal-_123", "state-abc");
-        assert!(url.starts_with(&format!("{PANDA_WEB_URL}/login?")));
-        // redirect_uri is fully percent-encoded (no raw scheme/colon/slash).
-        assert!(url.contains("redirect_uri=myide%3A%2F%2Fauth%2Fcallback"));
-        assert!(url.contains("code_challenge_method=S256"));
-        assert!(url.contains("state=state%2Dabc"));
-    }
-
-    #[test]
-    fn validate_panda_token_accepts_a_trimmed_ccr_key() {
-        assert_eq!(
-            validate_panda_token("  ccr-abc123_DEF  ").expect("valid token"),
-            "ccr-abc123_DEF"
-        );
-    }
-
-    #[test]
-    fn validate_panda_token_rejects_empty_blank_and_malformed() {
-        for bad in ["", "   ", "sk-ant-not-a-ccr-key", "ccr-one ccr-two", "https://x"] {
-            let err = validate_panda_token(bad).expect_err("should reject");
-            assert_eq!(err.code, "PANDA_TOKEN_INVALID");
-        }
-    }
-
-    #[test]
-    fn parse_panda_callback_extracts_code_and_state() {
-        let (code, state) =
-            parse_panda_callback("myide://auth/callback?code=abc123&state=xyz")
-                .expect("both params present");
-        assert_eq!(code, "abc123");
-        assert_eq!(state, "xyz");
-    }
-
-    #[test]
-    fn parse_panda_callback_percent_decodes_and_ignores_extras() {
-        let (code, state) = parse_panda_callback(
-            "myide://auth/callback?state=a%2Db&foo=bar&code=one%20time",
-        )
-        .unwrap();
-        assert_eq!(code, "one time");
-        assert_eq!(state, "a-b");
-    }
-
-    #[test]
-    fn parse_panda_callback_rejects_missing_params() {
-        assert!(parse_panda_callback("myide://auth/callback?code=only").is_none());
-        assert!(parse_panda_callback("myide://auth/callback").is_none());
-    }
-
-    // -----------------------------------------------------------------
     // Claude sign-in: pure helpers
     // -----------------------------------------------------------------
 
@@ -2750,9 +2272,9 @@ mod tests {
 
     #[test]
     fn model_choice_validation_accepts_known_rejects_unknown() {
-        // The four selectable models are the only values app_set_model may
-        // persist; anything else (a typo, an arbitrary --model string from a
-        // tampered IPC call) is rejected before it reaches settings.
+        // The selectable models are the only values app_set_model may persist;
+        // anything else (a typo, an arbitrary --model string from a tampered IPC
+        // call) is rejected before it reaches settings.
         for ok in MODEL_CHOICES {
             assert!(is_allowed_model(ok), "should accept {ok}");
         }

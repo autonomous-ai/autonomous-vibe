@@ -33,12 +33,8 @@ tauri-plugin-opener = "2"
 # minisign signature against the pubkey in tauri.conf.json, downloads and
 # installs the new bundle. Desktop-only (no-op on mobile). See lib.rs setup.
 tauri-plugin-updater = "2"
-# Panda sign-in: a custom URL scheme (myide://auth/callback) lets the
-# system browser hand the OAuth `code` back to the app after a Panda login. On
-# Windows/Linux the OS spawns a *second* process for the deep link, so the
-# single-instance plugin forwards its argv (the URL) to the already-running
-# instance (and de-dupes launches). See lib.rs setup + commands/app.rs.
-tauri-plugin-deep-link = "2"
+# Single-instance: focuses the existing window and de-dupes launches when the
+# user reopens the app. See lib.rs setup.
 tauri-plugin-single-instance = "2"
 
 serde = { version = "1", features = ["derive"] }
@@ -54,7 +50,6 @@ parking_lot = "0.12"
 directories = "5"
 once_cell = "1"
 which = "6"
-sha2 = "0.10"
 hex = "0.4"
 # md5 of the sliced `.gcode.3mf` for the Bambu LAN `project_file` handoff — the
 # firmware-validated start path expects the project digest (uppercase) in the

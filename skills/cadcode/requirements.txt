@@ -1,4 +1,7 @@
-cadquery
+# <2.8: cadquery 2.8.0 pulls numba/llvmlite, which have no macOS x86_64 (Intel)
+# wheel and break the Intel sidecar build. Keep in sync with
+# packages/cadpy/pyproject.toml.
+cadquery<2.8
 numpy
 
 # cadpy is vendored into scripts/packages/cadpy/ at build time by

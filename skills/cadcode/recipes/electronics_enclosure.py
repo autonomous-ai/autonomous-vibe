@@ -7,9 +7,10 @@ Demonstrates composition of cadlib helpers:
   - one custom cut    — side USB-C cable exit (no helper covers this yet)
   - lid_plate         — matching lid
 
-The base + lid are unioned into a single ``result`` so the runner's preview
-PNG shows the assembled product. For per-part STLs that the user actually
-prints, see the ``export_part_stl`` calls at the bottom.
+``gen_step()`` returns the base + lid unioned into one shape so the preview
+shows the assembled product. For a real multi-part print, build the two
+halves as a ``cq.Assembly`` instead (see ``references/assembly.md``) so each
+part exports its own STL.
 """
 
 from __future__ import annotations
@@ -88,5 +89,6 @@ lid = lid_plate(
     lip_clearance=p.lip_clearance, wall=p.wall, lip_height=p.lip_height - 0.5,
 )
 
-# 6. Assembled view for the preview PNG (base on bottom, lid floating above).
-result = base.union(lid.translate((0, 0, p.height + p.lid_thickness / 2 + 1.0)))
+# 6. Assembled view for the preview (base on bottom, lid floating above).
+def gen_step():
+    return base.union(lid.translate((0, 0, p.height + p.lid_thickness / 2 + 1.0)))

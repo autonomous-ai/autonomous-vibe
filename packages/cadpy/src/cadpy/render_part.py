@@ -53,8 +53,12 @@ _SECTION_VIEWS = {
 _EDGE_FACE_LIMIT = 4000
 
 
-def _render_tris(tris, png_path, *, views, size: int):
+def _render_tris(tris, png_path, *, views, size: int, base_color=None, bg=None, zoom: float = 1.0):
     """Shade and render a triangle array ``(F, 3, 3)`` to a multi-view PNG.
+
+    ``zoom`` scales the part within each panel (mplot3d leaves a wide default
+    margin, so a part reads small at ``zoom=1``); >1 enlarges it without changing
+    the data limits, so nothing clips. Defaults to 1.0 → QA sheets are unchanged.
 
     Returns the PNG path, or ``None`` if there is nothing to draw. May raise on a
     matplotlib failure — callers wrap this so QA rendering never breaks a build.
@@ -80,7 +84,7 @@ def _render_tris(tris, png_path, *, views, size: int):
     light = np.array([0.3, 0.4, 0.85])
     light = light / np.linalg.norm(light)
     shade = np.clip(np.abs(normals @ light), 0.18, 1.0)
-    base = np.array([0.55, 0.62, 0.72])
+    base = np.array(base_color if base_color is not None else (0.55, 0.62, 0.72), dtype=float)
     rgb = np.clip(shade[:, None] * base[None, :], 0.0, 1.0)
     facecolors = np.concatenate([rgb, np.ones((len(rgb), 1))], axis=1)
 
@@ -100,6 +104,8 @@ def _render_tris(tris, png_path, *, views, size: int):
     fig = plt.figure(figsize=(size / 100.0 * cols, size / 100.0 * rows), dpi=100)
     for i, (label, elev, azim) in enumerate(views):
         ax = fig.add_subplot(rows, cols, i + 1, projection="3d")
+        if bg is not None:  # let the backdrop show through the panels
+            ax.patch.set_alpha(0.0)
         coll = Poly3DCollection(
             tris,
             facecolors=facecolors,
@@ -110,13 +116,34 @@ def _render_tris(tris, png_path, *, views, size: int):
         ax.set_xlim(center[0] - half, center[0] + half)
         ax.set_ylim(center[1] - half, center[1] + half)
         ax.set_zlim(center[2] - half, center[2] + half)
-        ax.set_box_aspect((1, 1, 1))
+        ax.set_box_aspect((1, 1, 1), zoom=zoom)
         ax.view_init(elev=elev, azim=azim)
         ax.set_title(label, fontsize=9)
         ax.set_axis_off()
     fig.tight_layout()
+
+    # Optional backdrop (default None → plain white, so QA sheets are unchanged).
+    # A solid ``(r,g,b)`` tint, or a vertical gradient ``((top_rgb, bottom_rgb))``
+    # drawn as a full-figure axes behind the transparent panels.
+    pad_color = "white"
+    if bg is not None:
+        if isinstance(bg[0], (tuple, list)):  # gradient
+            top = np.array(bg[0], dtype=float)
+            bot = np.array(bg[1], dtype=float)
+            ramp = np.linspace(0.0, 1.0, 256)[:, None]
+            grad = (top[None, :] * (1 - ramp) + bot[None, :] * ramp)[:, None, :]
+            bax = fig.add_axes((0, 0, 1, 1), zorder=-10)
+            bax.imshow(grad, aspect="auto", extent=(0, 1, 0, 1), interpolation="bilinear")
+            bax.set_axis_off()
+            pad_color = tuple(bot)
+        else:  # solid tint
+            pad_color = tuple(bg)
+
     png_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(str(png_path), facecolor="white", bbox_inches="tight", pad_inches=0.1)
+    # A backdrop must bleed to the edge — any pad band would frame it with a solid
+    # strip that mismatches the gradient. Plain white QA sheets keep their margin.
+    pad_inches = 0.0 if bg is not None else 0.1
+    fig.savefig(str(png_path), facecolor=pad_color, bbox_inches="tight", pad_inches=pad_inches)
     plt.close(fig)
     return png_path
 
@@ -127,9 +154,17 @@ def render_stl_to_png(
     *,
     views=DEFAULT_VIEWS,
     size: int = 760,
+    base_color=None,
+    bg=None,
+    zoom: float = 1.0,
 ) -> Path | None:
     """Render an STL mesh to a multi-view PNG. Returns the PNG path, or ``None``
-    if rendering failed (never raises — QA rendering must not break a build)."""
+    if rendering failed (never raises — QA rendering must not break a build).
+
+    ``base_color`` overrides the fully-lit material RGB (0..1 triple); ``bg`` sets a
+    backdrop (solid ``(r,g,b)`` or vertical gradient ``(top_rgb, bottom_rgb)``); ``zoom``
+    enlarges the part within the frame (>1 fills more of the panel). All three
+    default to the slate-blue-on-white QA look so review sheets are unchanged."""
     try:
         import numpy as np
         import trimesh
@@ -139,7 +174,8 @@ def render_stl_to_png(
         faces = np.asarray(mesh.faces, dtype=int)
         if verts.size == 0 or faces.size == 0:
             return None
-        return _render_tris(verts[faces], png_path, views=views, size=size)
+        return _render_tris(verts[faces], png_path, views=views, size=size,
+                            base_color=base_color, bg=bg, zoom=zoom)
     except Exception:
         return None
 

@@ -840,6 +840,15 @@ interface CadcodeResult {
 }
 ```
 
+**Who reads what.** The stdout line is consumed by the `claude` CLI as the
+tool-call result — it is what the *model* sees; the Rust driver never parses
+it. The driver's load-bearing machine contract is the `.step.json` sidecar:
+the review-fix loop (`collect_workspace_warnings` in
+`commands/claude_driver.rs`) walks every `*.step.json` in the workspace and
+reads `validation.warnings`, gating on `severity` — `"info"` is advisory,
+`"warning"` + kind `"functional"` drives the functional pass, everything
+else blocks — not on the enumerated `kind` strings above (that set is open).
+
 The Tauri driver's `check` variant (mtime-clean inspection) re-uses this
 schema but with `step_path`/`stl_path`/etc. omitted (results from a
 tempdir).
@@ -926,8 +935,7 @@ cleanly. A failed sandbox writes nothing — the driver sees no
 If you find a real reason to change one of these contracts during
 implementation:
 
-1. Open a discussion in `panda/docs/panda-interfaces-CHANGES.md` (not yet
-   created — add one when needed).
+1. Open a discussion in `panda/docs/panda-interfaces-CHANGES.md`.
 2. Note which tracks are affected.
 3. Land the change on `main` BEFORE the affected tracks merge so worktrees
    can rebase.

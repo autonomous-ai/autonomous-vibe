@@ -5,9 +5,7 @@ sandboxed subprocess. cadpy reads ``main.py``, calls ``gen_step()`` (or the
 legacy ``result = …`` form), and writes the full Panda artifact set next to
 ``output_path``:
 
-  <stem>.step  <stem>.glb  <stem>.topology.json  <stem>.step.json
-  <stem>.stl   (only if envelope `stl=True`)
-  <stem>.3mf   (only if envelope `3mf=True`)
+  <stem>.step  <stem>.stl  <stem>.step.json
 
 Prints a single JSON line on stdout matching contract §3 ``CadcodeResult``.
 """
@@ -33,9 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="scripts/cad",
         description=(
-            "Compile a CadQuery project (or single .py) into STEP + GLB + "
-            "topology + metadata (+ optional STL/3MF) via the cadpy "
-            "artifact pipeline."
+            "Compile a CadQuery project (or single .py) into STEP + STL + "
+            "metadata via the cadpy artifact pipeline."
         ),
     )
     p.add_argument(

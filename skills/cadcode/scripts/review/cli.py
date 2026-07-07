@@ -106,7 +106,11 @@ def _parse_section(spec: str) -> tuple[str, float | None]:
 
 
 def _resolve_sidecar(input_path: Path, stem: str | None) -> Path | None:
-    """Find the ``<stem>.step.json`` sidecar for the given input."""
+    """Find the ``<stem>.step.json`` sidecar for the given input.
+
+    Raises ``ValueError`` when a directory holds several sidecars and no
+    ``--stem`` was given — silently picking one would review the wrong model.
+    """
     input_path = input_path.resolve()
     if input_path.is_file():
         if input_path.name.endswith(".step.json"):
@@ -120,7 +124,13 @@ def _resolve_sidecar(input_path: Path, stem: str | None) -> Path | None:
             cand = input_path / f"{stem}.step.json"
             return cand if cand.is_file() else None
         sidecars = sorted(input_path.glob("*.step.json"))
-        return sidecars[0] if len(sidecars) == 1 else (sidecars[0] if sidecars else None)
+        if len(sidecars) > 1:
+            names = ", ".join(s.name[: -len(".step.json")] for s in sidecars)
+            raise ValueError(
+                f"{input_path} holds {len(sidecars)} .step.json sidecars "
+                f"({names}) — pass --stem to pick one"
+            )
+        return sidecars[0] if sidecars else None
     return None
 
 
@@ -134,7 +144,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.input.exists():
         return _err(f"input not found: {args.input}")
 
-    sidecar = _resolve_sidecar(args.input, args.stem)
+    try:
+        sidecar = _resolve_sidecar(args.input, args.stem)
+    except ValueError as exc:
+        return _err(str(exc))
     if sidecar is None:
         return _err(
             f"no .step.json sidecar found for {args.input} — generate the model "

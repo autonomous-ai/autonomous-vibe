@@ -30,3 +30,23 @@ prompt arg) is unchanged.
 **Tracks affected.** Tauri (`ipc/types.rs`, `commands/chat.rs`,
 `commands/catalog.rs`, `tauri.conf.json`), chat (viewer `transport.ts`,
 `store/chat.js`, composer). No cadpy / skill impact.
+
+## 2026-07-06 — §3 clarification: who consumes the stdout line vs the sidecar
+
+**Change.** Docs-only clarification of §3 ("Skill stdout + artifact
+contract"): the `CadcodeResult` stdout line is consumed by the `claude` CLI
+as the tool-call result (what the model sees); the Rust driver never parses
+it. The driver's load-bearing machine contract is the `.step.json` sidecar's
+`validation.warnings`, which the review-fix loop gates on `severity` (not on
+the enumerated `kind` strings — that set is open). Also removed the stale
+"(not yet created)" note about this CHANGES file.
+
+**Why.** The old wording read as if the driver deserialized the stdout JSON,
+which could mislead a contract change: renaming a stdout field is invisible
+to the driver, while renaming a `validation.warnings` field breaks the
+review loop.
+
+**Backward compatible.** No schema, wire format, or behavior changed —
+prose only, describing what the code already does.
+
+**Tracks affected.** None.

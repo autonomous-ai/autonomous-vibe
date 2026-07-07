@@ -15,7 +15,9 @@ Import the helpers, don't copy-paste from references. Example:
         boss_height=12,
         hole_type="self_tap",
     )
-    result = body
+
+    def gen_step():
+        return body
 
 Each helper follows the convention:
 
@@ -34,7 +36,6 @@ Each module is its own focused topic:
 - ``cadlib.fits``        — FDM mating clearances: derive a slot/peg from one nominal
 - ``cadlib.styling``     — unified radius language: soften / chamfer edges, derive radii
 - ``cadlib.layout``      — point generators (corner / grid / circle)
-- ``cadlib.export``      — STEP + STL writers
 - ``cadlib.tables``      — canonical hardware dimension tables
 
 When no helper fits, write custom geometry directly in the user's ``.py``

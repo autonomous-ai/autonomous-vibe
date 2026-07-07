@@ -67,7 +67,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             shutil.rmtree(scratch, ignore_errors=True)
 
     # Strip the path fields — they were tempfiles
-    for k in ("stl_path", "step_path", "glb_path", "topology_path", "metadata_path", "png_path"):
+    for k in ("stl_path", "step_path", "metadata_path"):
         payload.pop(k, None)
     print(json.dumps(payload))
     return 0 if payload.get("ok") else 1

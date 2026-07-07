@@ -340,3 +340,23 @@ def test_skill_md_lists_every_pattern():
     for pattern in PATTERN_NAMES:
         ref = f"references/patterns/{pattern}.md"
         assert ref in skill_md, f"SKILL.md missing pointer to {ref}"
+
+
+# -- Review tool -------------------------------------------------------------
+
+
+def test_review_multiple_sidecars_requires_stem(tmp_path: Path):
+    """A dir holding several .step.json sidecars must error (exit 2) and
+    name the candidates instead of silently reviewing the first one;
+    ``--stem`` disambiguates."""
+    for stem in ("alpha", "beta"):
+        (tmp_path / f"{stem}.step.json").write_text("{}", encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "review"), str(tmp_path)],
+        capture_output=True, text=True, timeout=20,
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert payload["ok"] is False
+    msg = payload["error"]["message"]
+    assert "--stem" in msg and "alpha" in msg and "beta" in msg

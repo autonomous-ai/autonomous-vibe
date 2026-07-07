@@ -65,16 +65,10 @@ Rules of the project format:
   section). The legacy ``result = <shape>`` form is still accepted for
   trivial single-file scripts — the runner treats it as if
   ``gen_step()`` returned ``result``.
-- **Every mating interface shares one dimension.** A tab and its slot, a lip
-  and its groove, a boss and its hole, a peg and its socket — both sides derive
-  from a **single** base value in `params.py`, with the FDM clearance applied in
-  exactly **one** place. Never size the two halves independently (that is how a
-  tab and slot silently drift until they jam or fall out). Prefer the helpers
-  that emit both halves from one call/table (`add_nut_trap`,
-  `add_open_cable_channel`, `add_screw_post`); for a hand-built mate, derive the
-  second half from the first with `cadlib.fits` — `slot_for(tab, fit)` (female
-  for a male) or `peg_for(hole, fit)` (male for a female) pick the correct FDM
-  clearance so the two halves can't drift. See `assets/example_snap_lid_box.py`.
+- **Every mating interface shares one dimension.** Both halves of a mate
+  derive from a **single** base value in `params.py`, with the FDM clearance
+  applied in exactly **one** place — never size the two halves independently.
+  Full rule + the helpers that enforce it: step 6 of "Running the loop".
 - **One file per physical part** under `parts/`. Each part knows nothing
   about its siblings; it builds in its own local frame.
 - **Each feature is its own function.** `add_left_usb_c_cutout(part, p)`,
@@ -123,7 +117,7 @@ What "fix" means in practice:
 
 - ``ok=false``: read the traceback, change the smallest responsible line, re-run.
 - ``is_solid=false`` or volume far off expected: load `references/repair-loop.md`, classify, fix, re-run.
-- ``warnings`` non-empty (e.g. ``disconnected_bodies``, ``collision``, ``sliver``, ``invalid_brep``): these are deterministic geometry defects — **treat them as blocking**. A ``disconnected_bodies`` warning means a feature is floating off the body (placed outside its footprint, or never unioned) — or, for a **mechanism**, two pinned links whose shared joint was posed by eyeballed angles instead of solved, so they never meet. Anchor it to the body (`references/patterns/anchor-to-body.md`) or solve the loop so the joint coincides (`references/kinematic-placement.md`), and re-run. A ``collision`` warning means two assembled parts occupy the same space (a boss pokes through a wall, a part is mispositioned) — reposition or resize so mating faces meet at the right clearance, and re-run. Do not declare done while any **blocking** warning remains. (The advisory `sharp_edges` hint — `severity: "info"` — is **not** blocking: address it within printability and leave functional arrises sharp; see step 6.)
+- ``warnings`` non-empty: deterministic geometry defects — any non-`info` warning is **blocking** (full taxonomy: Non-negotiables). For ``disconnected_bodies``, anchor the floating feature to the body (`references/patterns/anchor-to-body.md`) or, for a mechanism, solve the joint so the links actually meet (`references/kinematic-placement.md`). For ``collision``, reposition or resize so mating faces meet at the right clearance. Fix and re-run.
 - Preview STL looks wrong (proportions off, hole misplaced, parts misaligned, a member poking through a plate): edit the `.py` and re-run. **Always inspect every part** — geometry can be valid (`is_solid=true`, no warnings) but still wrong.
 
 You have everything you need to close the loop on your own:
@@ -141,8 +135,9 @@ what makes you feel like an engineer instead of an autocomplete.
 
 ## Plan-phase design discipline
 
-When Panda runs you in **planning mode** (`--permission-mode plan`), you write
-no geometry — you produce the plan the user approves before the build. That plan
+When Panda runs you in its **Plan phase** (enforced by the phase system
+prompt: no writing `.py`, no running the generator), you write no geometry —
+you produce the plan the user approves before the build. That plan
 is an **engineering spec**, not a sales pitch. Hold it to five rules:
 
 1. **Exact measurements.** Every dimension, quantity, and metric is a precise
@@ -385,12 +380,9 @@ knowing the user?* If yes, it's engineering — decide it.
 - **Source = the `.py` file (or project) you wrote**. STEP, STL, and the
   metadata sidecar are *derived*. When the user asks for a change, edit the
   `.py` and re-generate. Do not edit the STL or STEP.
-- **Entry function**: every CadQuery file (or project ``main.py``) you
-  produce **must** define ``gen_step()`` at module scope, returning either
-  a ``cq.Workplane`` / ``cq.Shape`` / ``cq.Assembly``, or an envelope
-  ``dict``. The legacy single-file form — assigning the final shape to a
-  module-level global named ``result`` — is still accepted for trivial
-  scripts. Without one of these, the runner fails.
+- **Entry function**: ``gen_step()`` at module scope (or the legacy
+  ``result =`` form for trivial scripts) — the contract is in the project
+  rules above. Without one of these, the runner fails.
 
 ## Available tools
 
@@ -432,8 +424,7 @@ pipeline:
 - `<name>.step.json` — source hash, generator metadata, validation summary
   (``is_solid``, ``volume_mm3``, mesh tolerances).
 
-Prints a single JSON line on stdout matching the Panda skill stdout
-contract (§3 in ``docs/panda-interfaces.md``):
+Prints a single JSON line on stdout:
 ``{ok, step_path, stl_path, metadata_path, is_solid, volume_mm3, bbox,
 error?}``.
 
@@ -476,12 +467,9 @@ spec — see [Plan-phase design discipline](#plan-phase-design-discipline).)
 Write the file with:
 - A 1-line docstring at top describing the part.
 - Named parameters with units in comments (`PHONE_W = 77  # iPhone 15 PM`).
-- A single ``gen_step()`` function at module scope that returns the final
-  ``cq.Workplane`` / ``cq.Shape`` / ``cq.Assembly`` (or an envelope
-  ``dict`` if you need to tune mesh tolerance — see
+- A single ``gen_step()`` function at module scope returning the final
+  shape (or an envelope ``dict`` to tune mesh tolerance — see
   the [Artifact-control envelope](#artifact-control-envelope) section).
-  Trivial single-file scripts may use the legacy ``result = <shape>``
-  module-level form instead.
 
 Pick a filename from the part: `phone_stand.py`, `gopro_adapter.py`. Use
 absolute paths for the `Write` tool — the workspace cwd is not the skill
@@ -503,23 +491,24 @@ visually wrong. Work the plan's **Verification checklist** here: clear each item
 with BOTH its sanity check (a number / assert / `functional` warning) and its
 visual check (a render — a **cross-section** for any interior interface):
 
-- **Resolve `warnings` first.** The JSON's ``warnings`` array lists
-  deterministic defects cadpy already found — `disconnected_bodies` (a part is
-  several detached solids → something floats), `collision` (two assembled parts
-  interpenetrate → a feature pokes through or a part is mispositioned), `sliver`,
-  `invalid_brep`. Any warning is blocking; go to step 7.
-- **Prove the parts fit and don't collide (multi-part designs).** cadpy now runs
-  a pairwise `collision` check across the assembled parts — but a clean check
-  only proves they don't *overlap*, not that they *join*. For every mating
-  interface (tab/slot, lip/groove, boss/hole, peg/socket), confirm both sides
-  derive from **one** source-of-truth dimension in `params.py` plus the FDM
-  clearance applied in **one** place — so the male and female can never drift
-  apart (the atomic helpers `add_nut_trap` / `add_open_cable_channel` and the
-  table-driven `add_screw_post` already guarantee this; for a hand-built
-  tab/slot or dovetail tab, put the shared base dimension in `params.py` and add
-  the clearance once). Then walk the assembly sequence: there must be a real
-  ordered path to put it together (lid drops past the lip, captive cable passes
-  the opening). A model with valid solids but unchecked mating is **not done**.
+- **Resolve `warnings` first.** Any non-`info` warning in the JSON's
+  ``warnings`` array is blocking (full taxonomy: Non-negotiables) — go to
+  step 7.
+- **Prove the parts fit and don't collide (multi-part designs).** A clean
+  pairwise `collision` check only proves the parts don't *overlap*, not that
+  they *join*. **The mating rule (canonical):** for every mating interface — a
+  tab and its slot, a lip and its groove, a boss and its hole, a peg and its
+  socket — both sides derive from **one** source-of-truth dimension in
+  `params.py`, with the FDM clearance applied in exactly **one** place. Never
+  size the two halves independently: that is how a tab and slot silently drift
+  until they jam or fall out. The atomic helpers (`add_nut_trap`,
+  `add_open_cable_channel`, `add_screw_post`) already guarantee this; for a
+  hand-built mate, derive the second half with `cadlib.fits` — `slot_for(tab,
+  fit)` (female for a male) or `peg_for(hole, fit)` (male for a female) — see
+  `assets/example_snap_lid_box.py`. Then walk the assembly sequence: there must
+  be a real ordered path to put it together (lid drops past the lip, captive
+  cable passes the opening). A model with valid solids but unchecked mating is
+  **not done**.
 - **Look at every part from all directions, AND the assembly.** Run
   ``python scripts/review <project_dir>`` — it renders the assembled model and
   *each named part* from **all directions** (a 3/4 iso plus all six axis-aligned
@@ -536,17 +525,15 @@ visual check (a render — a **cross-section** for any interior interface):
   justify a part, or it does not connect to anything, it is a defect — fix it.
 - **Clear the Verification checklist, item by item.** For each item do BOTH a
   sanity check and a visual check. **(A) Per component:** every feature sits on
-  SOLID material — a tooth, peg, boss, or rib perched over a void / hole / notch
-  is half-supported and weak; depths actually reach. **(B) Per interface:** the
-  mating features actually MEET in the right axis and can TRANSMIT their force — a
-  coupling sitting clear of its pegs doesn't drive, a smooth pocket over round
-  pegs can't transmit torque, a captive cable's collar must pass its opening.
-  Walk the plan's assembly sequence against the renders, cross-sectioning the
-  interior interfaces. Encode each item as a hard `validate()` assert (impossible
-  fits) **and** a `functional` warning returned from `gen_step()`
-  (`return {"shape": shape, "warnings": functional_checks(p)}`); the
-  `.step.json` `validation.warnings` lists any `functional` failures — fix the
-  geometry/params and re-run until they're gone. See
+  SOLID material (nothing perched over a void / hole / notch) and depths
+  actually reach. **(B) Per interface:** the mating features MEET in the right
+  axis and can TRANSMIT their force (a smooth pocket over round pegs can't
+  drive; a captive cable's collar must pass its opening). Walk the plan's
+  assembly sequence against the renders, cross-sectioning interior interfaces.
+  Encode each item as a hard `validate()` assert (impossible fits) **and** a
+  `functional` warning returned from `gen_step()`
+  (`return {"shape": shape, "warnings": functional_checks(p)}`) — fix the
+  geometry/params and re-run until the `.step.json` lists none. See
   `references/component-integration.md`.
 - **Critique the look against the premium bar.** Reading those same PNGs, judge
   each part against `references/industrial-design.md`: does it carry one unified
@@ -605,10 +592,8 @@ assumptions you made.
   opening, a coupling that doesn't engage its drive pegs, or a feature perched
   over a void) — fix it. The advisory `sharp_edges` hint (`severity: "info"`) is not
   blocking — soften what you can within printability and leave functional arrises
-  sharp. Always run `scripts/review` and inspect **every** PNG — every part from
-  **all directions**, the assembled product, and the interior cross-sections —
-  not just the assembled preview; fix what the renders reveal and re-render to
-  confirm before declaring done.
+  sharp. Always run `scripts/review` and `Read` **every** PNG it produces
+  before declaring done (the full drill is step 6).
 - Ask the user only about *personal preferences* that change geometry, and ask
   the fewest possible. Decide every *engineering* choice silently from the
   references — never ask about wall thickness, clearance, joint/fastener type,
@@ -633,8 +618,9 @@ when you need to mimic a pattern):
 | ``assets/example_snap_lid_box.py`` | **Multi-part fit (study this for any assembly).** A real `cq.Assembly` of base + lid as separate printed parts: the lid lip is derived from the base cavity via `cadlib.fits.peg_for` (one shared dimension), seated collision-clean, with `functional_checks()` proving it assembles |
 
 These are the canonical patterns. Mimic the file shape: docstring at top,
-named parameters at the top of the file, single ``result = ...`` at the
-bottom.
+named parameters at the top of the file, a single ``gen_step()`` at module
+scope returning the final shape. (Some older assets still use the legacy
+``result = ...`` form — copy their geometry, not that shape.)
 
 ## Progressive references
 
@@ -692,8 +678,8 @@ from cadlib.cutouts   import (
     add_press_fit_pocket, add_magnet_pocket, add_bearing_seat, add_cable_channel,
     add_open_cable_channel,   # captive cable + connector collar (installable)
 )
-from cadlib.mechanical import add_dovetail_slot, add_rib_stiffener
-from cadlib.fits      import mating_clearance, slot_for, peg_for  # shared mating dims
+from cadlib.mechanical import add_snap_fit_cantilever, add_dovetail_slot, add_rib_stiffener
+from cadlib.fits      import mating_clearance, slot_for, peg_for, print_in_place_gap  # shared mating dims
 from cadlib.styling   import design_radius_for, soften_edges, break_edges
 from cadlib.kinematics import solve_fourbar, place_two_point, circle_intersections
 from cadlib.layout    import four_corner_points, grid_points, circle_points
@@ -727,12 +713,10 @@ them when designing a similar product:
 | `electronics_enclosure.py` | hollow_box + add_lid_lip + four_corner_points + add_screw_post + custom side port + lid_plate |
 | `magnetic_lid_box.py`      | hollow_box + four_corner_points + add_magnet_pocket × 2 (base + lid) + lid_plate |
 
-Both currently produce a single assembled ``result`` for the preview
-— a v0 single-file shape. New designs should wrap that final shape in a
-``gen_step()`` function instead. For multi-part products where each piece
-prints separately, follow the ``cq.Assembly`` pattern in
-``references/assembly.md`` — cadpy preserves part names, colors, and
-locations in the STEP file.
+Both return the assembled preview shape from ``gen_step()``. For multi-part
+products where each piece prints separately, follow the ``cq.Assembly``
+pattern in ``references/assembly.md`` — cadpy preserves part names, colors,
+and locations in the STEP file.
 
 ## Pattern library
 

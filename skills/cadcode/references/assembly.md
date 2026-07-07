@@ -85,7 +85,7 @@ Do **not** flatten the Assembly with `result = cq.Workplane().add(assy.toCompoun
 and do **not** hand-export per-part STLs with `cq.exporters` — `import os` /
 file writes are blocked by the sandbox, and they are unnecessary: returning the
 `cq.Assembly` (or a `{"children": [...]}` envelope / a `list` of parts) is the
-supported contract (see `docs/panda-interfaces.md` §1).
+supported contract (in the Panda repo: `docs/panda-interfaces.md` §1).
 
 What you get on disk after `scripts/cad`:
 

@@ -400,18 +400,10 @@ pub async fn publish_project(workspace: &Path) -> IpcResult<PublishResponse> {
             already_published: true,
         });
     }
-    if !has_model(workspace) {
-        return Err(IpcError::new(
-            "SOCIAL_NO_MODEL",
-            "build a model before publishing",
-        ));
-    }
-    if !has_cover(workspace) {
-        return Err(IpcError::new(
-            "SOCIAL_NO_COVER",
-            "no preview render yet to use as the cover — try again after the model finishes rendering",
-        ));
-    }
+    // Pre-flight model/cover gates are intentionally skipped for the manual
+    // Publish button: attempt the upload regardless and let the server decide
+    // (it may still reject with a 400 if there is genuinely no cover). The
+    // silent post-build hook keeps its own gates via `maybe_import_after_build`.
 
     // Obtain an access token; a missing or rejected token becomes
     // SOCIAL_TOKEN_REQUIRED so the UI prompts the user to (re)enter one.

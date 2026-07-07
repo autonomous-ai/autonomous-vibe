@@ -123,7 +123,11 @@ esac
 # additionally pin the extras the cadcode skill imports directly.
 DEP_SET=(
   "-e" "${CADPY_PKG}"
-  "cadquery"
+  # <2.8: cadquery 2.8.0 hard-requires numba -> llvmlite, neither of which has a
+  # macOS x86_64 (Intel) wheel for the required versions, so the Intel sidecar
+  # cross-build compiles llvmlite from source and fails on missing LLVM. Keep in
+  # sync with the cap in packages/cadpy/pyproject.toml.
+  "cadquery<2.8"
   "numpy"
   "pillow"
   "trimesh"

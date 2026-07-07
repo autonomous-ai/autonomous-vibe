@@ -66,4 +66,5 @@ lid = add_magnet_pocket(
 )
 
 # 5. Assembled view: lid floats above the base
-result = base.union(lid.translate((0, 0, p.height + p.lid_thickness / 2 + 0.5)))
+def gen_step():
+    return base.union(lid.translate((0, 0, p.height + p.lid_thickness / 2 + 0.5)))

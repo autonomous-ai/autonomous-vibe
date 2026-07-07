@@ -8,9 +8,7 @@ rlimits, installs the import allow-list, and hands the project dir to
 user's ``gen_step()`` (or back-compat ``result = …``) inside this same
 sandbox process, and writes:
 
-  <stem>.step   <stem>.glb   <stem>.topology.json   <stem>.step.json
-  <stem>.stl    (if envelope `stl=True`)
-  <stem>.3mf    (if envelope `3mf=True`)
+  <stem>.step   <stem>.stl   <stem>.step.json
 
 The parent (this module's ``run_sandboxed_sync``) handles wall-clock kills
 and JSON unwrapping for the CLI.

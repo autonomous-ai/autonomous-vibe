@@ -602,8 +602,44 @@ fn openable_app_path(bin: &Path) -> PathBuf {
 /// Hand a file to an installed app via the OS "open with" facility, detached so
 /// the slicer keeps running after this call returns. `target` only shapes the
 /// error message so it names the app the user actually has.
+///
+/// On macOS the Launch Services shim (`open -a <app>`) is wrapped in
+/// `sandbox-exec -p <profile>` so OrcaSlicer / Bambu Studio inherit a
+/// Seatbelt policy that denies AppleEvent + Mach paths to Music / iTunes.
+/// Without this wrap, the slicer's audio-chime feature triggers a
+/// parent-attributed Apple Music TCC prompt on launch. Off-macOS we fall
+/// back to the `open` crate, which is a pure Launch Services shim with no
+/// AppleEvent surface to worry about.
 fn open_file_with_app(file: &Path, app: &Path, target: OpenTargetApp) -> IpcResult<()> {
-    open::with_detached(file, app.to_string_lossy().to_string()).map_err(|e| {
+    let launch_result: std::io::Result<()> = (|| {
+        #[cfg(target_os = "macos")]
+        {
+            use std::process::{Command, Stdio};
+            const PROFILE: &str = include_str!("../../resources/slicer/orca-sandbox.sb");
+            // Detach: spawn() returns as soon as Launch Services hands the
+            // file to the .app. stdin/stdout/stderr are all /dev/null so a
+            // `sandbox-exec` build with verbose tracing can't keep pipes
+            // open and surface weird interactions.
+            Command::new("/usr/bin/sandbox-exec")
+                .arg("-p")
+                .arg(PROFILE)
+                .arg("open")
+                .arg("-a")
+                .arg(app)
+                .arg(file)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map(|_| ())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            open::with_detached(file, app.to_string_lossy().to_string())
+                .map_err(|e| std::io::Error::other(e.to_string()))
+        }
+    })();
+    launch_result.map_err(|e| {
         IpcError::new(
             "SLICER_APP_OPEN_FAILED",
             format!("could not open {} in {}: {e}", file.display(), target.label()),

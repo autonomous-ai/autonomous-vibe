@@ -32,6 +32,42 @@ const SLICE_PROGRESS_EVENT: &str = "slice_progress";
 const SLICE_TIMEOUT: Duration = Duration::from_secs(300);
 
 // ---------------------------------------------------------------------------
+// macOS Seatbelt wrapper for the slicer
+// ---------------------------------------------------------------------------
+//
+// OrcaSlicer (and Bambu Studio) ship a feature that plays a chime in Music.app
+// via the AppleScript/AppleEvent bridge. macOS attributes that AppleEvent to
+// Panda — the parent that spawned the slicer — so the user gets a
+// `"Panda" would like to access Apple Music` prompt on every slice. We wrap
+// the slicer child in `sandbox-exec -p <profile>` with a Seatbelt policy that
+// denies the AppleEvent + Mach paths to Music / iTunes. The deny sits at the
+// kernel sandbox layer, above TCC, so the prompt never appears regardless of
+// the user's prior "Allow" / "Don't Allow" choice.
+//
+// The profile is embedded at compile time so dev (`cargo run`) and prod
+// (`.app`) are byte-identical and there's no runtime path-lookup footgun.
+
+#[cfg(target_os = "macos")]
+const ORCA_SEATBELT_PROFILE: &str = include_str!("../../resources/slicer/orca-sandbox.sb");
+
+/// On macOS, return the wrapped (program, args) so the slicer runs under
+/// Seatbelt with Music/AppleEvent paths denied. Off-macOS the original
+/// (bin, args) are returned unchanged. The profile is a deny-only delta on
+/// top of the child's entitlements — it does not affect slicing.
+#[cfg(target_os = "macos")]
+fn maybe_sandbox_slicer(bin: &Path, args: &[String]) -> (PathBuf, Vec<String>) {
+    let mut wrapped = vec!["-p".to_string(), ORCA_SEATBELT_PROFILE.to_string()];
+    wrapped.push(bin.to_string_lossy().to_string());
+    wrapped.extend(args.iter().cloned());
+    (PathBuf::from("/usr/bin/sandbox-exec"), wrapped)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn maybe_sandbox_slicer(bin: &Path, args: &[String]) -> (PathBuf, Vec<String>) {
+    (bin.to_path_buf(), args.to_vec())
+}
+
+// ---------------------------------------------------------------------------
 // Public Tauri commands
 // ---------------------------------------------------------------------------
 
@@ -1176,10 +1212,19 @@ async fn spawn_slicer(bin: &Path, args: &[String]) -> Result<SlicerOutcome, IpcE
             .join(" ")
     );
 
+    // On macOS, wrap the slicer in sandbox-exec with a Seatbelt profile that
+    // blocks AppleEvent + Mach paths to Music / iTunes, so the slicer's
+    // audio-chime feature can't trigger the parent-attributed Apple Music TCC
+    // prompt. Logged here (not in the helper) so a regression shows up in the
+    // existing "[panda] executing slicer: …" log trail.
+    #[cfg(target_os = "macos")]
+    eprintln!("[panda] wrapping slicer with Seatbelt to block Apple Music access");
+    let (program, args) = maybe_sandbox_slicer(bin, args);
+
     // Build via std::process::Command so the Windows creation flag can be set,
     // then convert to a tokio command for the async wait + kill_on_drop.
-    let mut std_cmd = std::process::Command::new(bin);
-    std_cmd.args(args);
+    let mut std_cmd = std::process::Command::new(&program);
+    std_cmd.args(&args);
     std_cmd.stdout(Stdio::piped());
     std_cmd.stderr(Stdio::piped());
     // On Windows, suppress the console window that would otherwise flash when
@@ -2852,5 +2897,44 @@ G1 X20 Y20 E1.0\n";
     fn extracts_no_warnings_from_clean_output() {
         let stdout = b"[ts] [t] [warning] cli mode, Current OrcaSlicer Version 2.3.2\n[ts] [t] [info] slicing complete\n";
         assert!(extract_slicer_warnings(stdout, b"").is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn spawn_wraps_slicer_in_sandbox_exec() {
+        // On macOS, every slicer invocation must be wrapped in
+        // `sandbox-exec -p <profile> <bin> <args…>` so the embedded Seatbelt
+        // policy can deny the AppleEvent + Mach paths to Music. If this test
+        // ever flips to "no wrap" the user will start seeing the parent-
+        // attributed "Panda would like to access Apple Music" prompt again.
+        let bin = PathBuf::from("/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer");
+        let args = vec!["--slice".into(), "0".into(), "/tmp/in.stl".into()];
+        let (program, wrapped) = maybe_sandbox_slicer(&bin, &args);
+        assert_eq!(program, PathBuf::from("/usr/bin/sandbox-exec"));
+        assert_eq!(wrapped[0], "-p");
+        // The profile is the embedded .sb; spot-check that it actually
+        // contains the deny lines we rely on, so a future edit to the file
+        // doesn't silently strip the block.
+        assert!(
+            wrapped[1].contains("(deny appleevent-send"),
+            "profile missing appleevent-send deny: {}",
+            wrapped[1]
+        );
+        assert!(wrapped[1].contains("com.apple.Music"));
+        // The real slicer binary + original args come after the profile.
+        assert!(wrapped[2].ends_with("OrcaSlicer"));
+        assert_eq!(&wrapped[3..], &args[..]);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn spawn_does_not_wrap_slicer_off_macos() {
+        // Off macOS the helper is a pass-through — sandbox-exec doesn't exist
+        // and there's no Music prompt to block.
+        let bin = PathBuf::from("/usr/local/bin/orcaslicer");
+        let args = vec!["--slice".into(), "0".into(), "/tmp/in.stl".into()];
+        let (program, wrapped) = maybe_sandbox_slicer(&bin, &args);
+        assert_eq!(program, bin);
+        assert_eq!(wrapped, args);
     }
 }

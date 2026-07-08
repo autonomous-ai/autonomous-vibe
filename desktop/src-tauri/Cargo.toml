@@ -36,6 +36,10 @@ tauri-plugin-updater = "2"
 # Single-instance: focuses the existing window and de-dupes launches when the
 # user reopens the app. See lib.rs setup.
 tauri-plugin-single-instance = "2"
+# Registers the app as the OS handler for the `myide://` scheme so the panda-
+# social browser sign-in flow can hand a one-time code back via deep link. See
+# lib.rs setup and commands/social.rs.
+tauri-plugin-deep-link = "2"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -97,6 +101,9 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 # Tauri's stack; pinned here as a direct dep for commands/social.rs. `deflate`
 # keeps STEP/STL zips comfortably under the API's ≤50 MB recommendation.
 zip = { version = "4", default-features = false, features = ["deflate"] }
+# PKCE S256 challenge (SHA-256) for the panda-social browser sign-in flow
+# (commands/social.rs).
+sha2 = "0.10"
 
 # Bambu cloud printing (commands/cloud.rs).
 # Real CA trust anchors for the *cloud* MQTT broker (us.mqtt.bambulab.com),

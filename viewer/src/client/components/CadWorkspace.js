@@ -272,7 +272,7 @@ import {
 import { emitCadRefSelection } from "@/components/chat/cadRefEvents";
 import { basename, pickPrinterForSlice, PRINT_CONFIG_CHANGED_EVENT } from "@/components/chat/actionButtonsHelpers";
 import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
-import PublishTokenDialog from "@/components/project/PublishTokenDialog.jsx";
+import PublishSignInDialog from "@/components/project/PublishSignInDialog.jsx";
 import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, selectSliceTargetStl, getChatState, setPendingViewContext, startTurn, useChatStore, selectAwaitingAnswerProjectIds, awaitingNeedsUser } from "@/store/chat";
 import { useAutopilot } from "@/lib/autopilot";
 import { useProjectsStore } from "@/store/projects.ts";
@@ -744,8 +744,8 @@ export default function CadWorkspace({
   const [publishing, setPublishing] = useState(false);
   const [publishStatus, setPublishStatus] = useState("");
   const [publishStatusError, setPublishStatusError] = useState(false);
-  // Opened when a publish reports SOCIAL_TOKEN_REQUIRED (no/expired token).
-  const [publishTokenOpen, setPublishTokenOpen] = useState(false);
+  // Opened when a publish reports SOCIAL_TOKEN_REQUIRED (no/expired session).
+  const [publishSignInOpen, setPublishSignInOpen] = useState(false);
   // Terminal slice toast (success or failure), kept separate from the
   // overloaded `screenshotStatus` so failures can be styled as errors.
   const [sliceStatus, setSliceStatus] = useState("");
@@ -6768,9 +6768,9 @@ export default function CadWorkspace({
       );
     } catch (err) {
       console.error("publish failed", err);
-      // No token / expired token → open the token prompt instead of a toast.
+      // No session / expired session → open the sign-in prompt instead of a toast.
       if (err?.code === "SOCIAL_TOKEN_REQUIRED" || err?.code === "SOCIAL_NO_TOKEN") {
-        setPublishTokenOpen(true);
+        setPublishSignInOpen(true);
       } else {
         setPublishStatusError(true);
         setPublishStatus(describePublishError(err));
@@ -7813,11 +7813,11 @@ export default function CadWorkspace({
           }}
         />
 
-        <PublishTokenDialog
-          open={publishTokenOpen}
-          onOpenChange={setPublishTokenOpen}
-          onSaved={() => {
-            // Token saved & validated — retry the publish that prompted it.
+        <PublishSignInDialog
+          open={publishSignInOpen}
+          onOpenChange={setPublishSignInOpen}
+          onSignedIn={() => {
+            // Signed in — retry the publish that prompted it.
             void handlePublish();
           }}
         />

@@ -1,29 +1,42 @@
-//! Copy a finished project to panda-social via the design-import API.
+//! panda-social sign-in and publish.
 //!
-//! Contract: `docs/design-import-api.md` in `autonomous-ecm/panda-social-backend`.
-//! `POST /api/v1/designs/import` ingests an **already-finished design folder**
-//! (a `.py`/`project.json` design plus a resolvable cover image) as a zip and
-//! returns the created design synchronously. Nothing AI runs server-side — the
-//! client holds no infrastructure secrets, only a user bearer token.
+//! Publish contract: `docs/design-import-api.md` in
+//! `autonomous-ecm/panda-social-backend`. `POST /api/v1/designs/import`
+//! ingests an **already-finished design folder** (a `.py`/`project.json`
+//! design plus a resolvable cover image) as a zip and returns the created
+//! design synchronously. Nothing AI runs server-side — the client holds no
+//! infrastructure secrets, only a user bearer token.
 //!
-//! This module is the client half: it zips the project workspace (keeping the
-//! `<stem>_review/` render PNGs the API uses for the cover, dropping local-only
-//! cruft), POSTs it as `multipart/form-data`, and records the result so a given
-//! project is imported **once** — not re-published on every subsequent edit.
+//! Sign-in contract: PKCE + browser + deep-link OAuth, a direct port of the
+//! "Sign in with Panda" flow's mechanics (see `git show a2db75d:desktop/src-tauri/src/commands/app.rs`
+//! for the reference implementation, deleted in `9f5f834` along with the
+//! unrelated Claude-proxy feature it originally served). The app opens the
+//! system browser at the hosted login page; the user signs in with Google
+//! there; the page hands control back via a `myide://auth/callback` deep
+//! link carrying a one-time code; the app trades that code for this backend's
+//! own access + refresh JWTs via `POST /api/v1/auth/exchange`.
 //!
-//! The single entry point is [`maybe_import_after_build`], called best-effort
-//! from the chat driver after a build+review settles. It never fails a turn.
+//! This module has two halves: the sign-in flow ([`social_login`] and
+//! friends), and the publish flow — it zips the project workspace (keeping
+//! the `<stem>_review/` render PNGs the API uses for the cover, dropping
+//! local-only cruft), POSTs it as `multipart/form-data`, and records the
+//! result so a given project is imported **once** — not re-published on every
+//! subsequent edit. The publish entry point is [`maybe_import_after_build`],
+//! called best-effort from the chat driver after a build+review settles; it
+//! never fails a turn.
 
 use std::io::{Cursor, Write};
 use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager as _, State};
 use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 
-use crate::ipc::types::PublishResponse;
+use crate::ipc::types::{PublishResponse, SocialLoginProgress, SocialLoginResult, SocialUser};
 use crate::ipc::{IpcError, IpcResult};
+use crate::state::{AppState, PendingSocialLogin};
 
 /// Base endpoint for the design-import API (see the curl example in the doc).
 const IMPORT_URL: &str = "https://panda-social-api.autonomous.ai/api/v1/designs/import";
@@ -31,12 +44,26 @@ const IMPORT_URL: &str = "https://panda-social-api.autonomous.ai/api/v1/designs/
 /// Token-refresh endpoint: `POST {"refresh_token"}` → `{access_token, refresh_token}`.
 const REFRESH_URL: &str = "https://panda-social-api.autonomous.ai/api/v1/auth/refresh";
 
-/// Optional compiled-in **refresh** JWT fallback. When left as the placeholder
-/// (the default), there is no baked-in token: [`resolve_refresh_token`] returns
-/// `None` unless the user has saved one via [`social_set_token`], which makes the
-/// Publish flow prompt for a token. Set this to a real refresh token only if you
-/// want a shipped default; the user-saved token always takes precedence.
-const REFRESH_TOKEN: &str = "REPLACE_WITH_PANDA_SOCIAL_REFRESH_TOKEN";
+/// Hosted login page the browser opens for step 2 of the sign-in flow (see
+/// `APP_LOGIN_INTEGRATION.md`'s end-to-end flow diagram).
+const WEB_LOGIN_URL: &str = "https://panda.autonomous.ai/login";
+
+/// One-time-code exchange endpoint: `POST {code, code_verifier}` →
+/// `{access_token, refresh_token, user}`.
+const EXCHANGE_URL: &str = "https://panda-social-api.autonomous.ai/api/v1/auth/exchange";
+
+/// Custom URL scheme the OS routes back to the app so the browser can hand
+/// over the OAuth `code`. MUST stay in sync with `tauri.conf.json`
+/// (`plugins.deep-link.desktop.schemes`) and the backend's `DEEPLINK_SCHEMES`
+/// allow-list (already includes `myide` per the integration doc).
+const DEEPLINK_SCHEME: &str = "myide://";
+const REDIRECT_URI: &str = "myide://auth/callback";
+
+/// How long `social_login` waits for the browser round trip before giving up.
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Tauri event streaming [`SocialLoginProgress`] while `social_login` runs.
+pub const SOCIAL_LOGIN_PROGRESS_EVENT: &str = "social_login_progress";
 
 /// Publish state for imported designs. `draft` keeps them owner-only; flip to
 /// `public` to land on the feed immediately (the API's own default).
@@ -50,11 +77,15 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// don't create a duplicate design on the next build/edit turn.
 const IMPORT_MARKER_REL: &str = ".panda/social-import.json";
 
-/// User-provided auth, persisted to `<app-data>/panda-social-auth.json`. Holds
-/// the long-lived refresh token the user pastes via [`social_set_token`].
+/// Signed-in session, persisted to `<app-data>/panda-social-auth.json`. Holds
+/// the long-lived refresh token minted by [`social_login`]'s exchange, plus
+/// the account it belongs to (for a "Signed in as …" UI without a network
+/// round trip).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredAuth {
     refresh_token: String,
+    #[serde(default)]
+    user: Option<SocialUser>,
 }
 
 /// Path to the persisted auth file.
@@ -62,34 +93,46 @@ fn auth_path() -> std::path::PathBuf {
     crate::paths::app_data_dir().join("panda-social-auth.json")
 }
 
-/// The refresh token the user saved, if any.
-fn stored_refresh_token() -> Option<String> {
+/// The stored session, if any.
+fn stored_auth() -> Option<StoredAuth> {
     let bytes = std::fs::read(auth_path()).ok()?;
     let auth: StoredAuth = serde_json::from_slice(&bytes).ok()?;
-    let t = auth.refresh_token.trim().to_string();
-    if t.is_empty() {
+    if auth.refresh_token.trim().is_empty() {
         None
     } else {
-        Some(t)
+        Some(auth)
     }
 }
 
-/// Persist the user's refresh token (overwrites any previous one).
-fn store_refresh_token(refresh: &str) -> std::io::Result<()> {
+/// The refresh token from the signed-in session, if any.
+fn resolve_refresh_token() -> Option<String> {
+    stored_auth().map(|a| a.refresh_token)
+}
+
+/// The account of the signed-in session, if any. Backs `social_current_user`
+/// so the UI can show "Signed in as …" without a network round trip.
+fn stored_user() -> Option<SocialUser> {
+    stored_auth().and_then(|a| a.user)
+}
+
+/// Persist a signed-in session (overwrites any previous one).
+fn store_session(refresh_token: &str, user: &SocialUser) -> std::io::Result<()> {
     let path = auth_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let auth = StoredAuth {
-        refresh_token: refresh.to_string(),
+        refresh_token: refresh_token.to_string(),
+        user: Some(user.clone()),
     };
     let bytes = serde_json::to_vec_pretty(&auth)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     std::fs::write(path, bytes)
 }
 
-/// Forget the saved token (sign out / test the prompt path). Absent file is ok.
-fn clear_stored_token() -> std::io::Result<()> {
+/// Forget the saved session (sign out, or a rejected/expired token). Absent
+/// file is ok.
+fn clear_stored_session() -> std::io::Result<()> {
     match std::fs::remove_file(auth_path()) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -97,79 +140,12 @@ fn clear_stored_token() -> std::io::Result<()> {
     }
 }
 
-/// Resolve the effective refresh token: the user-saved one first, else the
-/// compiled-in default (skipped while it's the placeholder / empty). `None`
-/// means "no token — the UI must prompt for one".
-fn resolve_refresh_token() -> Option<String> {
-    if let Some(t) = stored_refresh_token() {
-        return Some(t);
-    }
-    let baked = REFRESH_TOKEN.trim();
-    if baked.is_empty() || baked == "REPLACE_WITH_PANDA_SOCIAL_REFRESH_TOKEN" {
-        None
-    } else {
-        Some(baked.to_string())
-    }
-}
-
-/// Accept either a raw refresh-token JWT or the web app's auth-state JSON blob
-/// (`{"state":{"refreshToken":…}}`) and pull the refresh token out of it.
-fn parse_refresh_token_input(raw: &str) -> Option<String> {
-    let s = raw.trim();
-    if s.is_empty() {
-        return None;
-    }
-    // JSON blob — dig out the refresh token from the common shapes.
-    if s.starts_with('{') {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
-            const PATHS: &[&[&str]] = &[
-                &["state", "refreshToken"],
-                &["state", "refresh_token"],
-                &["refreshToken"],
-                &["refresh_token"],
-            ];
-            for path in PATHS {
-                let mut cur = &v;
-                let mut ok = true;
-                for key in *path {
-                    match cur.get(key) {
-                        Some(next) => cur = next,
-                        None => {
-                            ok = false;
-                            break;
-                        }
-                    }
-                }
-                if ok {
-                    if let Some(tok) = cur.as_str() {
-                        if is_jwt(tok) {
-                            return Some(tok.to_string());
-                        }
-                    }
-                }
-            }
-            return None;
-        }
-    }
-    // Bare JWT.
-    if is_jwt(s) {
-        Some(s.to_string())
-    } else {
-        None
-    }
-}
-
-/// Loose JWT shape check: three dot-separated segments, `eyJ…` header.
-fn is_jwt(s: &str) -> bool {
-    s.split('.').count() == 3 && s.starts_with("eyJ")
-}
-
 /// Why we couldn't get an access token — the caller turns both into a
-/// `SOCIAL_TOKEN_REQUIRED` error so the UI prompts for a (new) token.
+/// `SOCIAL_TOKEN_REQUIRED` error so the UI prompts the user to sign in.
 enum AuthError {
-    /// No token configured at all.
+    /// No session at all — the user has never signed in.
     Missing,
-    /// A token exists but the refresh endpoint rejected it (expired/invalid).
+    /// A refresh token exists but the refresh endpoint rejected it (expired/invalid).
     Rejected(String),
 }
 
@@ -311,9 +287,10 @@ pub async fn maybe_import_after_build(workspace: &Path) {
             ));
         }
         Err(ImportError::Unauthorized(code)) => {
-            // Token is bad — forget it so the next manual publish prompts.
-            log_line(&format!("import for {name} got {code} — clearing saved token"));
-            let _ = clear_stored_token();
+            // Session is bad — forget it so the next manual publish prompts a
+            // fresh sign-in.
+            log_line(&format!("import for {name} got {code} — clearing saved session"));
+            let _ = clear_stored_session();
         }
         Err(e) => {
             // Best-effort — a later build will retry (no marker was written).
@@ -336,46 +313,283 @@ pub async fn project_publish(id: String) -> IpcResult<PublishResponse> {
     publish_project(&workspace).await
 }
 
-/// IPC: whether a panda-social token is configured (stored or baked-in). The UI
-/// uses this to decide whether the Publish flow will need to prompt first.
+/// IPC: whether a panda-social session is configured. The UI uses this to
+/// decide whether the Publish flow will need to prompt for sign-in first.
 #[tauri::command]
 pub fn social_has_token() -> bool {
     resolve_refresh_token().is_some()
 }
 
-/// IPC: save the token the user pasted into the prompt. Accepts a bare refresh
-/// JWT or the web app's auth-state JSON, validates it against the refresh
-/// endpoint (so a bad/expired/access-only token is rejected up front), then
-/// persists it for future publishes.
+/// IPC: the signed-in account, if any — lets the UI show "Signed in as …"
+/// without a network round trip.
 #[tauri::command]
-pub async fn social_set_token(token: String) -> IpcResult<()> {
-    let refresh = parse_refresh_token_input(&token).ok_or_else(|| {
-        IpcError::new(
-            "SOCIAL_INVALID_TOKEN",
-            "Couldn't find a token in that text — paste your refresh-token JWT or the sign-in JSON",
-        )
-    })?;
-    let client = http_client().map_err(|e| IpcError::new("SOCIAL_INVALID_TOKEN", format!("{e}")))?;
-    // Validate before persisting: a valid refresh token yields an access token.
-    fetch_access_token(&client, &refresh).await.map_err(|e| {
-        IpcError::new(
-            "SOCIAL_INVALID_TOKEN",
-            format!("panda-social rejected that token ({e}) — make sure it's a current refresh token"),
-        )
-    })?;
-    store_refresh_token(&refresh)
-        .map_err(|e| IpcError::new("SOCIAL_STORE_FAILED", format!("could not save token: {e}")))?;
-    log_line("saved a new panda-social token");
+pub fn social_current_user() -> Option<SocialUser> {
+    stored_user()
+}
+
+/// IPC: sign in to panda-social via the browser + deep-link OAuth flow (PKCE-
+/// protected). Opens the system browser at [`WEB_LOGIN_URL`], waits for the
+/// `myide://auth/callback` deep link (routed here by [`handle_social_deeplink`]),
+/// exchanges the one-time code for a session, and persists it. Progress
+/// streams via the `social_login_progress` event (see [`SOCIAL_LOGIN_PROGRESS_EVENT`]).
+#[tauri::command]
+pub async fn social_login(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> IpcResult<SocialLoginResult> {
+    let emit = |progress: SocialLoginProgress| {
+        let _ = app.emit(SOCIAL_LOGIN_PROGRESS_EVENT, &progress);
+    };
+    let fail = |emit: &dyn Fn(SocialLoginProgress), code: &str, msg: String| -> IpcError {
+        emit(SocialLoginProgress::Error { message: msg.clone() });
+        IpcError::new(code, msg)
+    };
+
+    emit(SocialLoginProgress::Starting);
+
+    // 1. PKCE + CSRF state (kept in RAM only, never logged).
+    let verifier = random_b64url_32();
+    let challenge = pkce_challenge(&verifier);
+    let csrf_state = uuid::Uuid::new_v4().to_string();
+
+    // 2. Arm the pending sign-in BEFORE opening the browser so a fast callback
+    //    can't race the receiver into existence.
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
+    state.set_pending_social_login(PendingSocialLogin {
+        state: csrf_state.clone(),
+        tx,
+    });
+
+    // 3. Open the hosted login page in the system browser.
+    let url = build_login_url(&challenge, &csrf_state);
+    if let Err(e) = open::that_detached(&url) {
+        state.take_pending_social_login();
+        return Err(fail(
+            &emit,
+            "SOCIAL_BROWSER_FAILED",
+            format!("could not open your browser to sign in: {e}"),
+        ));
+    }
+    emit(SocialLoginProgress::AwaitingBrowser { url });
+
+    // 4. Wait for the deep-link handler to deliver the one-time code.
+    let code = match tokio::time::timeout(LOGIN_TIMEOUT, rx).await {
+        Ok(Ok(Ok(code))) => code,
+        Ok(Ok(Err(msg))) => return Err(fail(&emit, "SOCIAL_LOGIN_FAILED", msg)),
+        Ok(Err(_recv)) => {
+            return Err(fail(
+                &emit,
+                "SOCIAL_LOGIN_FAILED",
+                "Sign-in was interrupted. Please try again.".to_string(),
+            ))
+        }
+        Err(_elapsed) => {
+            // Clear the still-armed slot so a late callback doesn't find a
+            // closed receiver.
+            state.take_pending_social_login();
+            return Err(fail(
+                &emit,
+                "SOCIAL_LOGIN_TIMEOUT",
+                "Timed out waiting for you to finish signing in.".to_string(),
+            ));
+        }
+    };
+
+    // 5. Exchange the code for a session.
+    emit(SocialLoginProgress::Verifying);
+    let (refresh_token, user) = match exchange_code_for_tokens(&code, &verifier).await {
+        Ok(pair) => pair,
+        Err(err) => return Err(fail(&emit, "SOCIAL_EXCHANGE_FAILED", err.message)),
+    };
+
+    // 6. Persist + finish.
+    store_session(&refresh_token, &user)
+        .map_err(|e| fail(&emit, "SOCIAL_STORE_FAILED", format!("could not save session: {e}")))?;
+    log_line(&format!("signed in as {} ({})", user.username, user.id));
+    emit(SocialLoginProgress::Done { user: user.clone() });
+    Ok(SocialLoginResult { user })
+}
+
+/// IPC: cancel an in-flight [`social_login`] — the user closed the browser
+/// tab or gave up and doesn't want to wait out [`LOGIN_TIMEOUT`]. Taking the
+/// pending slot drops its oneshot sender, which makes the awaiting
+/// `social_login`'s receiver resolve immediately instead of blocking. Also
+/// stops a late deep-link callback from silently completing a sign-in the
+/// user abandoned (it finds no pending slot → no-op). No-op if nothing pending.
+#[tauri::command]
+pub async fn social_cancel_login(state: State<'_, AppState>) -> IpcResult<()> {
+    state.take_pending_social_login();
     Ok(())
 }
 
-/// IPC: forget the saved token (sign out). Baked-in default, if any, still applies.
+/// IPC: forget the saved session (sign out).
 #[tauri::command]
-pub fn social_clear_token() -> IpcResult<()> {
-    clear_stored_token()
-        .map_err(|e| IpcError::new("SOCIAL_STORE_FAILED", format!("could not clear token: {e}")))?;
-    log_line("cleared the saved panda-social token");
+pub fn social_logout() -> IpcResult<()> {
+    clear_stored_session()
+        .map_err(|e| IpcError::new("SOCIAL_STORE_FAILED", format!("could not sign out: {e}")))?;
+    log_line("signed out of panda-social");
     Ok(())
+}
+
+/// A URL-safe, unpadded base64 of 32 random bytes (two getrandom-backed v4
+/// UUIDs). Used for the PKCE `code_verifier` — avoids pulling in a new RNG dep.
+fn random_b64url_32() -> String {
+    use base64::Engine as _;
+    let mut bytes = Vec::with_capacity(32);
+    bytes.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
+    bytes.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// PKCE S256 challenge: `BASE64URL(SHA256(verifier))`, unpadded.
+fn pkce_challenge(verifier: &str) -> String {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(verifier.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
+}
+
+/// Build the hosted login URL with the PKCE challenge + CSRF state, percent-
+/// encoding each value.
+fn build_login_url(challenge: &str, state: &str) -> String {
+    use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+    let redirect = utf8_percent_encode(REDIRECT_URI, NON_ALPHANUMERIC);
+    let challenge = utf8_percent_encode(challenge, NON_ALPHANUMERIC);
+    let state = utf8_percent_encode(state, NON_ALPHANUMERIC);
+    format!(
+        "{WEB_LOGIN_URL}?redirect_uri={redirect}&code_challenge={challenge}\
+         &code_challenge_method=S256&state={state}"
+    )
+}
+
+/// Extract `code` + `state` from a deep-link callback URL like
+/// `myide://auth/callback?code=…&state=…`. Tolerant of host/path
+/// variants — only the query matters. `None` if either param is absent.
+fn parse_deeplink_callback(url: &str) -> Option<(String, String)> {
+    let query = url.split_once('?').map(|(_, q)| q)?;
+    let mut code = None;
+    let mut state = None;
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            let value = percent_encoding::percent_decode_str(v)
+                .decode_utf8_lossy()
+                .to_string();
+            match k {
+                "code" => code = Some(value),
+                "state" => state = Some(value),
+                _ => {}
+            }
+        }
+    }
+    match (code, state) {
+        (Some(c), Some(s)) => Some((c, s)),
+        _ => None,
+    }
+}
+
+/// Handle an incoming `myide://auth/callback?…` deep link: match the CSRF
+/// `state` against the armed sign-in and deliver the `code` (or an error) to
+/// the waiting [`social_login`] via its oneshot. No-op if the URL isn't our
+/// callback or no sign-in is pending. Called from both the deep-link plugin's
+/// `on_open_url` (cold start) and the single-instance callback (Windows/Linux
+/// warm start, where the URL arrives as a second process's argv).
+pub fn handle_social_deeplink(app: &AppHandle, url: &str) {
+    if !url.starts_with(DEEPLINK_SCHEME) {
+        return;
+    }
+    let Some(pending) = app.state::<AppState>().take_pending_social_login() else {
+        return;
+    };
+    let result = match parse_deeplink_callback(url) {
+        Some((code, state)) if state == pending.state => Ok(code),
+        Some(_) => Err(
+            "Sign-in response didn't match this request (state mismatch). Please try again."
+                .to_string(),
+        ),
+        None => Err("Sign-in response was missing its authorization code.".to_string()),
+    };
+    let _ = pending.tx.send(result);
+}
+
+#[derive(Deserialize)]
+struct ExchangeResponse {
+    refresh_token: String,
+    user: SocialUser,
+}
+
+/// POST the one-time `code` + PKCE `verifier` to the exchange endpoint and
+/// return `(refresh_token, user)`. Maps the documented 400 error codes to
+/// friendly copy.
+///
+/// Retries only on **transient** failures — a transport error (no response) or
+/// an HTTP 5xx/429 — with a short exponential backoff. Terminal responses (the
+/// documented 4xx codes like `code_expired` / `invalid_or_used_code`) are NOT
+/// retried: the `code` is single-use, so re-sending it after the server has
+/// already judged it is pointless and could only ever fail the same way. The
+/// same code is reused across transient retries because a 5xx/transport error
+/// means the server never consumed it.
+async fn exchange_code_for_tokens(code: &str, verifier: &str) -> IpcResult<(String, SocialUser)> {
+    const MAX_ATTEMPTS: u32 = 3;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| IpcError::new("SOCIAL_EXCHANGE_FAILED", e.to_string()))?;
+    let body = serde_json::json!({ "code": code, "code_verifier": verifier });
+
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let transient_err: String = match client.post(EXCHANGE_URL).json(&body).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                if status.is_success() {
+                    let parsed: ExchangeResponse = serde_json::from_str(&text).map_err(|e| {
+                        IpcError::new(
+                            "SOCIAL_EXCHANGE_FAILED",
+                            format!("unexpected sign-in response: {e}"),
+                        )
+                    })?;
+                    return Ok((parsed.refresh_token, parsed.user));
+                }
+                // 5xx / 429 → transient; any other non-2xx (e.g. the 400 codes)
+                // is terminal and surfaced immediately.
+                let transient = status.is_server_error()
+                    || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+                if !transient {
+                    return Err(IpcError::new(
+                        "SOCIAL_EXCHANGE_FAILED",
+                        map_exchange_error(&text),
+                    ));
+                }
+                format!("panda-social sign-in returned HTTP {status}")
+            }
+            Err(e) => format!("could not reach panda-social sign-in: {e}"),
+        };
+
+        if attempt >= MAX_ATTEMPTS {
+            return Err(IpcError::new("SOCIAL_EXCHANGE_FAILED", transient_err));
+        }
+        // Exponential backoff: 300ms, then 600ms.
+        let delay = std::time::Duration::from_millis(300 * 2u64.pow(attempt - 1));
+        tokio::time::sleep(delay).await;
+    }
+}
+
+/// Friendly copy for the documented exchange error codes. The body looks like
+/// `{"error":"code_expired"}`; we match on the code as a substring.
+fn map_exchange_error(body: &str) -> String {
+    let b = body.to_ascii_lowercase();
+    if b.contains("code_expired") {
+        "Your sign-in link expired. Please try signing in again.".to_string()
+    } else if b.contains("invalid_or_used_code") {
+        "That sign-in link was already used. Please try signing in again.".to_string()
+    } else if b.contains("pkce_verification_failed") {
+        "Sign-in verification failed. Please try again.".to_string()
+    } else {
+        "panda-social sign-in failed. Please try again.".to_string()
+    }
 }
 
 /// Publish a project workspace, returning the created (or already-existing)
@@ -413,15 +627,15 @@ pub async fn publish_project(workspace: &Path) -> IpcResult<PublishResponse> {
         Err(AuthError::Missing) => {
             return Err(IpcError::new(
                 "SOCIAL_TOKEN_REQUIRED",
-                "Sign in to panda-social — paste your access token to publish",
+                "Sign in to panda-social to publish",
             ));
         }
         Err(AuthError::Rejected(msg)) => {
-            log_line(&format!("publish {name}: token rejected ({msg}) — clearing saved token"));
-            let _ = clear_stored_token();
+            log_line(&format!("publish {name}: token rejected ({msg}) — clearing saved session"));
+            let _ = clear_stored_session();
             return Err(IpcError::new(
                 "SOCIAL_TOKEN_REQUIRED",
-                "Your panda-social session expired — paste a new token to publish",
+                "Your panda-social session expired — sign in again to publish",
             ));
         }
     };
@@ -429,13 +643,13 @@ pub async fn publish_project(workspace: &Path) -> IpcResult<PublishResponse> {
     log_line(&format!("publish {name}: importing → {IMPORT_URL} (status={IMPORT_STATUS})"));
     let design = match import(workspace, &access, &client).await {
         Ok(d) => d,
-        // 401/403 on the upload itself → the token is bad; forget it and prompt.
+        // 401/403 on the upload itself → the session is bad; forget it and prompt.
         Err(ImportError::Unauthorized(code)) => {
-            log_line(&format!("publish {name}: upload got {code} — clearing saved token"));
-            let _ = clear_stored_token();
+            log_line(&format!("publish {name}: upload got {code} — clearing saved session"));
+            let _ = clear_stored_session();
             return Err(IpcError::new(
                 "SOCIAL_TOKEN_REQUIRED",
-                "panda-social rejected your session — paste a new token to publish",
+                "panda-social rejected your session — sign in again to publish",
             ));
         }
         Err(e) => {
@@ -761,22 +975,89 @@ mod tests {
         eprintln!("wrote {} bytes to {out}", bytes.len());
     }
 
+    // -----------------------------------------------------------------
+    // panda-social sign-in: PKCE + deep-link parsing + session storage
+    // -----------------------------------------------------------------
+
     #[test]
-    fn parses_token_from_jwt_or_json_blob() {
-        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJ0eXAiOiJyZWZyZXNoIn0.sig";
-        // Bare JWT.
-        assert_eq!(parse_refresh_token_input(jwt).as_deref(), Some(jwt));
-        assert_eq!(parse_refresh_token_input(&format!("  {jwt}\n")).as_deref(), Some(jwt));
-        // Web app auth-state blob.
-        let blob = format!(r#"{{"state":{{"status":"authenticated","refreshToken":"{jwt}"}}}}"#);
-        assert_eq!(parse_refresh_token_input(&blob).as_deref(), Some(jwt));
-        // Snake-case top-level.
-        let blob2 = format!(r#"{{"refresh_token":"{jwt}"}}"#);
-        assert_eq!(parse_refresh_token_input(&blob2).as_deref(), Some(jwt));
-        // Garbage / non-JWT → None (prompt stays open).
-        assert!(parse_refresh_token_input("not a token").is_none());
-        assert!(parse_refresh_token_input("{}").is_none());
-        assert!(parse_refresh_token_input("").is_none());
+    fn pkce_challenge_is_base64url_sha256_of_verifier() {
+        // RFC 7636 Appendix B test vector: verifier → S256 challenge.
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        assert_eq!(
+            pkce_challenge(verifier),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+    }
+
+    #[test]
+    fn random_verifier_is_unpadded_and_unique() {
+        let a = random_b64url_32();
+        let b = random_b64url_32();
+        assert_ne!(a, b, "two verifiers must differ");
+        assert!(!a.contains('='), "no base64 padding");
+        assert!(!a.contains('+') && !a.contains('/'), "url-safe alphabet");
+        // 32 bytes → 43 base64url chars (no padding).
+        assert_eq!(a.len(), 43);
+    }
+
+    #[test]
+    fn build_login_url_encodes_params() {
+        let url = build_login_url("chal-_123", "state-abc");
+        assert!(url.starts_with(&format!("{WEB_LOGIN_URL}?")));
+        // redirect_uri is fully percent-encoded (no raw scheme/colon/slash).
+        assert!(url.contains("redirect_uri=myide%3A%2F%2Fauth%2Fcallback"));
+        assert!(url.contains("code_challenge_method=S256"));
+        assert!(url.contains("state=state%2Dabc"));
+    }
+
+    #[test]
+    fn parse_deeplink_callback_extracts_code_and_state() {
+        let (code, state) =
+            parse_deeplink_callback("myide://auth/callback?code=abc123&state=xyz")
+                .expect("both params present");
+        assert_eq!(code, "abc123");
+        assert_eq!(state, "xyz");
+    }
+
+    #[test]
+    fn parse_deeplink_callback_percent_decodes_and_ignores_extras() {
+        let (code, state) = parse_deeplink_callback(
+            "myide://auth/callback?state=a%2Db&foo=bar&code=one%20time",
+        )
+        .unwrap();
+        assert_eq!(code, "one time");
+        assert_eq!(state, "a-b");
+    }
+
+    #[test]
+    fn parse_deeplink_callback_rejects_missing_params() {
+        assert!(parse_deeplink_callback("myide://auth/callback?code=only").is_none());
+        assert!(parse_deeplink_callback("myide://auth/callback").is_none());
+    }
+
+    #[test]
+    fn map_exchange_error_covers_documented_codes() {
+        assert!(map_exchange_error(r#"{"error":"code_expired"}"#).contains("expired"));
+        assert!(map_exchange_error(r#"{"error":"invalid_or_used_code"}"#).contains("already used"));
+        assert!(map_exchange_error(r#"{"error":"pkce_verification_failed"}"#).contains("verification"));
+        assert!(map_exchange_error("").contains("failed"));
+    }
+
+    #[test]
+    fn stored_auth_roundtrips_refresh_token_and_user() {
+        let user = SocialUser {
+            id: "u1".to_string(),
+            username: "dee".to_string(),
+            display_name: "Dee".to_string(),
+        };
+        let auth = StoredAuth {
+            refresh_token: "eyJ.refresh.tok".to_string(),
+            user: Some(user.clone()),
+        };
+        let bytes = serde_json::to_vec(&auth).unwrap();
+        let parsed: StoredAuth = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed.refresh_token, auth.refresh_token);
+        assert_eq!(parsed.user, Some(user));
     }
 
     #[test]

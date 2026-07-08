@@ -491,6 +491,36 @@ export type SlicerInstallProgress =
   | { stage: "done"; version: string; binaryPath: string }
   | { stage: "error"; message: string };
 
+// panda-social sign-in (PKCE + deep-link browser OAuth) ----------------------
+
+/**
+ * The signed-in panda-social account. Mirrors the serde struct in
+ * `desktop/src-tauri/src/ipc/types.rs::SocialUser`.
+ */
+export interface SocialUser {
+  id: string;
+  username: string;
+  displayName?: string;
+}
+
+/** Result of a completed `social_login`. */
+export interface SocialLoginResult {
+  user: SocialUser;
+}
+
+/**
+ * Discriminated union streamed via the `social_login_progress` Tauri event
+ * while `social_login` drives the browser + deep-link round trip. Mirrors
+ * the serde enum in `desktop/src-tauri/src/ipc/types.rs::SocialLoginProgress`
+ * (tag = "stage", snake_case variants, camelCase fields).
+ */
+export type SocialLoginProgress =
+  | { stage: "starting" }
+  | { stage: "awaiting_browser"; url: string }
+  | { stage: "verifying" }
+  | { stage: "done"; user: SocialUser }
+  | { stage: "error"; message: string };
+
 export interface CatalogChangedEvent {
   revision: number;
 }
@@ -934,6 +964,20 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
       return undefined as unknown as T;
     case "update_latest_version":
       return "0.0.0-stub" as unknown as T;
+    case "social_has_token":
+      return false as unknown as T;
+    case "social_current_user":
+      return null as unknown as T;
+    case "social_login":
+      // The real sign-in drives a system-browser + deep-link round trip —
+      // Tauri only.
+      throw {
+        code: "PLATFORM_UNSUPPORTED",
+        message: `${STUB_TAG} panda-social sign-in only runs inside Tauri`,
+      } as IpcError;
+    case "social_cancel_login":
+    case "social_logout":
+      return undefined as unknown as T;
     default:
       throw new Error(`${STUB_TAG} unknown command: ${cmd}`);
   }
@@ -1050,8 +1094,10 @@ const transportBase = {
   project_publish: (id: string) =>
     invoke<PublishResponse>("project_publish", { id }),
   social_has_token: () => invoke<boolean>("social_has_token"),
-  social_set_token: (token: string) => invoke<void>("social_set_token", { token }),
-  social_clear_token: () => invoke<void>("social_clear_token"),
+  social_current_user: () => invoke<SocialUser | null>("social_current_user"),
+  social_login: () => invoke<SocialLoginResult>("social_login"),
+  social_cancel_login: () => invoke<void>("social_cancel_login"),
+  social_logout: () => invoke<void>("social_logout"),
 
   // snapshots (model save-states) — see desktop/src-tauri/src/commands/snapshot.rs
   snapshot_list: (projectId: string) =>
@@ -1112,6 +1158,8 @@ const transportBase = {
     listenEvent<ClaudeInstallProgress>("claude_install_progress", handler),
   onClaudeLoginProgress: (handler: (event: ClaudeLoginProgress) => void) =>
     listenEvent<ClaudeLoginProgress>("claude_login_progress", handler),
+  onSocialLoginProgress: (handler: (event: SocialLoginProgress) => void) =>
+    listenEvent<SocialLoginProgress>("social_login_progress", handler),
   onSlicerInstallProgress: (handler: (event: SlicerInstallProgress) => void) =>
     listenEvent<SlicerInstallProgress>("slicer_install_progress", handler),
   onUpdateEvent: (handler: (event: UpdateEvent) => void) =>

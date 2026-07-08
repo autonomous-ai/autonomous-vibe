@@ -7,6 +7,7 @@ import { bindCadRefSelectionToChatInput } from "./components/chat/cadRefEvents";
 import WindowMenuBar from "./components/WindowMenuBar.jsx";
 import WelcomeScreen from "./components/onboarding/WelcomeScreen.jsx";
 import { shouldOnboard } from "./components/onboarding/onboardingHelpers.js";
+import AccountScreen from "./components/workbench/AccountScreen.jsx";
 import UpdateNotifier from "./components/update/UpdateNotifier.jsx";
 import faviconUrl from "./assets/favicon.ico";
 import "./styles/globals.css";
@@ -142,6 +143,11 @@ function AppRoot() {
   // Live width of the resizable chat panel. Lifted here because it drives both
   // the panel itself and the workspace's right padding so neither overlaps.
   const [chatSidebarWidth, setChatSidebarWidth] = useState(readStoredChatSidebarWidth);
+
+  // Full-screen account overlay. Lifted to AppRoot so the overlay covers the
+  // whole viewport (including the chat sidebar) without being trapped inside
+  // CadWorkspace's positioning/overflow context.
+  const [accountScreenOpen, setAccountScreenOpen] = useState(false);
 
   // Chat-vs-workspace layout coordination. AppRoot is the one place the chat
   // panel and the workspace meet, so it owns the math that keeps the model
@@ -310,6 +316,7 @@ function AppRoot() {
               onModelsSidebarChange={handleModelsSidebarChange}
               onToolsSheetChange={handleToolsSheetChange}
               closeLeftSidebarSignal={closeLeftSidebarSignal}
+              onOpenAccountScreen={() => setAccountScreenOpen(true)}
             />
           </div>
           <ChatSidebar
@@ -331,6 +338,14 @@ function AppRoot() {
     <>
       {content}
       <UpdateNotifier />
+      {accountScreenOpen ? (
+        <div className="pointer-events-auto fixed inset-0 z-[100] bg-background/80 backdrop-blur-sm">
+          <AccountScreen
+            open={accountScreenOpen}
+            onOpenChange={setAccountScreenOpen}
+          />
+        </div>
+      ) : null}
     </>
   );
 }

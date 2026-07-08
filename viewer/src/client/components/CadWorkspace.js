@@ -604,7 +604,8 @@ export default function CadWorkspace({
   catalogError = "",
   onModelsSidebarChange = null,
   onToolsSheetChange = null,
-  closeLeftSidebarSignal = 0
+  closeLeftSidebarSignal = 0,
+  onOpenAccountScreen = null
 }) {
   const manifestEntries = Array.isArray(manifestEntriesProp) ? manifestEntriesProp : [];
   const catalogEntries = manifestEntries;
@@ -746,6 +747,9 @@ export default function CadWorkspace({
   const [publishStatusError, setPublishStatusError] = useState(false);
   // Opened when a publish reports SOCIAL_TOKEN_REQUIRED (no/expired session).
   const [publishSignInOpen, setPublishSignInOpen] = useState(false);
+  // Full-screen account overlay. The state lives in AppRoot (so the overlay
+  // can be mounted at the viewport level, covering the chat sidebar too),
+  // and we just call `onOpenAccountScreen` to ask AppRoot to open it.
   // Terminal slice toast (success or failure), kept separate from the
   // overloaded `screenshotStatus` so failures can be styled as errors.
   const [sliceStatus, setSliceStatus] = useState("");
@@ -7438,6 +7442,7 @@ export default function CadWorkspace({
               catalogError={catalogError}
               resizable={isDesktop}
               onStartResize={handleStartSidebarResize}
+              onOpenAccountScreen={onOpenAccountScreen}
             />
 
             <div className="pointer-events-none relative min-w-0 flex-1 overflow-hidden">

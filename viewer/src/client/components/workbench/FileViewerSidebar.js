@@ -736,7 +736,8 @@ function FileViewerContents({
   catalogRefreshing = false,
   catalogError = "",
   resizable = true,
-  onStartResize
+  onStartResize,
+  onOpenAccountScreen
 }) {
   const queryActive = query.trim().length > 0;
   // Per-file render props shared by every project's tree. Generation/status
@@ -846,7 +847,7 @@ function FileViewerContents({
         </ScrollArea>
       </SidebarContent>
       <SidebarFooter className="border-t border-sidebar-border p-1">
-        <SidebarUserCard />
+        <SidebarUserCard onOpenAccountScreen={onOpenAccountScreen} />
       </SidebarFooter>
       <SidebarResizeHandle onStartResize={resizable ? onStartResize : null} />
     </>
@@ -889,7 +890,8 @@ export default function FileViewerSidebar({
   catalogRefreshing = false,
   catalogError = "",
   resizable = true,
-  onStartResize
+  onStartResize,
+  onOpenAccountScreen
 }) {
   const { isMobile, state, openMobile, setOpenMobile } = useSidebar();
 
@@ -934,6 +936,7 @@ export default function FileViewerSidebar({
       catalogError={catalogError}
       resizable={resizable}
       onStartResize={onStartResize}
+      onOpenAccountScreen={onOpenAccountScreen}
     />
   );
 

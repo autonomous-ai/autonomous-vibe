@@ -11,6 +11,20 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::oneshot;
+
+/// The in-RAM context for an in-flight panda-social browser sign-in.
+/// `social_login` stashes this before opening the browser; the deep-link
+/// handler matches `state` and delivers the one-time `code` (or an error)
+/// through `tx`. Never persisted.
+pub struct PendingSocialLogin {
+    /// The CSRF `state` value sent to the web login page; the callback must
+    /// echo it back or the response is rejected.
+    pub state: String,
+    /// Fires once with the authorization `code` on a matched callback, or an
+    /// error string the command surfaces to the UI.
+    pub tx: oneshot::Sender<Result<String, String>>,
+}
 
 pub struct AppState {
     /// Monotonic counter incremented when the catalog scanner detects
@@ -53,6 +67,11 @@ pub struct AppState {
     /// Claude session otherwise still "remembers" the edits made after that
     /// snapshot. Keyed by `projectId`.
     pending_revert_notes: Mutex<HashMap<String, String>>,
+
+    /// Armed by `social_login` while awaiting the `myide://auth/callback`
+    /// deep link; consumed by the deep-link handler. `None` when no
+    /// panda-social sign-in is in progress.
+    pending_social_login: Mutex<Option<PendingSocialLogin>>,
 }
 
 impl AppState {
@@ -67,6 +86,7 @@ impl AppState {
             active_project: Mutex::new(None),
             login_pty_writer: Mutex::new(None),
             pending_revert_notes: Mutex::new(HashMap::new()),
+            pending_social_login: Mutex::new(None),
         }
     }
 
@@ -173,6 +193,21 @@ impl AppState {
     /// once at the start of a chat turn.
     pub fn take_pending_revert_note(&self, project_id: &str) -> Option<String> {
         self.pending_revert_notes.lock().remove(project_id)
+    }
+
+    /// Arm the pending panda-social sign-in (see [`PendingSocialLogin`]).
+    /// Replaces any previous pending login (shouldn't happen — the UI blocks
+    /// concurrent sign-in attempts — but last-writer-wins is the safe default).
+    pub fn set_pending_social_login(&self, pending: PendingSocialLogin) {
+        *self.pending_social_login.lock() = Some(pending);
+    }
+
+    /// Take (and clear) the pending sign-in, if any. Called by the deep-link
+    /// handler on a matched callback, by `social_cancel_login` to abort, and by
+    /// `social_login` itself on timeout to stop a late callback from finding a
+    /// stale slot.
+    pub fn take_pending_social_login(&self) -> Option<PendingSocialLogin> {
+        self.pending_social_login.lock().take()
     }
 }
 

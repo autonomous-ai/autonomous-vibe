@@ -7,8 +7,14 @@ name = "cadpy"
 version = "0.1.2"
 description = "Shared STEP + STL artifact generation runtime for CAD skills."
 requires-python = ">=3.11"
+# cadquery is capped below 2.8: cadquery 2.8.0 added a hard `numba` dependency,
+# which pulls `llvmlite`. Neither ships a macOS x86_64 (Intel) wheel for the
+# versions 2.8 requires, so the Intel sidecar cross-build (release.yml) falls
+# back to compiling llvmlite from source and fails on missing LLVM. 2.7.0 has
+# no numba dep and pins cadquery-ocp 7.8.1.1.post1, which has Intel wheels.
+# Lift this cap once numba/llvmlite publish Intel wheels or Intel is dropped.
 dependencies = [
-  "cadquery",
+  "cadquery<2.8",
   "cadquery-ocp",
   "numpy",
   "trimesh",

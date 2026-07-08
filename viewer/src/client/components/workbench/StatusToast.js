@@ -5,9 +5,9 @@ import {
   ToastViewport
 } from "../ui/toast";
 
-export default function StatusToast({ copyStatus, screenshotStatus, persistenceStatus, motionErrorStatus, sliceStatus, sliceStatusSeverity, printStatus, printStatusError, previewMode, onClear }) {
-  const message = motionErrorStatus || sliceStatus || printStatus || copyStatus || screenshotStatus || persistenceStatus;
-  const isError = Boolean(motionErrorStatus) || (Boolean(sliceStatus) && sliceStatusSeverity === "error") || (Boolean(printStatus) && printStatusError);
+export default function StatusToast({ copyStatus, screenshotStatus, persistenceStatus, motionErrorStatus, sliceStatus, sliceStatusSeverity, printStatus, printStatusError, publishStatus, publishStatusError, previewMode, onClear }) {
+  const message = motionErrorStatus || sliceStatus || printStatus || publishStatus || copyStatus || screenshotStatus || persistenceStatus;
+  const isError = Boolean(motionErrorStatus) || (Boolean(sliceStatus) && sliceStatusSeverity === "error") || (Boolean(printStatus) && printStatusError) || (Boolean(publishStatus) && publishStatusError);
   // A slice can also succeed *with* warnings the slicer raised about the model
   // (floating regions, unsupported overhangs) — amber, not red: the plate sliced.
   const isWarning = !isError && Boolean(sliceStatus) && sliceStatusSeverity === "warning";

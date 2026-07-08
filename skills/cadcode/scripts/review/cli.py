@@ -11,7 +11,8 @@ Prints a single JSON line on stdout::
     "ok": true,
     "stem": "ladybug_robot",
     "warnings": [ { "part", "kind", "detail", "severity" }, ... ],
-    "assembled_png": "<abs path>",          // may be null if render failed
+    "assembled_png": "<abs path>",          // multi-view QA grid (_qa.png); null on fail
+    "cover_png": "<abs path>",              // single-iso hero cover (_assembled.png)
     "renders": [ { "part", "stl_path", "png_path" }, ... ],
     "section_png": "<abs path>",            // first cross-section, back-compat
     "section_pngs": [ { "axis", "part", "png_path" }, ... ]
@@ -36,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -44,6 +46,69 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 for _p in (SCRIPTS_DIR, SCRIPTS_DIR / "packages"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
+
+
+# ---------------------------------------------------------------------------
+# Card cover ("hero") look for the web/social publish.
+#
+# The publish flow zips the workspace and the panda-social import API resolves
+# the design cover from the `<stem>_review/` PNGs by name — the render called
+# `_assembled.png` is the one it treats as THE cover. So the cover takes the
+# `_assembled.png` slot: a single unlabeled iso "hero" in a per-project filament
+# color over a soft color-matched gradient. The multi-view slate-blue QA grid the
+# build's review-fix loop actually inspects for defects is written alongside as
+# `_qa.png` (and surfaced as `assembled_png` in the JSON). Keeping "assembled" out
+# of the QA grid's name is deliberate — it must not outscore the cover.
+# ---------------------------------------------------------------------------
+_COVER_VIEWS = (("", 24.0, -58.0),)  # one iso panel, no title
+_COVER_SIZE = 900
+_COVER_ZOOM = 1.5  # single hero panel → fill the frame (mplot3d's default reads small)
+
+# Curated filament palette (fully-lit base RGB, 0..1): a per-project color keeps
+# the feed varied without the muddy / near-white / near-black misfires raw random
+# RGB hits; all read well over the light gradient backdrop.
+_COVER_PALETTE = [
+    (0.910, 0.475, 0.169),  # orange
+    (0.839, 0.271, 0.271),  # red
+    (0.910, 0.725, 0.231),  # amber
+    (0.243, 0.557, 0.353),  # green
+    (0.184, 0.651, 0.604),  # teal
+    (0.204, 0.702, 0.831),  # cyan
+    (0.298, 0.494, 0.941),  # blue
+    (0.486, 0.361, 0.839),  # violet
+    (0.851, 0.373, 0.627),  # pink
+]
+
+
+def _cover_color(seed: str) -> tuple[float, float, float]:
+    """Pick a palette color deterministically from ``seed`` (the project stem), so a
+    given project always renders the same cover color while the feed stays varied.
+    Seeding a local RNG keeps it stable across re-renders."""
+    return random.Random(seed or "").choice(_COVER_PALETTE)
+
+
+def _cover_bg(color: tuple[float, float, float]) -> tuple:
+    """Soft vertical gradient from the part color: near-white at the top fading to a
+    light tint of the color at the bottom, so the backdrop matches the hue."""
+    top = tuple(c * 0.06 + 0.94 for c in color)
+    bot = tuple(c * 0.30 + 0.70 for c in color)
+    return (top, bot)
+
+
+def render_cover(render_fn, stl_path: Path, out_png: Path, seed: str) -> Path | None:
+    """Render the single-iso hero cover for ``stl_path`` into ``out_png`` via the
+    shared renderer ``render_fn`` (``render_stl_to_png``). Never raises — a failed
+    cover just leaves the QA grid as the publish fallback."""
+    color = _cover_color(seed)
+    return render_fn(
+        str(stl_path),
+        str(out_png),
+        views=_COVER_VIEWS,
+        base_color=color,
+        bg=_cover_bg(color),
+        size=_COVER_SIZE,
+        zoom=_COVER_ZOOM,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -167,12 +232,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     review_dir = base_dir / f"{stem}_review"
 
-    # Assembled model (always written by cadpy as <stem>.stl).
+    # Assembled model (always written by cadpy as <stem>.stl). Two renders:
+    #   _qa.png        — multi-view slate-blue QA grid; the render-fix loop reads it
+    #                    (surfaced as `assembled_png`) to spot geometry defects.
+    #   _assembled.png — single-iso "hero" cover in a per-project filament color;
+    #                    the publish API resolves the design cover from this name.
     assembled_stl = base_dir / f"{stem}.stl"
     assembled_png = None
+    cover_png = None
     if assembled_stl.is_file():
-        rendered = render_stl_to_png(assembled_stl, review_dir / "_assembled.png")
+        rendered = render_stl_to_png(assembled_stl, review_dir / "_qa.png")
         assembled_png = str(rendered) if rendered else None
+        cover = render_cover(render_stl_to_png, assembled_stl, review_dir / "_assembled.png", stem)
+        cover_png = str(cover) if cover else None
 
     # Per-part renders. For single-part projects there is no parts[] list; the
     # assembled render is the part.
@@ -246,6 +318,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "stem": stem,
                 "warnings": warnings,
                 "assembled_png": assembled_png,
+                "cover_png": cover_png,
                 "renders": renders,
                 # First cross-section path, kept for back-compat with callers that
                 # read a single `section_png`; `section_pngs` carries all of them.

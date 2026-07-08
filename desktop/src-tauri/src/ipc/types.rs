@@ -710,6 +710,67 @@ pub struct ProjectOpenResponse {
     pub workspace_root: String,
 }
 
+/// Result of publishing a project to panda-social (`project_publish`). Returned
+/// both for a fresh import and when the project was already published
+/// (`already_published = true`, the existing design is returned instead of
+/// creating a duplicate).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishResponse {
+    pub design_id: String,
+    pub slug: String,
+    pub title: String,
+    pub status: String,
+    pub project_url: String,
+    pub already_published: bool,
+}
+
+// ---------------------------------------------------------------------------
+// panda-social sign-in (PKCE + deep-link browser OAuth)
+// ---------------------------------------------------------------------------
+
+/// The signed-in panda-social account, as returned by the exchange endpoint
+/// and re-served by `social_current_user`. Fields beyond these are ignored.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SocialUser {
+    pub id: String,
+    pub username: String,
+    #[serde(default)]
+    pub display_name: String,
+}
+
+/// Result of a completed `social_login`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SocialLoginResult {
+    pub user: SocialUser,
+}
+
+/// Streamed via the `social_login_progress` Tauri event while `social_login`
+/// drives the browser + deep-link round trip. Mirrors the TS discriminated
+/// union in `viewer/src/client/lib/transport.ts`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "stage", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum SocialLoginProgress {
+    /// Generating the PKCE challenge and arming the pending sign-in.
+    Starting,
+    /// The system browser was opened at the hosted login page. `url` is
+    /// surfaced so the UI can show a manual fallback link if the browser
+    /// didn't open.
+    AwaitingBrowser {
+        url: String,
+    },
+    /// The deep-link callback arrived; exchanging the code for tokens.
+    Verifying,
+    Done {
+        user: SocialUser,
+    },
+    Error {
+        message: String,
+    },
+}
+
 // ---------------------------------------------------------------------------
 // Snapshots (git-tag-style model save states)
 // ---------------------------------------------------------------------------

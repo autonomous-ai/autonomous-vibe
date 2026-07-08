@@ -272,6 +272,7 @@ import {
 import { emitCadRefSelection } from "@/components/chat/cadRefEvents";
 import { basename, pickPrinterForSlice, PRINT_CONFIG_CHANGED_EVENT } from "@/components/chat/actionButtonsHelpers";
 import AddPrinterDialog from "@/components/printer/AddPrinterDialog.jsx";
+import PublishSignInDialog from "@/components/project/PublishSignInDialog.jsx";
 import { setSelectedMeshFile, setProject as setChatProject, recordSlice, selectLatestGcode3mf, selectSliceTargetStl, getChatState, setPendingViewContext, startTurn, useChatStore, selectAwaitingAnswerProjectIds, awaitingNeedsUser } from "@/store/chat";
 import { useAutopilot } from "@/lib/autopilot";
 import { useProjectsStore } from "@/store/projects.ts";
@@ -300,6 +301,25 @@ const DEFAULT_LARGE_FILE_STATE = Object.freeze({
 // Turn a slice failure (a Tauri IpcError `{ code, message }`, an Error, or a
 // string) into a short, actionable message. Known codes get friendly copy;
 // everything else falls back to the raw message.
+// Map a `project_publish` IpcError to a friendly, actionable toast message.
+function describePublishError(err) {
+  const code = err && typeof err === "object" && "code" in err ? String(err.code || "") : "";
+  const raw =
+    err && typeof err === "object" && "message" in err ? String(err.message || "") : String(err || "");
+  switch (code) {
+    case "SOCIAL_NO_TOKEN":
+      return "Publishing isn't set up yet (no panda-social access token).";
+    case "SOCIAL_NO_MODEL":
+      return "Build a model before publishing.";
+    case "SOCIAL_NO_COVER":
+      return "No preview render yet — try again once the model finishes rendering.";
+    case "SOCIAL_IMPORT_FAILED":
+      return `Publish failed: ${raw || "the upload was rejected"}`;
+    default:
+      return raw || "Publish failed";
+  }
+}
+
 function describeSliceError(err) {
   const code = err && typeof err === "object" && "code" in err ? String(err.code || "") : "";
   const raw =
@@ -600,6 +620,14 @@ export default function CadWorkspace({
     const extra = Array.isArray(selectableEntriesProp) ? selectableEntriesProp : null;
     return extra && extra.length ? extra : catalogEntries;
   }, [selectableEntriesProp, catalogEntries]);
+  // Whether the open project has any printable model at all — a project-level
+  // signal (independent of which part/entry is selected). Drives the Publish
+  // button: publishing uploads the whole project, so it isn't tied to the
+  // currently-viewed part.
+  const projectHasModel = useMemo(
+    () => catalogEntries.some((entry) => isPrintableModelEntry(entry)),
+    [catalogEntries],
+  );
   const activeGeneratorFiles = useMemo(() => (
     Object.entries(generationStatus?.files || {})
       .filter(([, status]) => status?.running === true)
@@ -712,6 +740,12 @@ export default function CadWorkspace({
   const [screenshotStatus, setScreenshotStatus] = useState("");
   const [slicing, setSlicing] = useState(false);
   const [sliceError, setSliceError] = useState("");
+  // Publish-to-panda-social in-flight flag + terminal toast (success/failure).
+  const [publishing, setPublishing] = useState(false);
+  const [publishStatus, setPublishStatus] = useState("");
+  const [publishStatusError, setPublishStatusError] = useState(false);
+  // Opened when a publish reports SOCIAL_TOKEN_REQUIRED (no/expired session).
+  const [publishSignInOpen, setPublishSignInOpen] = useState(false);
   // Terminal slice toast (success or failure), kept separate from the
   // overloaded `screenshotStatus` so failures can be styled as errors.
   const [sliceStatus, setSliceStatus] = useState("");
@@ -6712,6 +6746,40 @@ export default function CadWorkspace({
     void handleSendDrawingToChat(text);
   }, [handleSetRegionNote, handleSendDrawingToChat]);
 
+  // Publish the active project to panda-social (design-import API). Copies the
+  // project workspace (model + renders) and returns the created design. The
+  // command is idempotent per project — a second click returns the existing
+  // design rather than creating a duplicate.
+  const handlePublish = useCallback(async () => {
+    if (!currentProjectId) {
+      return;
+    }
+    setPublishing(true);
+    setPublishStatus("");
+    setPublishStatusError(false);
+    try {
+      const transport = getTransport();
+      const res = await transport.project_publish(currentProjectId);
+      setPublishStatusError(false);
+      setPublishStatus(
+        res?.alreadyPublished
+          ? `Already published as “${res.title}”`
+          : `Published “${res?.title || "model"}” to panda-social`,
+      );
+    } catch (err) {
+      console.error("publish failed", err);
+      // No session / expired session → open the sign-in prompt instead of a toast.
+      if (err?.code === "SOCIAL_TOKEN_REQUIRED" || err?.code === "SOCIAL_NO_TOKEN") {
+        setPublishSignInOpen(true);
+      } else {
+        setPublishStatusError(true);
+        setPublishStatus(describePublishError(err));
+      }
+    } finally {
+      setPublishing(false);
+    }
+  }, [currentProjectId]);
+
   const handleSlicePlate = useCallback(async () => {
     // Slice the STL the user is currently viewing. Non-STL selections don't
     // reach this handler — the toolbar only renders the button for STL parts.
@@ -7442,6 +7510,10 @@ export default function CadWorkspace({
                 }
                 sliceError={sliceError}
                 handleSlicePlate={handleSlicePlate}
+                canPublish={projectHasModel}
+                publishing={publishing}
+                publishLabel={publishing ? "Publishing…" : "Publish project"}
+                handlePublish={handlePublish}
                 canPrint={selectedEntrySourceFormat === RENDER_FORMAT.GCODE}
                 printing={printing || Boolean(monitoredPrinterId)}
                 printLabel={printButtonLabel(printing, printJob, bambuStudioSelected, openTargetAppLabel(openTarget))}
@@ -7723,6 +7795,8 @@ export default function CadWorkspace({
           sliceStatusSeverity={sliceStatusSeverity}
           printStatus={printStatus}
           printStatusError={printStatusError}
+          publishStatus={publishStatus}
+          publishStatusError={publishStatusError}
           previewMode={previewMode}
           onClear={() => {
             setCopyStatus("");
@@ -7733,7 +7807,18 @@ export default function CadWorkspace({
             setSliceStatusSeverity("");
             setPrintStatus("");
             setPrintStatusError(false);
+            setPublishStatus("");
+            setPublishStatusError(false);
             lastPersistenceFailureKeyRef.current = "";
+          }}
+        />
+
+        <PublishSignInDialog
+          open={publishSignInOpen}
+          onOpenChange={setPublishSignInOpen}
+          onSignedIn={() => {
+            // Signed in — retry the publish that prompted it.
+            void handlePublish();
           }}
         />
 

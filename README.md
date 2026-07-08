@@ -20,6 +20,7 @@ v1 in active development.
   - `cadcode` — CadQuery-based parametric CAD generation
   - `cad-viewer` — preview/inspection handoff into the in-app viewer
   - `step-parts` — search and download off-the-shelf STEP catalog parts
+  - `shape-analysis` — enrich a terse object prompt into a print-ready design brief
 - `scripts/` — Panda dev/build helpers
 - `docs/` — interface contracts and architecture notes
 

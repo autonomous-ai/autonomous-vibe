@@ -6,7 +6,8 @@ import {
   MousePointer2,
   PenTool,
   Printer,
-  Ruler
+  Ruler,
+  Share2
 } from "lucide-react";
 import { RENDER_FORMAT } from "@/workbench/constants";
 import {
@@ -68,6 +69,10 @@ function DesktopFloatingToolBar({
   printing = false,
   printLabel = "Print",
   handlePrint,
+  canPublish = false,
+  publishing = false,
+  publishLabel = "Publish",
+  handlePublish,
   canViewSourceModel = false,
   viewSourceModelLabel = "View model",
   handleViewSourceModel,
@@ -162,6 +167,23 @@ function DesktopFloatingToolBar({
             >
               <Layers className="size-4" strokeWidth={2} aria-hidden="true" />
               {sliceLabel}
+            </ToolbarButton>
+          ) : null}
+
+          {/* Publish the finished model to panda-social (design-import API).
+              Shown for a printable model view; disabled while an upload is in
+              flight. Copies the project workspace and returns the design URL. */}
+          {canPublish ? (
+            <ToolbarButton
+              label={publishLabel}
+              onClick={() => {
+                void handlePublish?.();
+              }}
+              disabled={publishing}
+              className="h-9 w-auto gap-1.5 px-3 text-sm font-medium"
+            >
+              <Share2 className="size-4" strokeWidth={2} aria-hidden="true" />
+              {publishLabel}
             </ToolbarButton>
           ) : null}
 

@@ -209,6 +209,8 @@ pub fn run() {
             social::project_publish,
             social::social_has_token,
             social::social_current_user,
+            social::social_profile,
+            social::social_my_models,
             social::social_login,
             social::social_cancel_login,
             social::social_logout,

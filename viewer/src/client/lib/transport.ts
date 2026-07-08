@@ -330,8 +330,9 @@ export interface CreateProjectRequest {
 }
 
 // Result of publishing a project to panda-social (project_publish). Mirrors the
-// Rust `PublishResponse`. `alreadyPublished` is true when the project had been
-// imported before and the existing design is returned instead of a duplicate.
+// Rust `PublishResponse`. The Publish button re-uploads on demand, so this is
+// returned for both a fresh publish and a republish; `alreadyPublished` is true
+// when the project had been published before and this call updated it.
 export interface PublishResponse {
   designId: string;
   slug: string;
@@ -506,6 +507,37 @@ export interface SocialUser {
 /** Result of a completed `social_login`. */
 export interface SocialLoginResult {
   user: SocialUser;
+}
+
+/**
+ * The signed-in account's full profile (avatar, email, creator stats). Mirrors
+ * `desktop/src-tauri/src/ipc/types.rs::SocialProfile`; served by
+ * `social_profile` (`GET /api/v1/profile`).
+ */
+export interface SocialProfile {
+  id: string;
+  username: string;
+  displayName?: string;
+  email?: string;
+  avatarUrl?: string;
+  bio?: string;
+  modelCount?: number;
+  followerCount?: number;
+  followingCount?: number;
+  verified?: boolean;
+}
+
+/**
+ * One of the signed-in account's models. Mirrors
+ * `desktop/src-tauri/src/ipc/types.rs::SocialDesign`; served by
+ * `social_my_models` (`GET /api/v1/me/designs?tab=models`).
+ */
+export interface SocialDesign {
+  id: string;
+  slug?: string;
+  title?: string;
+  thumbnailUrl?: string;
+  status?: string;
 }
 
 /**
@@ -1095,6 +1127,8 @@ const transportBase = {
     invoke<PublishResponse>("project_publish", { id }),
   social_has_token: () => invoke<boolean>("social_has_token"),
   social_current_user: () => invoke<SocialUser | null>("social_current_user"),
+  social_profile: () => invoke<SocialProfile>("social_profile"),
+  social_my_models: () => invoke<SocialDesign[]>("social_my_models"),
   social_login: () => invoke<SocialLoginResult>("social_login"),
   social_cancel_login: () => invoke<void>("social_cancel_login"),
   social_logout: () => invoke<void>("social_logout"),

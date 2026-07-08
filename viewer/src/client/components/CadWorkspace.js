@@ -6763,7 +6763,7 @@ export default function CadWorkspace({
       setPublishStatusError(false);
       setPublishStatus(
         res?.alreadyPublished
-          ? `Already published as “${res.title}”`
+          ? `Republished “${res?.title || "model"}” to panda-social`
           : `Published “${res?.title || "model"}” to panda-social`,
       );
     } catch (err) {

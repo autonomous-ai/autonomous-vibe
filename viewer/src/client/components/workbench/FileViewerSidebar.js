@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/sheet";
 import {
   SidebarContent,
+  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
   SidebarHeader,
@@ -61,6 +62,7 @@ import {
 } from "@/workbench/sidebar";
 import FileAccessContextMenu from "./FileAccessContextMenu";
 import SavedStates from "./SavedStates";
+import SidebarUserCard from "./SidebarUserCard.jsx";
 
 const DESKTOP_FILE_VIEWER_MIN_WIDTH = 150;
 const DESKTOP_FILE_VIEWER_MAX_WIDTH = "calc(100vw - 0.75rem)";
@@ -843,6 +845,9 @@ function FileViewerContents({
           </SidebarGroup>
         </ScrollArea>
       </SidebarContent>
+      <SidebarFooter className="border-t border-sidebar-border p-1">
+        <SidebarUserCard />
+      </SidebarFooter>
       <SidebarResizeHandle onStartResize={resizable ? onStartResize : null} />
     </>
   );

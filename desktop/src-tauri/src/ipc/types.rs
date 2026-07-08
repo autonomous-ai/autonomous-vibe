@@ -710,10 +710,11 @@ pub struct ProjectOpenResponse {
     pub workspace_root: String,
 }
 
-/// Result of publishing a project to panda-social (`project_publish`). Returned
-/// both for a fresh import and when the project was already published
-/// (`already_published = true`, the existing design is returned instead of
-/// creating a duplicate).
+/// Result of publishing a project to panda-social (`project_publish`). The
+/// manual Publish button re-uploads on demand, so this is returned both for a
+/// fresh import and for a republish. `already_published = true` means the
+/// project had been published before and this call updated it (rather than a
+/// first-time publish).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublishResponse {
@@ -745,6 +746,51 @@ pub struct SocialUser {
 #[serde(rename_all = "camelCase")]
 pub struct SocialLoginResult {
     pub user: SocialUser,
+}
+
+/// The signed-in account's full profile, as served by `social_profile`
+/// (`GET /api/v1/profile`). Richer than [`SocialUser`] — carries the avatar,
+/// email and creator stats the account panel shows. Field names are camelCase
+/// for the TS mirror; the Rust command maps the API's snake_case body into it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SocialProfile {
+    pub id: String,
+    pub username: String,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub email: String,
+    #[serde(default)]
+    pub avatar_url: String,
+    #[serde(default)]
+    pub bio: String,
+    /// All owned designs, any status (drafts/unlisted included).
+    #[serde(default)]
+    pub model_count: i64,
+    #[serde(default)]
+    pub follower_count: i64,
+    #[serde(default)]
+    pub following_count: i64,
+    #[serde(default)]
+    pub verified: bool,
+}
+
+/// One of the signed-in account's designs/models, as served by
+/// `social_my_models` (`GET /api/v1/me/designs?tab=models`). The subset the
+/// account panel renders as a thumbnail grid.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SocialDesign {
+    pub id: String,
+    #[serde(default)]
+    pub slug: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub thumbnail_url: String,
+    #[serde(default)]
+    pub status: String,
 }
 
 /// Streamed via the `social_login_progress` Tauri event while `social_login`

@@ -34,7 +34,10 @@ use tauri::{AppHandle, Emitter, Manager as _, State};
 use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 
-use crate::ipc::types::{PublishResponse, SocialLoginProgress, SocialLoginResult, SocialUser};
+use crate::ipc::types::{
+    PublishResponse, SocialDesign, SocialLoginProgress, SocialLoginResult, SocialProfile,
+    SocialUser,
+};
 use crate::ipc::{IpcError, IpcResult};
 use crate::state::{AppState, PendingSocialLogin};
 
@@ -51,6 +54,14 @@ const WEB_LOGIN_URL: &str = "https://panda.autonomous.ai/desktop-login";
 /// One-time-code exchange endpoint: `POST {code, code_verifier}` →
 /// `{access_token, refresh_token, user}`.
 const EXCHANGE_URL: &str = "https://panda-social-api.autonomous.ai/api/v1/auth/exchange";
+
+/// Signed-in account's profile: `GET /api/v1/profile` (bearer) → the caller's
+/// profile with avatar, email and creator stats.
+const PROFILE_URL: &str = "https://panda-social-api.autonomous.ai/api/v1/profile";
+
+/// Signed-in account's own designs for the profile grid:
+/// `GET /api/v1/me/designs?tab=models` (bearer).
+const MY_DESIGNS_URL: &str = "https://panda-social-api.autonomous.ai/api/v1/me/designs";
 
 /// Custom URL scheme the OS routes back to the app so the browser can hand
 /// over the OAuth `code`. MUST stay in sync with `tauri.conf.json`
@@ -327,6 +338,159 @@ pub fn social_current_user() -> Option<SocialUser> {
     stored_user()
 }
 
+/// Turn an [`AuthError`] into the `SOCIAL_TOKEN_REQUIRED` the UI acts on,
+/// forgetting a rejected session so the next attempt prompts a fresh sign-in.
+fn token_required(err: AuthError) -> IpcError {
+    match err {
+        AuthError::Missing => {
+            IpcError::new("SOCIAL_TOKEN_REQUIRED", "Sign in to panda-social")
+        }
+        AuthError::Rejected(msg) => {
+            log_line(&format!("session rejected ({msg}) — clearing saved session"));
+            let _ = clear_stored_session();
+            IpcError::new(
+                "SOCIAL_TOKEN_REQUIRED",
+                "Your panda-social session expired — sign in again",
+            )
+        }
+    }
+}
+
+/// IPC: the signed-in account's full profile (`GET /api/v1/profile`). Unlike
+/// [`social_current_user`] this hits the network — used by the account panel to
+/// show the avatar, email and creator stats. Maps a missing/expired session to
+/// `SOCIAL_TOKEN_REQUIRED` (and forgets the bad session) so the UI re-prompts.
+#[tauri::command]
+pub async fn social_profile() -> IpcResult<SocialProfile> {
+    #[derive(Deserialize, Default)]
+    struct ProfileApi {
+        #[serde(default)]
+        id: String,
+        #[serde(default)]
+        username: String,
+        #[serde(default)]
+        display_name: String,
+        #[serde(default)]
+        email: String,
+        #[serde(default)]
+        avatar_url: String,
+        #[serde(default)]
+        bio: String,
+        #[serde(default)]
+        model_count: i64,
+        #[serde(default)]
+        follower_count: i64,
+        #[serde(default)]
+        following_count: i64,
+        #[serde(default)]
+        verified: bool,
+    }
+
+    let client = http_client().map_err(|e| IpcError::new("SOCIAL_PROFILE_FAILED", format!("{e}")))?;
+    let access = obtain_access_token(&client).await.map_err(token_required)?;
+    let resp = client
+        .get(PROFILE_URL)
+        .bearer_auth(&access)
+        .send()
+        .await
+        .map_err(|e| IpcError::new("SOCIAL_PROFILE_FAILED", format!("could not reach panda-social: {e}")))?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        let _ = clear_stored_session();
+        return Err(IpcError::new(
+            "SOCIAL_TOKEN_REQUIRED",
+            "Your panda-social session expired — sign in again",
+        ));
+    }
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(IpcError::new(
+            "SOCIAL_PROFILE_FAILED",
+            format!("profile request returned {status}: {}", body.trim()),
+        ));
+    }
+    let p: ProfileApi = resp
+        .json()
+        .await
+        .map_err(|e| IpcError::new("SOCIAL_PROFILE_FAILED", format!("unexpected profile response: {e}")))?;
+    Ok(SocialProfile {
+        id: p.id,
+        username: p.username,
+        display_name: p.display_name,
+        email: p.email,
+        avatar_url: p.avatar_url,
+        bio: p.bio,
+        model_count: p.model_count,
+        follower_count: p.follower_count,
+        following_count: p.following_count,
+        verified: p.verified,
+    })
+}
+
+/// IPC: the signed-in account's own models (`GET /api/v1/me/designs?tab=models`),
+/// for the account panel's thumbnail grid. Same session-error handling as
+/// [`social_profile`].
+#[tauri::command]
+pub async fn social_my_models() -> IpcResult<Vec<SocialDesign>> {
+    #[derive(Deserialize, Default)]
+    struct DesignSummaryApi {
+        #[serde(default)]
+        id: String,
+        #[serde(default)]
+        slug: String,
+        #[serde(default)]
+        title: String,
+        #[serde(default)]
+        thumbnail_url: String,
+        #[serde(default)]
+        status: String,
+    }
+    #[derive(Deserialize, Default)]
+    struct UserDesignsApi {
+        #[serde(default)]
+        items: Vec<DesignSummaryApi>,
+    }
+
+    let client = http_client().map_err(|e| IpcError::new("SOCIAL_MODELS_FAILED", format!("{e}")))?;
+    let access = obtain_access_token(&client).await.map_err(token_required)?;
+    let resp = client
+        .get(format!("{MY_DESIGNS_URL}?tab=models&limit=50"))
+        .bearer_auth(&access)
+        .send()
+        .await
+        .map_err(|e| IpcError::new("SOCIAL_MODELS_FAILED", format!("could not reach panda-social: {e}")))?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        let _ = clear_stored_session();
+        return Err(IpcError::new(
+            "SOCIAL_TOKEN_REQUIRED",
+            "Your panda-social session expired — sign in again",
+        ));
+    }
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(IpcError::new(
+            "SOCIAL_MODELS_FAILED",
+            format!("designs request returned {status}: {}", body.trim()),
+        ));
+    }
+    let parsed: UserDesignsApi = resp
+        .json()
+        .await
+        .map_err(|e| IpcError::new("SOCIAL_MODELS_FAILED", format!("unexpected designs response: {e}")))?;
+    Ok(parsed
+        .items
+        .into_iter()
+        .map(|d| SocialDesign {
+            id: d.id,
+            slug: d.slug,
+            title: d.title,
+            thumbnail_url: d.thumbnail_url,
+            status: d.status,
+        })
+        .collect())
+}
+
 /// IPC: sign in to panda-social via the browser + deep-link OAuth flow (PKCE-
 /// protected). Opens the system browser at [`WEB_LOGIN_URL`], waits for the
 /// `myide://auth/callback` deep link (routed here by [`handle_social_deeplink`]),
@@ -592,27 +756,26 @@ fn map_exchange_error(body: &str) -> String {
     }
 }
 
-/// Publish a project workspace, returning the created (or already-existing)
-/// design. Maps every skip/failure reason to a typed [`IpcError`] the UI can act
-/// on. Idempotent: if a marker already records an import, the existing design is
-/// returned (`already_published = true`) rather than creating a duplicate.
+/// Publish a project workspace to panda-social, returning the created (or
+/// updated) design. Maps every skip/failure reason to a typed [`IpcError`] the
+/// UI can act on. Unlike the silent post-build hook ([`maybe_import_after_build`],
+/// which imports a project **once**), the manual Publish button re-publishes on
+/// demand: a prior import no longer short-circuits — it re-uploads through the
+/// same import API so an already-published design reflects the latest edits.
+/// `already_published` reports whether this project had been published before
+/// (i.e. this call republished it) so the UI can say "updated" vs "published".
 pub async fn publish_project(workspace: &Path) -> IpcResult<PublishResponse> {
     let name = workspace
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    // Already published → return the existing design without needing a token.
-    if let Some(existing) = read_marker(workspace) {
-        log_line(&format!("publish {name}: already imported → returning existing"));
-        return Ok(PublishResponse {
-            design_id: existing.design_id,
-            slug: existing.slug,
-            title: existing.title,
-            status: existing.status,
-            project_url: existing.project_url,
-            already_published: true,
-        });
+    // Republish is allowed: note whether this project was already published (for
+    // the response/UI wording) but re-upload regardless instead of returning the
+    // recorded design.
+    let was_published = read_marker(workspace).is_some();
+    if was_published {
+        log_line(&format!("publish {name}: already imported → re-uploading (republish)"));
     }
     // Pre-flight model/cover gates are intentionally skipped for the manual
     // Publish button: attempt the upload regardless and let the server decide
@@ -668,7 +831,7 @@ pub async fn publish_project(workspace: &Path) -> IpcResult<PublishResponse> {
         title: design.title,
         status: design.status,
         project_url: design.project_url,
-        already_published: false,
+        already_published: was_published,
     })
 }
 

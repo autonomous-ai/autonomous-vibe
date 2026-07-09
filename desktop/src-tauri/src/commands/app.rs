@@ -938,17 +938,32 @@ async fn store_oauth_token(token: &str) -> IpcResult<()> {
     Ok(())
 }
 
-/// The Claude models the chat composer's switcher offers. The stored value is
+/// Local Claude models the chat composer's switcher offers. The stored value is
 /// the exact string passed to `claude --model`. `opus` is the default —
-/// `AppSettings.model` of `None` falls back to it in `build_command`. JS mirrors
-/// this list in `modelChoices.js`.
-pub const MODEL_CHOICES: [&str; 2] = ["opus", "sonnet"];
+/// `AppSettings.model` of `None` falls back to it in `build_command`.
+pub const LOCAL_MODEL_CHOICES: [&str; 2] = ["opus", "sonnet"];
+
+/// Signed-in proxy model (Panda account required). Today we only expose one.
+pub const PROXY_MODEL_MINIMAX_M3: &str = "minimax-m3";
 
 /// True when `model` is one of the selectable [`MODEL_CHOICES`] (exact match,
 /// no trimming). `app_set_model` gates on this so settings can never hold an
 /// arbitrary `--model` string from a malformed IPC call.
-fn is_allowed_model(model: &str) -> bool {
-    MODEL_CHOICES.contains(&model)
+fn is_known_model(model: &str) -> bool {
+    LOCAL_MODEL_CHOICES.contains(&model) || model == PROXY_MODEL_MINIMAX_M3
+}
+
+/// Whether a model is selectable right now, given the current Panda sign-in
+/// state. Local Claude models are always available; proxy models require a
+/// signed-in Panda session.
+pub fn is_model_available(model: &str) -> bool {
+    if LOCAL_MODEL_CHOICES.contains(&model) {
+        return true;
+    }
+    if model == PROXY_MODEL_MINIMAX_M3 {
+        return crate::commands::social::social_has_token();
+    }
+    false
 }
 
 /// Set the Claude model for subsequent chat turns from the composer's switcher.
@@ -958,10 +973,16 @@ fn is_allowed_model(model: &str) -> bool {
 /// immediately.
 #[tauri::command]
 pub async fn app_set_model(model: String) -> IpcResult<AppSettings> {
-    if !is_allowed_model(&model) {
+    if !is_known_model(&model) {
         return Err(IpcError::new(
             "INVALID_MODEL",
             format!("Unknown model: {model}"),
+        ));
+    }
+    if !is_model_available(&model) {
+        return Err(IpcError::new(
+            "SOCIAL_TOKEN_REQUIRED",
+            "Sign in to panda-social to use proxy models",
         ));
     }
     let mut settings = load_settings().await.unwrap_or_default();
@@ -2272,14 +2293,14 @@ mod tests {
 
     #[test]
     fn model_choice_validation_accepts_known_rejects_unknown() {
-        // The selectable models are the only values app_set_model may persist;
-        // anything else (a typo, an arbitrary --model string from a tampered IPC
-        // call) is rejected before it reaches settings.
-        for ok in MODEL_CHOICES {
-            assert!(is_allowed_model(ok), "should accept {ok}");
+        // Only known model ids may be persisted; malformed values are rejected
+        // before they reach settings.
+        for ok in LOCAL_MODEL_CHOICES {
+            assert!(is_known_model(ok), "should accept {ok}");
         }
-        assert!(!is_allowed_model("gpt-4"));
-        assert!(!is_allowed_model("opus "), "no trim — exact match only");
-        assert!(!is_allowed_model(""));
+        assert!(is_known_model(PROXY_MODEL_MINIMAX_M3));
+        assert!(!is_known_model("gpt-4"));
+        assert!(!is_known_model("opus "), "no trim — exact match only");
+        assert!(!is_known_model(""));
     }
 }

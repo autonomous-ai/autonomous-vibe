@@ -1376,7 +1376,10 @@ where
     // defaults to `opus`. Best-effort: a settings read failure just falls back
     // to the default model and the user's own host auth.
     let settings = crate::commands::app::load_settings().await.ok();
-    let model = settings.as_ref().and_then(|s| s.model.clone());
+    let model = settings
+        .as_ref()
+        .and_then(|s| s.model.clone())
+        .filter(|m| crate::commands::app::is_model_available(m));
 
     let cfg = ClaudeRunConfig {
         prompt: user_message.to_string(),

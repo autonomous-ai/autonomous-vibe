@@ -1,16 +1,22 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Check, ChevronDown, Cpu, Loader2 } from "lucide-react";
+import { Check, ChevronDown, Cpu, Loader2, Lock } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/ui/utils";
 import { transport } from "@/lib/transport.ts";
-import { DEFAULT_MODEL, labelForModel, MODEL_CHOICES } from "./modelChoices.js";
+import {
+  DEFAULT_MODEL,
+  labelForModel,
+  MODEL_CHOICES,
+} from "./modelChoices.js";
 
 /**
  * Compact pill in the chat composer footer showing which Claude model the next
@@ -23,12 +29,17 @@ export default function ModelControl({ className }) {
   // Active model value; null until the first settings read resolves. Falls back
   // to the default for display when unset/unrecognized.
   const [model, setModel] = useState(null);
+  const [signedInToPanda, setSignedInToPanda] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
-      const settings = await transport.app_settings_read();
+      const [settings, hasSocial] = await Promise.all([
+        transport.app_settings_read(),
+        transport.social_has_token(),
+      ]);
       setModel(settings?.model ?? DEFAULT_MODEL);
+      setSignedInToPanda(Boolean(hasSocial));
     } catch {
       // Best-effort; keep prior state (or the default placeholder below).
     }
@@ -38,7 +49,15 @@ export default function ModelControl({ className }) {
     void refresh();
   }, [refresh]);
 
-  const active = model ?? DEFAULT_MODEL;
+  const localChoices = MODEL_CHOICES.filter((choice) => !choice.requiresPandaSignIn);
+  const proxyChoices = MODEL_CHOICES.filter((choice) => choice.requiresPandaSignIn);
+  const selectableChoices = signedInToPanda
+    ? MODEL_CHOICES
+    : localChoices;
+
+  const active = selectableChoices.some((choice) => choice.value === model)
+    ? model
+    : DEFAULT_MODEL;
 
   const pick = useCallback(
     async (value) => {
@@ -78,17 +97,54 @@ export default function ModelControl({ className }) {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-40">
-        {MODEL_CHOICES.map((choice) => (
+        <DropdownMenuLabel className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          Local Claude
+        </DropdownMenuLabel>
+        {localChoices.map((choice) => (
           <DropdownMenuItem
             key={choice.value}
             onSelect={() => void pick(choice.value)}
             data-testid={`model-option-${choice.value}`}
             className="justify-between gap-3"
           >
-            {choice.label}
-            {choice.value === active ? (
-              <Check className="size-3.5" aria-hidden />
-            ) : null}
+            <span>{choice.label}</span>
+            {choice.value === active ? <Check className="size-3.5" aria-hidden /> : null}
+          </DropdownMenuItem>
+        ))}
+
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          Panda Proxy
+        </DropdownMenuLabel>
+        {proxyChoices.map((choice) => (
+          <DropdownMenuItem
+            key={choice.value}
+            onSelect={() => {
+              if (signedInToPanda) {
+                void pick(choice.value);
+              }
+            }}
+            disabled={!signedInToPanda}
+            data-testid={
+              signedInToPanda
+                ? `model-option-${choice.value}`
+                : `model-option-${choice.value}-locked`
+            }
+            className="justify-between gap-3"
+          >
+            <span className="inline-flex items-center gap-2">
+              <span>{choice.label}</span>
+              <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-300">
+                Proxy
+              </span>
+            </span>
+            {signedInToPanda ? (
+              choice.value === active ? <Check className="size-3.5" aria-hidden /> : null
+            ) : (
+              <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                <Lock className="size-3" aria-hidden /> Sign in
+              </span>
+            )}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>

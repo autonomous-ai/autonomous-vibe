@@ -6,6 +6,7 @@ import {
   ExternalLink,
   Laptop,
   Loader2,
+  Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,6 +17,7 @@ import {
   CLAUDE_CHECK_POLL_INTERVAL_MS,
   CLAUDE_INSTALL_URL,
   describeClaudeLoginProgress,
+  describeSocialLoginProgress,
   evaluateWelcomeState,
 } from "./onboardingHelpers.js";
 
@@ -39,6 +41,9 @@ export default function WelcomeScreen({ onComplete }) {
   const [localState, setLocalState] = useState("idle");
   const [localProgress, setLocalProgress] = useState(null);
   const [localError, setLocalError] = useState("");
+  const [socialState, setSocialState] = useState("idle");
+  const [socialProgress, setSocialProgress] = useState(null);
+  const [socialError, setSocialError] = useState("");
   // The authorization code the hosted sign-in page shows after approval; fed
   // back into the in-flight `claude setup-token` PTY via app_submit_login_code.
   const [codeInput, setCodeInput] = useState("");
@@ -60,17 +65,20 @@ export default function WelcomeScreen({ onComplete }) {
   }, [localState]);
 
   const busy = finishing || localState === "signing_in";
+  const socialBusy = socialState === "signing_in";
+  const anyBusy = busy || socialBusy;
 
   // Re-run detection. Read-only and idempotent, so it doubles as the poll tick:
   // a user who installs Claude or signs in out-of-band sees the readiness line
   // update without a manual refresh.
   const runDetect = useCallback(async () => {
     try {
-      const [check, auth] = await Promise.all([
+      const [check, auth, user] = await Promise.all([
         transport.app_prereq_check(),
         transport.app_auth_check(),
+        transport.social_current_user(),
       ]);
-      const next = evaluateWelcomeState({ check, auth });
+      const next = evaluateWelcomeState({ check, auth, user });
       welcomeRef.current = next;
       setWelcome(next);
       setCheckError("");
@@ -93,7 +101,8 @@ export default function WelcomeScreen({ onComplete }) {
     const tick = () => {
       if (cancelled) return;
       const localIdle = localStateRef.current !== "signing_in";
-      if (localIdle) {
+      const socialIdle = socialState !== "signing_in";
+      if (localIdle && socialIdle) {
         void runDetect();
       }
       pollTimerRef.current = setTimeout(tick, CLAUDE_CHECK_POLL_INTERVAL_MS);
@@ -107,7 +116,7 @@ export default function WelcomeScreen({ onComplete }) {
         activeFlowRef.current = null;
       }
     };
-  }, [runDetect]);
+  }, [runDetect, socialState]);
 
   // Flip hasOnboarded, then hand control to the app. Re-read first so we never
   // clobber a token the sign-in step just stored.
@@ -162,7 +171,7 @@ export default function WelcomeScreen({ onComplete }) {
   );
 
   const signInWithOwnClaude = useCallback(async () => {
-    if (busy) return;
+    if (anyBusy) return;
     cancelledRef.current = false;
     setLocalError("");
     setLocalProgress(null);
@@ -172,7 +181,51 @@ export default function WelcomeScreen({ onComplete }) {
     if (!ok) return;
     // Local OAuth token persisted Rust-side; finish() only flips hasOnboarded.
     await finish();
-  }, [busy, finish, runLocalLoginStep]);
+  }, [anyBusy, finish, runLocalLoginStep]);
+
+  const signInWithPanda = useCallback(async () => {
+    if (anyBusy) return;
+    setSocialState("signing_in");
+    setSocialProgress(null);
+    setSocialError("");
+
+    let off = null;
+    try {
+      off = await transport.onSocialLoginProgress((event) => {
+        setSocialProgress(event);
+      });
+      const result = await transport.social_login();
+      if (!result?.user) {
+        setSocialState("error");
+        setSocialError("Sign-in did not complete");
+        return;
+      }
+      setSocialState("done");
+      await finish();
+    } catch (err) {
+      const message =
+        err && typeof err === "object" && "message" in err
+          ? String(err.message || "Sign-in failed")
+          : String(err || "Sign-in failed");
+      setSocialState("error");
+      setSocialError(message);
+    } finally {
+      if (typeof off === "function") {
+        off();
+      }
+    }
+  }, [anyBusy, finish]);
+
+  const cancelSocialLogin = useCallback(async () => {
+    try {
+      await transport.social_cancel_login();
+    } catch {
+      // best-effort; still reset local UI state
+    }
+    setSocialState("idle");
+    setSocialProgress(null);
+    setSocialError("");
+  }, []);
 
   // Feed the authorization code into the in-flight `claude setup-token` PTY.
   // On success the awaiting app_login_claude resolves and runLocalLoginStep
@@ -209,15 +262,19 @@ export default function WelcomeScreen({ onComplete }) {
 
   // Ready path: CLI installed AND already authenticated — connect it directly.
   const connectOwnClaude = useCallback(() => {
-    if (busy || !welcomeRef.current?.canUseOwn) return;
+    if (anyBusy || !welcomeRef.current?.canUseOwn) return;
     void finish();
-  }, [busy, finish]);
+  }, [anyBusy, finish]);
 
   const canUseOwn = welcome?.canUseOwn ?? false;
   const ownBlockedReason = welcome?.ownBlockedReason ?? "";
+  const pandaSignedIn = welcome?.pandaSignedIn ?? false;
 
   const localProgressLabel = localProgress
     ? describeClaudeLoginProgress(localProgress)
+    : null;
+  const socialProgressLabel = socialProgress
+    ? describeSocialLoginProgress(socialProgress)
     : null;
 
   return (
@@ -230,8 +287,8 @@ export default function WelcomeScreen({ onComplete }) {
         <header className="flex flex-col gap-1">
           <h1 className="text-2xl font-semibold">Welcome to Panda</h1>
           <p className="text-sm text-muted-foreground">
-            Panda turns a chat into a printable model. Connect Claude Code to get
-            started.
+            Panda turns a chat into a printable model. Sign in with Panda or
+            connect your own Claude Code to get started.
           </p>
         </header>
 
@@ -262,7 +319,7 @@ export default function WelcomeScreen({ onComplete }) {
                 variant="ghost"
                 size="sm"
                 onClick={() => void runDetect()}
-                disabled={busy}
+                disabled={anyBusy}
                 data-testid="welcome-recheck"
                 className="-my-1 h-7 shrink-0"
               >
@@ -275,6 +332,87 @@ export default function WelcomeScreen({ onComplete }) {
               {checkError}
             </span>
           ) : null}
+        </div>
+
+        <div className="mt-3 flex flex-col gap-3 rounded-md border border-border bg-card/60 p-4">
+          <div className="flex items-start gap-2">
+            <Sparkles className="mt-0.5 size-4 shrink-0 text-emerald-600" />
+            <div className="space-y-1">
+              <p className="font-medium">Sign in with Panda</p>
+              <p className="text-sm text-muted-foreground">
+                Use Panda account features and cloud workflows, while still being
+                able to use your own Claude Code in the app.
+              </p>
+            </div>
+          </div>
+
+          {socialProgressLabel ? (
+            <div
+              className="flex items-center gap-2 rounded-md border border-border bg-background/60 p-3 text-sm"
+              data-testid="social-login-progress"
+            >
+              {socialState === "error" ? null : (
+                <Loader2 className="size-4 animate-spin" />
+              )}
+              <span>{socialProgressLabel}</span>
+              {socialProgress?.stage === "awaiting_browser" && socialProgress?.url ? (
+                <a
+                  href={socialProgress.url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="ml-auto inline-flex items-center gap-1 text-primary underline-offset-2 hover:underline"
+                >
+                  <ExternalLink className="size-3.5" /> Open sign-in
+                </a>
+              ) : null}
+            </div>
+          ) : null}
+
+          {socialError ? (
+            <p className="text-sm text-destructive" role="alert">
+              {socialError}
+            </p>
+          ) : null}
+
+          {pandaSignedIn ? (
+            <Button
+              variant="default"
+              onClick={() => void finish()}
+              disabled={anyBusy || checking}
+              data-testid="continue-with-panda"
+            >
+              {finishing ? "Finishing…" : "Continue with Panda"}
+            </Button>
+          ) : (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="default"
+                onClick={() => void signInWithPanda()}
+                disabled={anyBusy || checking}
+                data-testid="panda-sign-in"
+              >
+                {socialState === "signing_in" ? (
+                  <>
+                    <Loader2 className="mr-2 size-4 animate-spin" />
+                    {socialProgressLabel ?? "Signing in…"}
+                  </>
+                ) : socialState === "error" ? (
+                  "Try Panda sign-in again"
+                ) : (
+                  "Sign in with Panda"
+                )}
+              </Button>
+              {socialState === "signing_in" ? (
+                <Button
+                  variant="ghost"
+                  onClick={() => void cancelSocialLogin()}
+                  data-testid="panda-sign-in-cancel"
+                >
+                  Cancel
+                </Button>
+              ) : null}
+            </div>
+          )}
         </div>
 
         {/* Primary: use your own Claude Code */}
@@ -386,7 +524,7 @@ export default function WelcomeScreen({ onComplete }) {
             <Button
               variant="default"
               onClick={() => connectOwnClaude()}
-              disabled={busy || checking}
+                disabled={anyBusy || checking}
               data-testid="use-own-claude"
             >
               {finishing ? "Finishing…" : "Start creating"}
@@ -396,7 +534,7 @@ export default function WelcomeScreen({ onComplete }) {
               <Button
                 variant="default"
                 onClick={() => void signInWithOwnClaude()}
-                disabled={busy || checking}
+                disabled={anyBusy || checking}
                 data-testid="claude-sign-in"
               >
                 {localState === "signing_in" ? (

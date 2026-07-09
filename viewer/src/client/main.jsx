@@ -100,9 +100,9 @@ function useOnboardingGate() {
       })
       .catch(() => {
         if (cancelled) return;
-        // If transport isn't wired yet (e.g., browser dev mode without
-        // Tauri), skip the wizard rather than blocking the workspace.
-        setNeedsOnboarding(false);
+        // If settings cannot be read (missing/corrupt), fail safe into the
+        // wizard so first-run users are not dropped into the workspace.
+        setNeedsOnboarding(true);
       });
     return () => {
       cancelled = true;

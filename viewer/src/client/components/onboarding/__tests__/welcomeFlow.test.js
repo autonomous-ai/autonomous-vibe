@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   buildOnboardedSettings,
   describeClaudeLoginProgress,
+  describeSocialLoginProgress,
   evaluateWelcomeState,
   shouldOnboard,
 } from "../onboardingHelpers.js";
@@ -32,6 +33,18 @@ test("describeClaudeLoginProgress labels each stage", () => {
   assert.equal(describeClaudeLoginProgress(undefined), "Working…");
 });
 
+test("describeSocialLoginProgress labels each stage", () => {
+  assert.equal(describeSocialLoginProgress({ stage: "starting" }), "Starting Panda sign-in…");
+  assert.equal(
+    describeSocialLoginProgress({ stage: "awaiting_browser", url: "https://x" }),
+    "Waiting for you to finish sign-in in your browser…",
+  );
+  assert.equal(describeSocialLoginProgress({ stage: "verifying" }), "Finishing Panda sign-in…");
+  assert.equal(describeSocialLoginProgress({ stage: "done" }), "Signed in");
+  assert.equal(describeSocialLoginProgress({ stage: "error", message: "nope" }), "nope");
+  assert.equal(describeSocialLoginProgress(undefined), "Working…");
+});
+
 test("evaluateWelcomeState gates 'use own' on CLI present AND authenticated", () => {
   const ready = evaluateWelcomeState({
     check: { claudeCli: { found: true, version: "2.1.0" } },
@@ -41,7 +54,20 @@ test("evaluateWelcomeState gates 'use own' on CLI present AND authenticated", ()
   assert.equal(ready.cliVersion, "2.1.0");
   assert.equal(ready.authed, true);
   assert.equal(ready.canUseOwn, true);
+  assert.equal(ready.pandaSignedIn, false);
+  assert.equal(ready.canContinue, true);
   assert.equal(ready.ownBlockedReason, "");
+});
+
+test("evaluateWelcomeState allows continue when Panda account is signed in", () => {
+  const state = evaluateWelcomeState({
+    check: { claudeCli: { found: false } },
+    auth: { authenticated: false },
+    user: { id: "u_123", username: "panda-user" },
+  });
+  assert.equal(state.canUseOwn, false);
+  assert.equal(state.pandaSignedIn, true);
+  assert.equal(state.canContinue, true);
 });
 
 test("evaluateWelcomeState blocks 'use own' when installed but not signed in", () => {

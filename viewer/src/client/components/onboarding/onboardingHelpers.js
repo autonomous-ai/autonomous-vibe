@@ -459,6 +459,30 @@ export function describeClaudeLoginProgress(event) {
 }
 
 /**
+ * Translate a `social_login_progress` event into a short status label for the
+ * Panda account sign-in button + progress card.
+ */
+export function describeSocialLoginProgress(event) {
+  if (!event || typeof event !== "object") {
+    return "Working…";
+  }
+  switch (event.stage) {
+    case "starting":
+      return "Starting Panda sign-in…";
+    case "awaiting_browser":
+      return "Waiting for you to finish sign-in in your browser…";
+    case "verifying":
+      return "Finishing Panda sign-in…";
+    case "done":
+      return "Signed in";
+    case "error":
+      return String(event.message || "Sign-in failed");
+    default:
+      return "Working…";
+  }
+}
+
+/**
  * Drive the sign-in flow without React. Mirrors `buildClaudeInstallFlow`:
  *  - `runLogin`   → kicks off `app_login_claude` (resolves to a
  *    `ClaudeAuthStatus` on success, rejects on failure)
@@ -581,25 +605,28 @@ export const buildInstallFlow = buildClaudeInstallFlow;
 // ---------------------------------------------------------------------------
 
 /**
- * Collapse a prereq check + auth check into the welcome screen's decision
- * state. `canUseOwn` gates the "Use my own Claude Code" path: it's only safe
- * when the CLI is installed AND already authenticated, since the chat turn
- * would otherwise fail with no recourse. `ownBlockedReason` ("not_installed" |
- * "not_signed_in" | "") drives the disabled-state copy.
+ * Collapse a prereq check + auth check (+ Panda account presence) into the
+ * welcome screen's decision state. `canUseOwn` gates the "Use my own Claude
+ * Code" path: it's only safe when the CLI is installed AND already
+ * authenticated. `pandaSignedIn` marks the alternative Panda-account path as
+ * immediately ready.
  */
-export function evaluateWelcomeState({ check, auth } = {}) {
+export function evaluateWelcomeState({ check, auth, user } = {}) {
   const claude = evaluateClaudeCheck(check);
   const cliFound = Boolean(claude.proceed);
   const cliVersion = cliFound ? String(claude.version || "") : "";
   const authStatus = evaluateAuthCheck(auth);
   const authed = Boolean(authStatus.proceed);
   const authSource = authed ? String(authStatus.source || "") : "";
+  const pandaSignedIn = Boolean(user && typeof user === "object");
   return {
     cliFound,
     cliVersion,
     authed,
     authSource,
+    pandaSignedIn,
     canUseOwn: cliFound && authed,
+    canContinue: pandaSignedIn || (cliFound && authed),
     ownBlockedReason: cliFound ? (authed ? "" : "not_signed_in") : "not_installed",
   };
 }

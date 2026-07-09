@@ -346,6 +346,12 @@
     background-color: var(--ui-glass-popover) !important;
   }
 
+  .cad-solid-popover {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+    background-color: black !important;
+  }
+
   .cad-glass-control {
     background-color: var(--ui-glass-control) !important;
   }
@@ -364,19 +370,19 @@
       0 1px 0 rgb(0 0 0 / 0.45);
   }
 
-  .theme-preset-menu-item:not([data-action-hover="true"]) > .theme-preset-menu-row:hover,
-  .theme-preset-menu-item:not([data-action-hover="true"]) > .theme-preset-menu-row[data-highlighted] {
+  .theme-preset-menu-item:not([data-action-hover="true"])>.theme-preset-menu-row:hover,
+  .theme-preset-menu-item:not([data-action-hover="true"])>.theme-preset-menu-row[data-highlighted] {
     background: var(--accent);
     color: var(--accent-foreground);
   }
 
-  .theme-preset-menu-item[data-active="true"] > .theme-preset-menu-row {
+  .theme-preset-menu-item[data-active="true"]>.theme-preset-menu-row {
     background: var(--sidebar-accent);
     color: var(--sidebar-accent-foreground);
     font-weight: 600;
   }
 
-  .theme-preset-menu-item[data-action-hover="true"]:not([data-active="true"]) > .theme-preset-menu-row {
+  .theme-preset-menu-item[data-action-hover="true"]:not([data-active="true"])>.theme-preset-menu-row {
     background: transparent !important;
     color: var(--popover-foreground) !important;
   }
@@ -395,7 +401,7 @@
     overflow-x: hidden !important;
   }
 
-  .cad-file-viewer-scroll [data-slot="scroll-area-viewport"] > div {
+  .cad-file-viewer-scroll [data-slot="scroll-area-viewport"]>div {
     display: block !important;
     min-width: 0 !important;
     width: 100% !important;

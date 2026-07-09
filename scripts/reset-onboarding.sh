@@ -93,7 +93,7 @@ if command -v node >/dev/null 2>&1; then
     }
 
     const merged = { ...defaults, ...existing, hasOnboarded: false };
-    fs.writeFileSync(p, JSON.stringify(merged, null, 2) + "\\n");
+    fs.writeFileSync(p, JSON.stringify(merged, null, 2) + "\n");
   ' "${SETTINGS}"
 else
   # Node-less fallback: write a schema-valid minimal settings object.

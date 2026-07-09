@@ -33,20 +33,43 @@ export default function ModelControl({ className }) {
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
-    try {
-      const [settings, hasSocial] = await Promise.all([
-        transport.app_settings_read(),
-        transport.social_has_token(),
-      ]);
-      setModel(settings?.model ?? DEFAULT_MODEL);
-      setSignedInToPanda(Boolean(hasSocial));
-    } catch {
-      // Best-effort; keep prior state (or the default placeholder below).
+    const [settingsRes, socialRes] = await Promise.allSettled([
+      transport.app_settings_read(),
+      transport.social_has_token(),
+    ]);
+
+    if (settingsRes.status === "fulfilled") {
+      setModel(settingsRes.value?.model ?? DEFAULT_MODEL);
+    }
+    if (socialRes.status === "fulfilled") {
+      setSignedInToPanda(Boolean(socialRes.value));
     }
   }, []);
 
   useEffect(() => {
     void refresh();
+  }, [refresh]);
+
+  // Keep proxy-model availability in sync if sign-in completes while the
+  // composer is already mounted.
+  useEffect(() => {
+    let off = null;
+    (async () => {
+      try {
+        off = await transport.onSocialLoginProgress((event) => {
+          if (event?.stage === "done") {
+            void refresh();
+          }
+        });
+      } catch {
+        // Best-effort only.
+      }
+    })();
+    return () => {
+      if (typeof off === "function") {
+        off();
+      }
+    };
   }, [refresh]);
 
   const localChoices = MODEL_CHOICES.filter((choice) => !choice.requiresPandaSignIn);
@@ -76,7 +99,13 @@ export default function ModelControl({ className }) {
   );
 
   return (
-    <DropdownMenu>
+    <DropdownMenu
+      onOpenChange={(open) => {
+        if (open) {
+          void refresh();
+        }
+      }}
+    >
       <DropdownMenuTrigger asChild>
         <button
           type="button"
@@ -96,7 +125,7 @@ export default function ModelControl({ className }) {
           <ChevronDown className="size-3 opacity-60" aria-hidden />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="min-w-40">
+      <DropdownMenuContent align="start" className="cad-solid-popover min-w-40">
         <DropdownMenuLabel className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           Local Claude
         </DropdownMenuLabel>
@@ -130,7 +159,7 @@ export default function ModelControl({ className }) {
                 ? `model-option-${choice.value}`
                 : `model-option-${choice.value}-locked`
             }
-            className="justify-between gap-3"
+            className="justify-between gap-3 data-[disabled]:opacity-100 data-[disabled]:bg-background data-[disabled]:text-muted-foreground"
           >
             <span className="inline-flex items-center gap-2">
               <span>{choice.label}</span>

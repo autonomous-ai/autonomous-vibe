@@ -9,9 +9,9 @@ set -euo pipefail
 #   scripts/reset-onboarding.sh --dry-run
 #
 # Default app data dir on macOS for Panda:
-#   ~/Library/Application Support/app.Panda.Panda
+#   ~/Library/Application Support/app.panda.desktop
 
-APP_DIR_DEFAULT="${HOME}/Library/Application Support/app.Panda.Panda"
+APP_DIR_DEFAULT="${HOME}/Library/Application Support/app.panda.desktop"
 APP_DIR="${APP_DIR_DEFAULT}"
 DRY_RUN=0
 

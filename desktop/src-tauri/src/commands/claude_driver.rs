@@ -614,10 +614,10 @@ fn strip_verbatim_prefix(p: &Path) -> PathBuf {
 /// replace every character that is not ASCII alphanumeric with `-`, 1:1
 /// (no collapsing), matching Claude Code's `cwd.replace(/[^a-zA-Z0-9]/g, '-')`
 /// (verified against Claude Code 2.1.159 against
-/// `~/Library/Application Support/app.Panda.Panda/projects/<uuid>`).
+/// `~/Library/Application Support/app.panda.desktop/projects/<uuid>`).
 ///
 /// NOTE: it is not enough to replace only `/`. The packaged app's projects
-/// live under `Application Support/app.Panda.Panda/...`, whose spaces and
+/// live under `Application Support/app.panda.desktop/...`, whose spaces and
 /// dots Claude also rewrites to `-`. Replacing only `/` produced a
 /// non-matching dir, so `claude_session_exists` always returned false and
 /// the driver passed `--session-id` for an already-existing session —
@@ -2893,7 +2893,7 @@ mod tests {
     #[test]
     fn encode_cwd_rewrites_spaces_and_dots_like_claude() {
         // Regression: the packaged app's projects live under
-        // `~/Library/Application Support/app.Panda.Panda/projects/<uuid>`.
+        // `~/Library/Application Support/app.panda.desktop/projects/<uuid>`.
         // Claude rewrites spaces AND dots to `-` (not just `/`). Encoding only
         // `/` produced a non-matching session dir, so `claude_session_exists`
         // returned false, the driver passed `--session-id` for an existing
@@ -2901,12 +2901,12 @@ mod tests {
         // hung on "PLANNING". This is the exact on-disk dir observed for a real
         // project (Claude Code 2.1.159).
         let p = PathBuf::from(
-            "/Users/alice/Library/Application Support/app.Panda.Panda/projects/2f1df09b-468d-4a08-a6f2-03ee6fe40f92",
+            "/Users/alice/Library/Application Support/app.panda.desktop/projects/2f1df09b-468d-4a08-a6f2-03ee6fe40f92",
         );
         let enc = encode_cwd(&p);
         assert_eq!(
             enc,
-            "-Users-alice-Library-Application-Support-app-Panda-Panda-projects-2f1df09b-468d-4a08-a6f2-03ee6fe40f92",
+            "-Users-alice-Library-Application-Support-app-panda-desktop-projects-2f1df09b-468d-4a08-a6f2-03ee6fe40f92",
         );
     }
 

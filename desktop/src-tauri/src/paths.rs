@@ -4,9 +4,15 @@
 use directories::ProjectDirs;
 use std::path::{Path, PathBuf};
 
+// These three feed `ProjectDirs::from(qualifier, organization, application)`,
+// which on macOS builds the Application Support folder name as
+// `{qualifier}.{organization}.{application}` → `app.panda.desktop`. This is
+// intentionally kept in sync with `tauri.conf.json`'s `identifier`, but note
+// the two are independent: this crate's data paths come from here, NOT from
+// the Tauri identifier.
 const QUALIFIER: &str = "app";
-const ORGANIZATION: &str = "Panda";
-const APPLICATION: &str = "Panda";
+const ORGANIZATION: &str = "panda";
+const APPLICATION: &str = "desktop";
 
 /// Resolve the platform app-data root directory. Falls back to
 /// `./.panda-data/` if `ProjectDirs` returns nothing (test environments,

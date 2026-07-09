@@ -1,0 +1,17 @@
+; Panda OrcaSlicer sandbox profile (macOS)
+; Deny Music/iTunes AppleEvent + related Mach lookups to suppress
+; parent-attributed TCC prompts while leaving slicing behavior unchanged.
+(version 1)
+(allow default)
+
+(deny appleevent-send
+  (appleevent-destination "com.apple.Music"))
+
+(deny appleevent-send
+  (appleevent-destination "com.apple.iTunes"))
+
+(deny mach-lookup
+  (global-name "com.apple.Music"))
+
+(deny mach-lookup
+  (global-name "com.apple.iTunes"))

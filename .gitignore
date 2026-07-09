@@ -52,4 +52,5 @@ desktop/src-tauri/resources/python/**
 desktop/src-tauri/resources/slicer/**
 !desktop/src-tauri/resources/slicer/
 !desktop/src-tauri/resources/slicer/.installed
+!desktop/src-tauri/resources/slicer/orca-sandbox.sb
 !desktop/src-tauri/resources/slicer/orcaslicer-*-*-*

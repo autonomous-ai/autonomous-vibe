@@ -59,7 +59,11 @@ hex = "0.4"
 # firmware-validated start path expects the project digest (uppercase) in the
 # MQTT payload (see commands/printer.rs, `skills/bambu-labs` protocol notes).
 md5 = "0.7"
-open = "5"
+# `shellexecute-on-windows`: launch URLs/paths via `ShellExecuteW` instead of
+# `cmd /c start`, which mangles query strings (the `&` separators and `%`-encoded
+# `redirect_uri` in the sign-in URL) and bounces the browser from `/desktop-login`
+# to `/login` (see commands/social.rs `social_login`).
+open = { version = "5", features = ["shellexecute-on-windows"] }
 # Percent-decode/-encode the custom `pandaasset://` URI scheme paths used to
 # stream the open project's files to the webview (see src/asset_protocol.rs).
 percent-encoding = "2"

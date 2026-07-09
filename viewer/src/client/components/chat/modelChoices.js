@@ -4,7 +4,7 @@
 export const MODEL_CHOICES = [
   { value: "opus", label: "Opus", requiresPandaSignIn: false },
   { value: "sonnet", label: "Sonnet", requiresPandaSignIn: false },
-  { value: "minimax-m3", label: "MiniMax M3", requiresPandaSignIn: true },
+  { value: "minimax,minimax/minimax-m3", label: "MiniMax M3", requiresPandaSignIn: true },
 ];
 
 // Default when AppSettings.model is unset; matches the driver's `None → "opus"`.

@@ -331,6 +331,16 @@ pub fn social_has_token() -> bool {
     resolve_refresh_token().is_some()
 }
 
+/// A fresh access token for routing the chat proxy (`ANTHROPIC_AUTH_TOKEN`).
+/// Trades the stored refresh token for a short-lived access token. Returns
+/// `None` when the user isn't signed in or the refresh fails — the chat driver
+/// then falls back to a local model + the host's own Claude auth. Not an IPC
+/// command: only the driver calls it.
+pub async fn proxy_access_token() -> Option<String> {
+    let client = http_client().ok()?;
+    obtain_access_token(&client).await.ok()
+}
+
 /// IPC: the signed-in account, if any — lets the UI show "Signed in as …"
 /// without a network round trip.
 #[tauri::command]

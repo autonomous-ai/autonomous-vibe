@@ -530,6 +530,24 @@ pub fn build_env(_cfg: &ClaudeRunConfig) -> Vec<(String, String)> {
     env
 }
 
+/// Extra env that routes the spawned `claude` through Panda's hosted proxy for a
+/// signed-in proxy-model turn. The chat run path appends these to [`build_env`]'s
+/// output only when it has a proxy access token: `ANTHROPIC_BASE_URL` points at
+/// [`crate::commands::app::PANDA_PROXY_URL`] so the `provider,model` string (e.g.
+/// `minimax,minimax/minimax-m3`) resolves at the proxy instead of Anthropic's API,
+/// and `ANTHROPIC_AUTH_TOKEN` carries the panda-social bearer token (not an
+/// Anthropic API key, so it goes in `AUTH_TOKEN`, not `API_KEY`). Local models
+/// never call this, so they keep inheriting the host's own Claude auth.
+pub fn proxy_env(token: &str) -> Vec<(String, String)> {
+    vec![
+        (
+            "ANTHROPIC_BASE_URL".into(),
+            crate::commands::app::PANDA_PROXY_URL.to_string(),
+        ),
+        ("ANTHROPIC_AUTH_TOKEN".into(), token.to_string()),
+    ]
+}
+
 /// Has Claude Code already persisted a session JSONL for this UUID?
 ///
 /// Claude Code stores sessions at
@@ -1381,6 +1399,22 @@ where
         .and_then(|s| s.model.clone())
         .filter(|m| crate::commands::app::is_model_available(m));
 
+    // Panda proxy models (e.g. `minimax,minimax/minimax-m3`) route the child
+    // `claude` through Panda's hosted proxy: obtain a fresh panda-social access
+    // token and append `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` to the env
+    // below. If the token can't be minted (session expired / offline), fall back
+    // to the local default model + host auth rather than run a proxy `--model`
+    // string against Anthropic's own API, which would fail.
+    let (model, proxy_token) =
+        if model.as_deref() == Some(crate::commands::app::PROXY_MODEL_MINIMAX_M3) {
+            match crate::commands::social::proxy_access_token().await {
+                Some(token) => (model, Some(token)),
+                None => (None, None),
+            }
+        } else {
+            (model, None)
+        };
+
     let cfg = ClaudeRunConfig {
         prompt: user_message.to_string(),
         workspace: workspace_dir.to_path_buf(),
@@ -1390,7 +1424,10 @@ where
         phase,
     };
     let argv = build_command(&cfg);
-    let env = build_env(&cfg);
+    let mut env = build_env(&cfg);
+    if let Some(token) = &proxy_token {
+        env.extend(proxy_env(token));
+    }
 
     let debug_stream = claude_stream_debug::enabled();
     let raw_stream = claude_stream_debug::raw();
@@ -2827,6 +2864,21 @@ mod tests {
         );
         assert!(!map.contains_key("ANTHROPIC_BASE_URL"));
         assert!(!map.contains_key("ANTHROPIC_AUTH_TOKEN"));
+        assert!(!map.contains_key("ANTHROPIC_API_KEY"));
+    }
+
+    #[test]
+    fn proxy_env_points_claude_at_the_panda_proxy_with_a_bearer_token() {
+        let map: HashMap<String, String> = proxy_env("ccr-tok-123").into_iter().collect();
+        assert_eq!(
+            map.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some(crate::commands::app::PANDA_PROXY_URL),
+        );
+        // The panda-social token is a bearer token → AUTH_TOKEN, not API_KEY.
+        assert_eq!(
+            map.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str),
+            Some("ccr-tok-123"),
+        );
         assert!(!map.contains_key("ANTHROPIC_API_KEY"));
     }
 

@@ -944,7 +944,16 @@ async fn store_oauth_token(token: &str) -> IpcResult<()> {
 pub const LOCAL_MODEL_CHOICES: [&str; 2] = ["opus", "sonnet"];
 
 /// Signed-in proxy model (Panda account required). Today we only expose one.
-pub const PROXY_MODEL_MINIMAX_M3: &str = "minimax-m3";
+/// The value is a CCR-style `provider,model` string resolved by Panda's hosted
+/// proxy — it only works when the chat driver points `claude` at
+/// [`PANDA_PROXY_URL`] via `ANTHROPIC_BASE_URL` (see `claude_driver::proxy_env`).
+pub const PROXY_MODEL_MINIMAX_M3: &str = "minimax,minimax/minimax-m3";
+
+/// Panda's hosted Claude proxy. The chat driver sets this as `ANTHROPIC_BASE_URL`
+/// on the spawned `claude` when a signed-in user picks a proxy model, so the
+/// `provider,model` string in [`PROXY_MODEL_MINIMAX_M3`] routes to the backend
+/// model instead of Anthropic's own API.
+pub const PANDA_PROXY_URL: &str = "https://api-panda.autonomous.ai";
 
 /// True when `model` is one of the selectable [`MODEL_CHOICES`] (exact match,
 /// no trimming). `app_set_model` gates on this so settings can never hold an

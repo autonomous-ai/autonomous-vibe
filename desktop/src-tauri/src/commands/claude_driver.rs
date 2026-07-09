@@ -392,6 +392,14 @@ pub fn build_command(cfg: &ClaudeRunConfig) -> Vec<String> {
         "--include-partial-messages".into(),
         "--permission-mode".into(),
         cfg.phase.permission_mode().into(),
+        // Belt-and-suspenders: `bypassPermissions` already suppresses Claude
+        // Code's own tool prompts, but `--dangerously-skip-permissions`
+        // bypasses ALL permission checks unconditionally. Safe here — every
+        // turn is non-interactive (`-p`), the workspace is scoped via
+        // `--add-dir`, and the cadcode skill runs sandboxed (RLIMIT_AS /
+        // RLIMIT_CPU / import allow-list). The process is never root (the app
+        // runs as the logged-in user), which the flag also requires.
+        "--dangerously-skip-permissions".into(),
         "--add-dir".into(),
         cfg.workspace.display().to_string(),
         "--append-system-prompt".into(),
@@ -2775,6 +2783,8 @@ mod tests {
         // the prompt — not the CLI — bars writing source / generating parts.
         let pm = cmd.iter().position(|a| a == "--permission-mode").unwrap();
         assert_eq!(cmd[pm + 1], "bypassPermissions");
+        // Full permission bypass so no tool prompt can ever stall a headless turn.
+        assert!(cmd.iter().any(|a| a == "--dangerously-skip-permissions"));
         // append-system-prompt is the planning prompt
         let sp = cmd.iter().position(|a| a == "--append-system-prompt").unwrap();
         assert!(cmd[sp + 1].starts_with(PLAN_SYSTEM_PROMPT));
@@ -2804,6 +2814,7 @@ mod tests {
         // Build phase must run unattended: acceptEdits still prompts for Bash,
         // which blocks the cadcode generator (a `python … cad` Bash command).
         assert_eq!(cmd[pm + 1], "bypassPermissions");
+        assert!(cmd.iter().any(|a| a == "--dangerously-skip-permissions"));
         let sp = cmd.iter().position(|a| a == "--append-system-prompt").unwrap();
         assert!(cmd[sp + 1].starts_with(IMPLEMENT_SYSTEM_PROMPT));
         assert!(cmd[sp + 1].contains("APPROVED"));

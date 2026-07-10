@@ -1,5 +1,7 @@
 # Create magical things by chatting with AI
 
+https://github.com/user-attachments/assets/927ef6e1-1868-4e65-b183-52b9e5d155e8
+
 Vibe is the easiest way to make anything.
 
 **1. Design:** Describe what you want. Vibe designs it into a real, precise object — exactly as you pictured it.
@@ -9,8 +11,6 @@ Vibe is the easiest way to make anything.
 **3. Bring it to life:** Pull it off the plate and into the world. The thing that only lived in your head — now in your hand.
 
 It's this simple!
-
-https://github.com/user-attachments/assets/927ef6e1-1868-4e65-b183-52b9e5d155e8
 
 ## Status
 

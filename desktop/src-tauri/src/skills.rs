@@ -109,11 +109,14 @@ pub fn sync_skill_trees(
 
 /// Write `~/.claude/panda-mcp-config.json` with an empty `mcpServers` map.
 ///
-/// This file is passed as `--mcp-config` to every spawned `claude -p` subprocess
-/// so that the user's globally-configured MCP servers (e.g. a Reminders or
-/// Calendar integration) cannot start inside Panda's sandboxed turns and trigger
-/// unexpected macOS privacy permission dialogs. Best-effort: a write failure is
-/// logged and swallowed — it must never block a chat turn.
+/// This file is passed as `--mcp-config` *together with* `--strict-mcp-config`
+/// to every spawned `claude -p` subprocess so that the user's globally-configured
+/// MCP servers (e.g. a Reminders or Google Drive integration) cannot start inside
+/// Panda's sandboxed turns and trigger unexpected macOS privacy permission dialogs
+/// (notably "…would like to access data from other apps"). The strict flag is
+/// load-bearing: `--mcp-config` alone merges this empty map on top of the user's
+/// discovered configs, leaving the global servers running. Best-effort: a write
+/// failure is logged and swallowed — it must never block a chat turn.
 pub fn install_panda_mcp_config() {
     let Some(home) = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))

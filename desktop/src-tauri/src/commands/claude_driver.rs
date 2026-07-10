@@ -422,10 +422,19 @@ pub fn build_command(cfg: &ClaudeRunConfig) -> Vec<String> {
         cmd.push(skills_dir.display().to_string());
     }
     // Prevent the user's globally-configured MCP servers from loading inside
-    // Panda's sandboxed turns. Global MCPs (e.g. a Reminders integration) are
-    // irrelevant to CAD generation and can trigger unexpected macOS privacy
-    // permission dialogs. `install_panda_mcp_config` writes this file at app
-    // startup; guard with exists() so a first-launch race never breaks a turn.
+    // Panda's sandboxed turns. Global MCPs (e.g. a Reminders or Google Drive
+    // integration) are irrelevant to CAD generation and trigger unexpected
+    // macOS privacy dialogs — one of them scanning another app's data pops the
+    // "Vibe would like to access data from other apps" prompt on every turn.
+    //
+    // `--mcp-config` ALONE does not disable them: Claude Code *merges* the
+    // supplied file on top of the discovered configs (`~/.claude.json`,
+    // project `.mcp.json`), so the empty map is a no-op and the global servers
+    // still start. `--strict-mcp-config` makes Claude Code use ONLY the
+    // `--mcp-config` file(s) and ignore every other source — with the empty
+    // map that means zero MCP servers. Pushed unconditionally so that even the
+    // first-launch race (file not yet written) still loads no servers.
+    cmd.push("--strict-mcp-config".into());
     if let Some(mcp_cfg) = home_dir().map(|h| h.join(".claude").join("panda-mcp-config.json")) {
         if mcp_cfg.exists() {
             cmd.push("--mcp-config".into());
@@ -835,7 +844,17 @@ async fn generate_project_title(claude_path: PathBuf, user_message: String) -> O
     );
     let mut command = Command::new(&claude_path);
     command
-        .args(["-p", "--output-format", "text", "--no-session-persistence"])
+        // `--strict-mcp-config` (with no `--mcp-config`) loads zero MCP servers,
+        // so this concurrent title call can't start the user's global MCPs and
+        // trip a macOS "access data from other apps" prompt (see the main turn
+        // builder). Without it, `claude -p` merges in every discovered config.
+        .args([
+            "-p",
+            "--output-format",
+            "text",
+            "--no-session-persistence",
+            "--strict-mcp-config",
+        ])
         .arg(&prompt)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -2738,6 +2757,10 @@ mod tests {
         let mc_pos = cmd.iter().position(|a| a == "--mcp-config");
         assert!(mc_pos.is_some(), "--mcp-config flag should be present");
         assert_eq!(cmd[mc_pos.unwrap() + 1], cfg_path.display().to_string());
+        assert!(
+            cmd.iter().any(|a| a == "--strict-mcp-config"),
+            "--strict-mcp-config must accompany --mcp-config or global MCPs still load"
+        );
 
         let _ = std::fs::remove_file(&cfg_path);
         let _ = std::fs::remove_file(&tmp);
@@ -2770,6 +2793,12 @@ mod tests {
         assert!(
             !cmd.iter().any(|a| a == "--mcp-config"),
             "--mcp-config should be absent when config file does not exist"
+        );
+        // Even without the config file, strict mode must still be on so the
+        // first-launch race loads zero MCP servers rather than every global one.
+        assert!(
+            cmd.iter().any(|a| a == "--strict-mcp-config"),
+            "--strict-mcp-config must be present even when the config file is absent"
         );
     }
 

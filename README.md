@@ -1,6 +1,6 @@
 # Vibe Hardware: Create Magical Things by Chatting with AI
 
-https://github.com/user-attachments/assets/927ef6e1-1868-4e65-b183-52b9e5d155e8
+https://github.com/user-attachments/assets/038fa55f-4e52-47b6-935f-f8ff66abf3f1
 
 Vibe is the easiest way to make anything.
 

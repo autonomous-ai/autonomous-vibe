@@ -1,16 +1,17 @@
 # Vibe Hardware: Create Magical Things by Chatting with AI
 
-https://github.com/user-attachments/assets/038fa55f-4e52-47b6-935f-f8ff66abf3f1
+It's this simple to make anything with Vibe.
 
-Vibe is the easiest way to make anything.
+**1. Design:**
+Describe what you want. Vibe designs it into a real, precise object — exactly as you pictured it.
 
-**1. Design:** Describe what you want. Vibe designs it into a real, precise object — exactly as you pictured it.
+**2. Print:** 
+Send it straight to your printer. Clean, watertight parts that land on the bed ready to go.
 
-**2. Print:** Send it straight to your printer. Clean, watertight parts that land on the bed ready to go.
+**3. Bring it to life:** 
+Pull it off the plate and into the world. The thing that only lived in your head — now in your hand.
 
-**3. Bring it to life:** Pull it off the plate and into the world. The thing that only lived in your head — now in your hand.
-
-It's this simple!
+https://github.com/user-attachments/assets/8a79be02-ea62-45d8-9db2-bfa7c33fb7e3
 
 ## Status
 

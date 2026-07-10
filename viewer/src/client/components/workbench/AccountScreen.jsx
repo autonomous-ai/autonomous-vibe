@@ -12,7 +12,7 @@ import UserAvatar from "@/components/workbench/UserAvatar.jsx";
 import PlanBadge from "@/components/workbench/PlanBadge.jsx";
 import SettingsDialog from "@/components/workbench/SettingsDialog.jsx";
 import { Toast, ToastProvider, ToastTitle, ToastViewport } from "@/components/ui/toast.jsx";
-import { activePlanLabel, planLabelOrFree } from "@/components/workbench/subscription.js";
+import { activePlanLabel, isFreePlan, planLabelOrFree } from "@/components/workbench/subscription.js";
 
 /**
  * Public site base for the shareable profile link. The desktop app has no web
@@ -261,6 +261,7 @@ export default function AccountScreen({ open, onOpenChange, onSignOut }) {
   const username = profile?.username || user?.username || "";
   const planLabel = activePlanLabel(profile);
   const planName = planLabelOrFree(profile);
+  const freePlan = isFreePlan(profile);
 
   return (
     <div className="flex h-full flex-col bg-background/80 backdrop-blur-sm">
@@ -324,11 +325,22 @@ export default function AccountScreen({ open, onOpenChange, onSignOut }) {
               {profile?.email ? (
                 <p className="text-sm text-muted-foreground">{profile.email}</p>
               ) : null}
-              {/* Current plan — always shown (defaults to "Free" with no active sub). */}
-              <div className="mt-2 flex items-center gap-2">
+              {/* Current plan — always shown (defaults to "Free" with no active sub).
+                  Free-tier users get an "Upgrade" button that opens the plans page. */}
+              <div className="mt-2 flex flex-wrap items-center gap-2">
                 <Crown className="size-4 text-muted-foreground" aria-hidden="true" />
                 <span className="text-sm text-muted-foreground">Plan</span>
                 <span className="text-sm font-semibold text-foreground">{planName}</span>
+                {freePlan ? (
+                  <Button
+                    size="sm"
+                    className="h-7 px-3"
+                    onClick={() => void transport.social_open_pricing()}
+                  >
+                    <Crown className="mr-1.5 size-3.5" aria-hidden="true" />
+                    Upgrade
+                  </Button>
+                ) : null}
               </div>
               {profile?.bio ? (
                 <p className="mt-2 text-sm text-foreground">{profile.bio}</p>

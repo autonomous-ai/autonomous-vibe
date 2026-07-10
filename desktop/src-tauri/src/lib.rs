@@ -214,6 +214,7 @@ pub fn run() {
             social::social_login,
             social::social_cancel_login,
             social::social_logout,
+            social::social_open_pricing,
             // snapshot (git-tag-style model save states)
             snapshot::snapshot_list,
             snapshot::snapshot_save,

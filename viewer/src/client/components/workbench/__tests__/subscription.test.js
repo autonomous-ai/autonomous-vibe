@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   activePlanLabel,
+  isFreePlan,
   isPlanActive,
   planDisplayName,
   planLabelOrFree,
@@ -41,4 +42,15 @@ test("planLabelOrFree always resolves to a tier, defaulting to Free", () => {
   assert.equal(planLabelOrFree({ plan: "pro", planStatus: "canceled" }), "Free");
   assert.equal(planLabelOrFree({}), "Free");
   assert.equal(planLabelOrFree(null), "Free");
+});
+
+test("isFreePlan is true unless there's an active paid plan", () => {
+  // Active paid plans → not free (no Upgrade button).
+  assert.equal(isFreePlan({ plan: "pro", planStatus: "active" }), false);
+  assert.equal(isFreePlan({ plan: "studio", planStatus: "trialing" }), false);
+  // Free tier, canceled, or no subscription → free (Upgrade shown).
+  assert.equal(isFreePlan({ plan: "free", planStatus: "active" }), true);
+  assert.equal(isFreePlan({ plan: "pro", planStatus: "canceled" }), true);
+  assert.equal(isFreePlan({}), true);
+  assert.equal(isFreePlan(null), true);
 });

@@ -34,3 +34,11 @@ export function activePlanLabel(profile) {
 export function planLabelOrFree(profile) {
   return activePlanLabel(profile) ?? "Free";
 }
+
+/**
+ * True when the account is on the free tier — no active PAID subscription. Backs
+ * the "Upgrade" affordance (free users see it; Pro/Studio users don't).
+ */
+export function isFreePlan(profile) {
+  return planLabelOrFree(profile).toLowerCase() === "free";
+}

@@ -51,6 +51,12 @@ const REFRESH_URL: &str = "https://panda-social-api.autonomous.ai/api/v1/auth/re
 /// `APP_LOGIN_INTEGRATION.md`'s end-to-end flow diagram).
 const WEB_LOGIN_URL: &str = "https://vibe.autonomous.ai/desktop-login";
 
+/// Hosted plans/pricing page (panda-website's `/pricing`, nav label "Plans").
+/// Opened in the system browser by [`social_open_pricing`] when a free-plan user
+/// taps "Upgrade" — the desktop app has no in-app checkout, so the upgrade flow
+/// (Stripe) lives on the website.
+const PRICING_URL: &str = "https://vibe.autonomous.ai/pricing";
+
 /// One-time-code exchange endpoint: `POST {code, code_verifier}` →
 /// `{access_token, refresh_token, user}`.
 const EXCHANGE_URL: &str = "https://panda-social-api.autonomous.ai/api/v1/auth/exchange";
@@ -609,6 +615,20 @@ pub async fn social_login(
 #[tauri::command]
 pub async fn social_cancel_login(state: State<'_, AppState>) -> IpcResult<()> {
     state.take_pending_social_login();
+    Ok(())
+}
+
+/// IPC: open the hosted plans/pricing page in the system browser. Backs the
+/// "Upgrade" button shown to free-plan users (the desktop app has no in-app
+/// checkout — the Stripe upgrade flow lives on panda-website's `/pricing`).
+#[tauri::command]
+pub fn social_open_pricing() -> IpcResult<()> {
+    open::that_detached(PRICING_URL).map_err(|e| {
+        IpcError::new(
+            "SOCIAL_OPEN_PRICING_FAILED",
+            format!("could not open the plans page: {e}"),
+        )
+    })?;
     Ok(())
 }
 

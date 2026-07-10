@@ -1022,6 +1022,13 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
     case "social_cancel_login":
     case "social_logout":
       return undefined as unknown as T;
+    case "social_open_pricing":
+      // Browser dev has no system-browser bridge — open the hosted plans page
+      // in a new tab so the Upgrade button still works outside Tauri.
+      if (typeof window !== "undefined") {
+        window.open("https://vibe.autonomous.ai/pricing", "_blank", "noopener");
+      }
+      return undefined as unknown as T;
     default:
       throw new Error(`${STUB_TAG} unknown command: ${cmd}`);
   }
@@ -1144,6 +1151,7 @@ const transportBase = {
   social_login: () => invoke<SocialLoginResult>("social_login"),
   social_cancel_login: () => invoke<void>("social_cancel_login"),
   social_logout: () => invoke<void>("social_logout"),
+  social_open_pricing: () => invoke<void>("social_open_pricing"),
 
   // snapshots (model save-states) — see desktop/src-tauri/src/commands/snapshot.rs
   snapshot_list: (projectId: string) =>

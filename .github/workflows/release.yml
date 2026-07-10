@@ -235,3 +235,22 @@ jobs:
           PY
           gh release upload "$TAG" -R "$REPO" dl/latest.json --clobber
           echo "patched latest.json windows-* url -> $NEW_WIN_URL"
+
+      # Publish (i.e. "switch to") the new version ONLY now, after every matrix
+      # build job succeeded (this job's `needs: release` gate) and the assets
+      # were renamed + latest.json patched. Until this point the release stayed a
+      # draft (releaseDraft: true), so the previously published release remained
+      # the live "Latest" that installed apps auto-update against — a failed or
+      # half-finished build never deletes or replaces the current version. This
+      # step flips the draft to published and marks it Latest in one atomic edit,
+      # so the visible/updater-facing version switches only on full success.
+      - name: Publish release (switch to new version)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" -R "$REPO" --draft=false --latest
+          echo "published $TAG and marked it Latest"

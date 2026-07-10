@@ -372,6 +372,16 @@ fn token_required(err: AuthError) -> IpcError {
 /// `SOCIAL_TOKEN_REQUIRED` (and forgets the bad session) so the UI re-prompts.
 #[tauri::command]
 pub async fn social_profile() -> IpcResult<SocialProfile> {
+    // The `subscription` object on `GET /profile` (own-profile only). Mirrors the
+    // backend `models.Subscription` — `{ plan, status, current_period_end }`. The
+    // period end is unused by the account panel, so it's not modeled here.
+    #[derive(Deserialize, Default)]
+    struct SubscriptionApi {
+        #[serde(default)]
+        plan: String,
+        #[serde(default)]
+        status: String,
+    }
     #[derive(Deserialize, Default)]
     struct ProfileApi {
         #[serde(default)]
@@ -394,6 +404,9 @@ pub async fn social_profile() -> IpcResult<SocialProfile> {
         following_count: i64,
         #[serde(default)]
         verified: bool,
+        // Own-profile only and may be `null`; both cases collapse to an empty plan.
+        #[serde(default)]
+        subscription: Option<SubscriptionApi>,
     }
 
     let client = http_client().map_err(|e| IpcError::new("SOCIAL_PROFILE_FAILED", format!("{e}")))?;
@@ -423,6 +436,7 @@ pub async fn social_profile() -> IpcResult<SocialProfile> {
         .json()
         .await
         .map_err(|e| IpcError::new("SOCIAL_PROFILE_FAILED", format!("unexpected profile response: {e}")))?;
+    let subscription = p.subscription.unwrap_or_default();
     Ok(SocialProfile {
         id: p.id,
         username: p.username,
@@ -434,6 +448,8 @@ pub async fn social_profile() -> IpcResult<SocialProfile> {
         follower_count: p.follower_count,
         following_count: p.following_count,
         verified: p.verified,
+        plan: subscription.plan,
+        plan_status: subscription.status,
     })
 }
 

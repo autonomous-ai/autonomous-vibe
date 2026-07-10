@@ -525,6 +525,18 @@ export interface SocialProfile {
   followerCount?: number;
   followingCount?: number;
   verified?: boolean;
+  /**
+   * Active subscription plan key ("free" | "pro" | "studio"), mapped from the
+   * profile body's `subscription.plan`. Empty when the account carries no
+   * subscription. Capitalized into the "subscribed type" badge by the UI.
+   */
+  plan?: string;
+  /**
+   * Subscription status ("active" | "trialing" | "past_due" | "canceled"),
+   * mapped from `subscription.status`. The UI only badges the plan while this is
+   * an active state. Empty when the account carries no subscription.
+   */
+  planStatus?: string;
 }
 
 /**

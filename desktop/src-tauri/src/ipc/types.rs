@@ -774,6 +774,16 @@ pub struct SocialProfile {
     pub following_count: i64,
     #[serde(default)]
     pub verified: bool,
+    /// Active subscription plan key ("free" | "pro" | "studio"), mapped from the
+    /// profile body's `subscription.plan`. Empty when the account carries no
+    /// subscription. The UI capitalizes this into the "subscribed type" badge.
+    #[serde(default)]
+    pub plan: String,
+    /// Subscription status ("active" | "trialing" | "past_due" | "canceled"),
+    /// mapped from `subscription.status`. The UI only badges the plan while this
+    /// is one of the active states. Empty when the account carries no subscription.
+    #[serde(default)]
+    pub plan_status: String,
 }
 
 /// One of the signed-in account's designs/models, as served by

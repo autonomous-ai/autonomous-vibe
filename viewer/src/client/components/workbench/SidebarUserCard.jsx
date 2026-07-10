@@ -4,31 +4,41 @@ import { useCallback, useEffect, useState } from "react";
 import { BadgeCheck, LogIn } from "lucide-react";
 import PublishSignInDialog from "@/components/project/PublishSignInDialog.jsx";
 import { transport } from "@/lib/transport.ts";
-
-/** First letters for the avatar fallback. */
-function initials(name) {
-  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-}
+import UserAvatar from "@/components/workbench/UserAvatar.jsx";
+import PlanBadge from "@/components/workbench/PlanBadge.jsx";
+import { activePlanLabel } from "@/components/workbench/subscription.js";
 
 /**
  * Bottom-left account affordance for the Models sidebar.
  *
- * Signed out → a "Sign in" row. Signed in → the account row (avatar + name);
- * clicking it opens the full AccountScreen via `onOpenAccountScreen`.
+ * Signed out → a "Sign in" row. Signed in → the account row (avatar + name +
+ * subscription badge); clicking it opens the full AccountScreen via
+ * `onOpenAccountScreen`. Mirrors panda-website's sidebar user card: the real
+ * `avatarUrl` (with an initials fallback) and a `PlanBadge` for the active tier.
  */
 export default function SidebarUserCard({ onOpenAccountScreen }) {
   const [user, setUser] = useState(null);
+  const [profile, setProfile] = useState(null);
   const [signInOpen, setSignInOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
       const u = await transport.social_current_user();
       setUser(u);
+      if (u) {
+        // The stored session has no avatar/plan (login only returns id/handle);
+        // the profile does. Best-effort — the row still renders from `user`.
+        try {
+          setProfile(await transport.social_profile());
+        } catch {
+          setProfile(null);
+        }
+      } else {
+        setProfile(null);
+      }
     } catch {
       setUser(null);
+      setProfile(null);
     }
   }, []);
 
@@ -49,8 +59,11 @@ export default function SidebarUserCard({ onOpenAccountScreen }) {
     void refresh();
   };
 
-  const displayName = user?.displayName || user?.username || "";
-  const username = user?.username || "";
+  const displayName =
+    profile?.displayName || user?.displayName || profile?.username || user?.username || "";
+  const username = profile?.username || user?.username || "";
+  const planLabel = activePlanLabel(profile);
+  const verified = profile?.verified;
 
   // ---- Signed out ---------------------------------------------------------
   if (!user) {
@@ -83,15 +96,19 @@ export default function SidebarUserCard({ onOpenAccountScreen }) {
       onClick={() => onOpenAccountScreen?.()}
     >
       {/* Avatar */}
-      <span className="flex shrink-0 items-center justify-center rounded-full bg-primary/15 text-[0.6rem] font-semibold uppercase text-primary ring-1 ring-sidebar-border size-7">
-        {initials(displayName)}
-      </span>
+      <UserAvatar
+        url={profile?.avatarUrl}
+        name={displayName}
+        className="size-7 rounded-full ring-1 ring-sidebar-border"
+        textClassName="text-[0.6rem]"
+      />
       <span className="flex min-w-0 flex-col">
         <span className="flex items-center gap-1 truncate text-sm font-medium text-foreground">
-          {displayName}
-          {user?.verified ? (
+          <span className="truncate">{displayName}</span>
+          {verified ? (
             <BadgeCheck className="size-3 shrink-0 text-primary" aria-label="Verified" />
           ) : null}
+          {planLabel ? <PlanBadge label={planLabel} /> : null}
         </span>
         {username ? (
           <span className="truncate text-xs text-muted-foreground">@{username}</span>

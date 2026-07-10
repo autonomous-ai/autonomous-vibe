@@ -7,32 +7,20 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { transport } from "@/lib/transport.ts";
 import { cn } from "@/ui/utils";
 import PublishSignInDialog from "@/components/project/PublishSignInDialog.jsx";
+import UserAvatar from "@/components/workbench/UserAvatar.jsx";
+import PlanBadge from "@/components/workbench/PlanBadge.jsx";
+import { activePlanLabel } from "@/components/workbench/subscription.js";
 
-/** First letters for the avatar fallback. */
-function initials(name) {
-  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-}
-
-/** Large round avatar with initials fallback. */
+/** Large round avatar (image with initials fallback). */
 function LargeAvatar({ profile, user }) {
-  const url = profile?.avatarUrl;
   const label = profile?.displayName || user?.displayName || user?.username || "";
-  if (url) {
-    return (
-      <img
-        src={url}
-        alt={label}
-        className="size-20 rounded-full object-cover ring-4 ring-sidebar-border/50"
-      />
-    );
-  }
   return (
-    <div className="flex size-20 items-center justify-center rounded-full bg-primary/15 text-2xl font-bold uppercase text-primary ring-4 ring-sidebar-border/50">
-      {initials(label)}
-    </div>
+    <UserAvatar
+      url={profile?.avatarUrl}
+      name={label}
+      className="size-20 rounded-full ring-4 ring-sidebar-border/50"
+      textClassName="text-2xl font-bold"
+    />
   );
 }
 
@@ -51,16 +39,21 @@ function StatCell({ value, label, icon: Icon }) {
 
 /** One model card in the grid. */
 function ModelCard({ model }) {
+  // Fall back to the placeholder when the thumbnail is absent OR fails to load
+  // (a stale/expired CDN URL would otherwise render a broken-image glyph).
+  const [thumbFailed, setThumbFailed] = useState(false);
+  const showThumb = Boolean(model.thumbnailUrl) && !thumbFailed;
   return (
     <div
       className="group relative overflow-hidden rounded-lg border border-border bg-card/50 transition-shadow hover:shadow-lg"
       title={model.title || model.slug || "Untitled"}
     >
       <div className="relative aspect-square w-full bg-muted">
-        {model.thumbnailUrl ? (
+        {showThumb ? (
           <img
             src={model.thumbnailUrl}
             alt={model.title || "Model"}
+            onError={() => setThumbFailed(true)}
             className="size-full object-cover transition-transform group-hover:scale-105"
             loading="lazy"
           />
@@ -238,6 +231,7 @@ export default function AccountScreen({ open, onOpenChange, onSignOut }) {
   // ---- Signed in ----------------------------------------------------------
   const displayName = profile?.displayName || user?.displayName || user?.username || "";
   const username = profile?.username || user?.username || "";
+  const planLabel = activePlanLabel(profile);
 
   return (
     <div className="flex h-full flex-col bg-background/80 backdrop-blur-sm">
@@ -260,13 +254,14 @@ export default function AccountScreen({ open, onOpenChange, onSignOut }) {
           <div className="mb-8 flex flex-col gap-6 rounded-xl border border-border bg-card/50 p-6 sm:flex-row sm:items-center sm:gap-8">
             <LargeAvatar profile={profile} user={user} />
             <div className="flex-1">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-2xl font-bold text-foreground">
                   {displayName || username}
                 </h2>
                 {profile?.verified ? (
                   <BadgeCheck className="size-5 text-primary" aria-label="Verified" />
                 ) : null}
+                {planLabel ? <PlanBadge label={planLabel} /> : null}
               </div>
               {username ? (
                 <p className="text-sm text-muted-foreground">@{username}</p>

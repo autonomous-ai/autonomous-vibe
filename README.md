@@ -1,4 +1,4 @@
-# Create magical things by chatting with AI
+# Vibe Hardware: Create magical things by chatting with AI
 
 https://github.com/user-attachments/assets/927ef6e1-1868-4e65-b183-52b9e5d155e8
 
@@ -41,11 +41,3 @@ v1 in active development.
 
 Panda uses the user's existing Claude Code subscription. v2 will add an
 optional Panda Cloud proxy for users who want a subscription instead.
-
-## License
-
-Licensed under the [MIT License](LICENSE), Copyright (c) 2026 dee.
-
-Some bundled skills (`cad-viewer`, `step-parts`) are
-third-party components, each MIT-licensed and Copyright (c) 2026 earthtojake.
-See [`NOTICE`](NOTICE) and the per-skill `LICENSE` files for attribution.

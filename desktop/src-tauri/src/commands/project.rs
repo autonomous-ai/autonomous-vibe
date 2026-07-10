@@ -209,14 +209,19 @@ async fn create_project(name: &str) -> IpcResult<ProjectSummary> {
     let id = Uuid::new_v4().to_string();
     let dir = project_dir(&id);
     fs::create_dir_all(&dir).await.map_err(IpcError::from)?;
-    // Deny all MCP tool calls in this workspace. The user's globally-configured
-    // MCP servers (e.g. Reminders, Calendar) are irrelevant inside Panda turns;
-    // denying them here is a belt-and-suspenders guard alongside --mcp-config.
+    // Workspace-scoped Claude Code permissions for Panda turns:
+    // - `allow` pre-approves the `find` CLI so filesystem scans (e.g. the
+    //   cadcode skill locating its venv Python / cadquery install) never stall
+    //   on a prompt. This is app-scoped — it only affects turns run inside a
+    //   Panda project workspace, not the user's own Claude Code sessions.
+    // - `deny` blocks all MCP tool calls. The user's globally-configured MCP
+    //   servers (e.g. Reminders, Calendar) are irrelevant inside Panda turns;
+    //   denying them here is a belt-and-suspenders guard alongside --mcp-config.
     let claude_dir = dir.join(".claude");
     let _ = fs::create_dir_all(&claude_dir).await;
     let _ = fs::write(
         claude_dir.join("settings.json"),
-        r#"{"permissions":{"deny":["mcp__*"]}}"#,
+        r#"{"permissions":{"allow":["Bash(find:*)"],"deny":["mcp__*"]}}"#,
     )
     .await;
     let now = Utc::now().timestamp_millis();

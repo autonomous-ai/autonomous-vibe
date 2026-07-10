@@ -104,7 +104,7 @@ export default function PublishSignInDialog({ open, onOpenChange, onSignedIn }) 
           <DialogTitle>Sign in to vibe-social</DialogTitle>
           <DialogDescription>
             Publishing designs needs a vibe-social account. Sign in with your
-            browser — Panda never sees your password.
+            browser — Vibe never sees your password.
           </DialogDescription>
         </DialogHeader>
 

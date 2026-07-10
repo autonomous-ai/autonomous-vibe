@@ -70,10 +70,10 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
         ..Default::default()
     };
 
-    // First submenu = the macOS app menu (shown as "Panda").
+    // First submenu = the macOS app menu (shown as "Vibe").
     let app_menu = Submenu::with_items(
         app,
-        "Panda",
+        "Vibe",
         true,
         &[
             &PredefinedMenuItem::about(app, None, Some(about_metadata))?,

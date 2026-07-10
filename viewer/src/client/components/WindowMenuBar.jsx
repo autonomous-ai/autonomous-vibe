@@ -216,15 +216,15 @@ export default function WindowMenuBar() {
     >
       <img
         src={pandaLogoUrl}
-        alt="Panda"
+        alt="Vibe"
         draggable={false}
         className="ml-0.5 mr-1 size-4 shrink-0 rounded-[3px]"
       />
 
       <DropdownMenu>
-        <DropdownMenuTrigger className={MENU_TRIGGER_CLASS}>Panda</DropdownMenuTrigger>
+        <DropdownMenuTrigger className={MENU_TRIGGER_CLASS}>Vibe</DropdownMenuTrigger>
         <DropdownMenuContent align="start" sideOffset={4} className="min-w-44">
-          <DropdownMenuItem onSelect={() => setAboutOpen(true)}>About Panda</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setAboutOpen(true)}>About Vibe</DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={checkForUpdates}>Check for Updates…</DropdownMenuItem>
         </DropdownMenuContent>
@@ -319,7 +319,7 @@ export default function WindowMenuBar() {
       <Dialog open={aboutOpen} onOpenChange={setAboutOpen}>
         <DialogContent className="max-w-xs">
           <DialogHeader>
-            <DialogTitle>Panda</DialogTitle>
+            <DialogTitle>Vibe</DialogTitle>
             <DialogDescription>
               {version ? `Version ${version}` : "Chat → CAD → slice → print."}
             </DialogDescription>

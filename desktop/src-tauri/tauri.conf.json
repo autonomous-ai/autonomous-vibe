@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Panda",
+  "productName": "Vibe",
   "version": "0.1.0",
   "identifier": "app.panda.desktop",
   "build": {
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Panda",
+        "title": "Vibe",
         "width": 1440,
         "height": 900,
         "minWidth": 1024,

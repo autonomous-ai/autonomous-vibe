@@ -66,7 +66,7 @@ function bootstrap() {
   }
   ensureFavicon();
   suppressNativeContextMenuInProduction();
-  document.title = "Panda";
+  document.title = "Vibe";
   const cachedRoot = globalThis[ROOT_CACHE_KEY];
   const root = cachedRoot?.element === rootElement && cachedRoot?.root
     ? cachedRoot.root

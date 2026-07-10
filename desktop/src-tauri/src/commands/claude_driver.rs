@@ -133,7 +133,7 @@ pub struct ClaudeRunConfig {
 /// genuine preference forks via a `panda-questions` fenced block, and
 /// finishes by calling `ExitPlanMode` with the full plan.
 pub const PLAN_SYSTEM_PROMPT: &str = concat!(
-    "You are running inside Panda, the consumer 3D printing desktop app. ",
+    "You are running inside Vibe, the consumer 3D printing desktop app. ",
     "Every user message is a request for a 3D-printable model. You are in ",
     "PLANNING mode. You MAY run read-only analysis to back your plan with real ",
     "numbers — for example, import an existing project's `.step`/`.stl` with the ",
@@ -148,7 +148,7 @@ pub const PLAN_SYSTEM_PROMPT: &str = concat!(
     "wall thickness, hardware tables, part decomposition, print orientation, ",
     "assembly base+lid) — and write a precise, physically-correct plan the ",
     "user approves before anything is built.\n\n",
-    "AESTHETIC BAR. A Panda part should look like a premium consumer product ",
+    "AESTHETIC BAR. A Vibe part should look like a premium consumer product ",
     "(anchored on Apple / Jony Ive, but a broad high-end range — tasteful ",
     "texture, contrast, and ergonomic sculpting are allowed), not a blocky CAD ",
     "default. Read the `cadcode` skill's `references/industrial-design.md` and ",
@@ -217,7 +217,7 @@ pub const PLAN_SYSTEM_PROMPT: &str = concat!(
     "style, mounting or cable routing). Ask them by CALLING THE `AskUserQuestion` ",
     "tool — do NOT write the questions as plain text or a JSON / code block; only ",
     "the tool call renders the multiple-choice UI. Give EVERY question a first ",
-    "option labelled \"Let Panda choose\" (description: \"Recommended — we pick the ",
+    "option labelled \"Let Vibe choose\" (description: \"Recommended — we pick the ",
     "best for you\"); when the user picks it, or answers \"you decide\" / \"build ",
     "the best\" for everything, use your best default for that choice and proceed ",
     "without re-asking. The tool call ends the turn — do not call ExitPlanMode in ",
@@ -233,7 +233,7 @@ pub const PLAN_SYSTEM_PROMPT: &str = concat!(
 /// Implementation-phase system prompt. The plan is approved; the model
 /// now builds it for real with the `cadcode` skill.
 pub const IMPLEMENT_SYSTEM_PROMPT: &str = concat!(
-    "You are running inside Panda, the consumer 3D printing desktop app. ",
+    "You are running inside Vibe, the consumer 3D printing desktop app. ",
     "The user has APPROVED a design plan. Implement it now using the ",
     "`cadcode` skill: write the Python source, generate every part, and ",
     "produce the STL/STEP artifacts for each part described in the ",
@@ -278,7 +278,7 @@ pub const IMPLEMENT_SYSTEM_PROMPT: &str = concat!(
 /// must not chat, ask questions, or re-plan; it renders, inspects, and corrects
 /// the source.
 pub const REVIEW_SYSTEM_PROMPT: &str = concat!(
-    "You are running inside Panda, the consumer 3D printing desktop app. An ",
+    "You are running inside Vibe, the consumer 3D printing desktop app. An ",
     "automatic post-build review of the parts you just built is running. Work ",
     "SILENTLY: do not greet, explain, summarize, ask questions, or re-plan. Just ",
     "improve the parts and regenerate.\n\n",
@@ -326,7 +326,7 @@ pub const REVIEW_SYSTEM_PROMPT: &str = concat!(
 /// Retained for back-compat / reference; superseded by the phase-specific
 /// prompts above. Not used in `build_command` anymore.
 pub const CADCODE_SYSTEM_PROMPT: &str = concat!(
-    "You are running inside Panda, the consumer 3D printing desktop app. ",
+    "You are running inside Vibe, the consumer 3D printing desktop app. ",
     "Every user message is a request for a 3D-printable model. ",
     "Use the `cadcode` skill for any CAD work — invoke it early in the turn ",
     "and follow its protocol.",
@@ -364,7 +364,7 @@ fn workspace_directive(workspace: &Path) -> String {
          and the STEP/STL/JSON artifacts the cadcode generator produces — MUST live \
          inside it, and you MUST pass this absolute path to the cadcode tools \
          (`scripts/cad`). Do not create the project or write artifacts anywhere \
-         else: Panda only detects models inside this directory, so anything written \
+         else: Vibe only detects models inside this directory, so anything written \
          outside it is invisible to the app.\n{}",
         workspace.display()
     )

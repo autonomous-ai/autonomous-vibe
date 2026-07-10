@@ -280,14 +280,14 @@ export default function WelcomeScreen({ onComplete }) {
   return (
     <div
       role="dialog"
-      aria-label="Welcome to Panda"
+      aria-label="Welcome to Vibe"
       className="fixed inset-0 z-50 flex items-center justify-center bg-background/95 p-4"
     >
       <div className="w-full max-w-xl rounded-lg border border-border bg-background p-6 shadow-xl">
         <header className="flex flex-col gap-1">
-          <h1 className="text-2xl font-semibold">Welcome to Panda</h1>
+          <h1 className="text-2xl font-semibold">Welcome to Vibe</h1>
           <p className="text-sm text-muted-foreground">
-            Panda turns a chat into a printable model. Sign in with Panda or
+            Vibe turns a chat into a printable model. Sign in with Vibe or
             connect your own Claude Code to get started.
           </p>
         </header>
@@ -338,9 +338,9 @@ export default function WelcomeScreen({ onComplete }) {
           <div className="flex items-start gap-2">
             <Sparkles className="mt-0.5 size-4 shrink-0 text-emerald-600" />
             <div className="space-y-1">
-              <p className="font-medium">Sign in with Panda</p>
+              <p className="font-medium">Sign in with Vibe</p>
               <p className="text-sm text-muted-foreground">
-                Use Panda account features and cloud workflows, while still being
+                Use Vibe account features and cloud workflows, while still being
                 able to use your own Claude Code in the app.
               </p>
             </div>
@@ -381,7 +381,7 @@ export default function WelcomeScreen({ onComplete }) {
               disabled={anyBusy || checking}
               data-testid="continue-with-panda"
             >
-              {finishing ? "Finishing…" : "Continue with Panda"}
+              {finishing ? "Finishing…" : "Continue with Vibe"}
             </Button>
           ) : (
             <div className="flex items-center gap-2">
@@ -397,9 +397,9 @@ export default function WelcomeScreen({ onComplete }) {
                     {socialProgressLabel ?? "Signing in…"}
                   </>
                 ) : socialState === "error" ? (
-                  "Try Panda sign-in again"
+                  "Try Vibe sign-in again"
                 ) : (
-                  "Sign in with Panda"
+                  "Sign in with Vibe"
                 )}
               </Button>
               {socialState === "signing_in" ? (
@@ -426,7 +426,7 @@ export default function WelcomeScreen({ onComplete }) {
                   ? "Claude Code is detected and signed in — connect it to start creating."
                   : ownBlockedReason === "not_signed_in"
                     ? "Claude Code is installed. Sign in to connect it."
-                    : "Install Claude Code, then sign in — Panda detects it automatically."}
+                    : "Install Claude Code, then sign in — Vibe detects it automatically."}
               </p>
             </div>
           </div>

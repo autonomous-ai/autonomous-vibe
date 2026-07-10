@@ -468,11 +468,11 @@ export function describeSocialLoginProgress(event) {
   }
   switch (event.stage) {
     case "starting":
-      return "Starting Panda sign-in…";
+      return "Starting Vibe sign-in…";
     case "awaiting_browser":
       return "Waiting for you to finish sign-in in your browser…";
     case "verifying":
-      return "Finishing Panda sign-in…";
+      return "Finishing Vibe sign-in…";
     case "done":
       return "Signed in";
     case "error":

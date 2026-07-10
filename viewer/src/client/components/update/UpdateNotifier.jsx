@@ -199,7 +199,7 @@ export default function UpdateNotifier() {
               Update ready{info?.version ? ` (${info.version})` : ""}
             </p>
             <p className="text-xs text-muted-foreground">
-              Restart Panda to finish updating.
+              Restart Vibe to finish updating.
             </p>
             <div className="flex gap-2">
               <Button size="sm" onClick={relaunch} data-testid="update-restart">

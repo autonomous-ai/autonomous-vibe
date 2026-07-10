@@ -12,7 +12,7 @@
 <plist version="1.0">
 <dict>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>Panda discovers your Bambu Lab printer on your local Wi-Fi network.</string>
+  <string>Vibe discovers your Bambu Lab printer on your local Wi-Fi network.</string>
   <key>NSBonjourServices</key>
   <array>
     <string>_bambu._tcp</string>

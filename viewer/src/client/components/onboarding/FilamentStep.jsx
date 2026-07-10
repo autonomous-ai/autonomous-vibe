@@ -44,7 +44,7 @@ export default function FilamentStep({ onAdvance, currentSettings }) {
       <header className="flex flex-col gap-1">
         <h2 className="text-2xl font-semibold">Pick your default filament</h2>
         <p className="text-sm text-muted-foreground">
-          Panda will assume your printer is loaded with this filament when
+          Vibe will assume your printer is loaded with this filament when
           slicing. You can change it any time before a print.
         </p>
       </header>

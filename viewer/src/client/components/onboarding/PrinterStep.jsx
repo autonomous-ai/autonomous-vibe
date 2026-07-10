@@ -178,7 +178,7 @@ function DefaultDeviceSection() {
         <h3 className="text-sm font-semibold">Default print device</h3>
         <p className="text-xs text-muted-foreground">
           Print sends sliced models here. Pick the current default again to clear
-          it and let Panda choose automatically.
+          it and let Vibe choose automatically.
         </p>
       </div>
       <div role="radiogroup" aria-label="Default print device" className="grid gap-2">
@@ -258,7 +258,7 @@ function StudioHandoff({ onAdvance }) {
     <div className="flex flex-col gap-4">
       <p className="text-sm text-muted-foreground">
         Skip pairing and hand your model off to Bambu Studio instead. When you
-        press Print, Panda opens the model in Bambu Studio so you can slice and
+        press Print, Vibe opens the model in Bambu Studio so you can slice and
         send it to your printer from there. Requires Bambu Studio to be
         installed.
       </p>
@@ -341,7 +341,7 @@ function LanPairing({ onAdvance }) {
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-muted-foreground">
-        Panda finds Bambu printers on your local network. Pick yours and enter
+        Vibe finds Bambu printers on your local network. Pick yours and enter
         the access code from the printer screen.
       </p>
       <div className="flex items-center gap-2">

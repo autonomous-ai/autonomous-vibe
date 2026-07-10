@@ -34,12 +34,12 @@ test("describeClaudeLoginProgress labels each stage", () => {
 });
 
 test("describeSocialLoginProgress labels each stage", () => {
-  assert.equal(describeSocialLoginProgress({ stage: "starting" }), "Starting Panda sign-in…");
+  assert.equal(describeSocialLoginProgress({ stage: "starting" }), "Starting Vibe sign-in…");
   assert.equal(
     describeSocialLoginProgress({ stage: "awaiting_browser", url: "https://x" }),
     "Waiting for you to finish sign-in in your browser…",
   );
-  assert.equal(describeSocialLoginProgress({ stage: "verifying" }), "Finishing Panda sign-in…");
+  assert.equal(describeSocialLoginProgress({ stage: "verifying" }), "Finishing Vibe sign-in…");
   assert.equal(describeSocialLoginProgress({ stage: "done" }), "Signed in");
   assert.equal(describeSocialLoginProgress({ stage: "error", message: "nope" }), "nope");
   assert.equal(describeSocialLoginProgress(undefined), "Working…");

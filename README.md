@@ -1,4 +1,4 @@
-# Let's vibe hardware: create magical things by chatting with AI
+# Vibe Hardware: Create Magical Things by Chatting with AI
 
 With Vibe, it's this simple to make anything.
 

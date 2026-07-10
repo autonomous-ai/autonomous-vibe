@@ -7,7 +7,7 @@
 //! replace the default with our own menu that mirrors the macOS standards
 //! (About / Services / Hide / Quit, plus the Edit and Window menus that
 //! copy-paste and window shortcuts rely on) and add a **"Check for Updates…"**
-//! item under the app (Panda) menu.
+//! item under the app (Vibe) menu.
 //!
 //! Clicking it runs [`crate::commands::update::update_install`], which
 //! re-checks and — if a newer signed bundle exists — downloads and stages it,
@@ -63,8 +63,16 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
     // `version` → macOS `ApplicationVersion` (shown in parens), `short_version`
     // → `Version` (the "Version X" line).
     let pkg = app.package_info();
+    // User-facing app name. `pkg.name` is the Cargo crate name (`panda-desktop`);
+    // the displayed name is `tauri.conf.json`'s `productName` ("Vibe"). Fall back
+    // to the crate name only if `productName` is somehow unset.
+    let app_name = app
+        .config()
+        .product_name
+        .clone()
+        .unwrap_or_else(|| pkg.name.clone());
     let about_metadata = AboutMetadata {
-        name: Some(pkg.name.clone()),
+        name: Some(app_name.clone()),
         version: Some(pkg.version.to_string()),
         short_version: Some(format!("{}.{}", pkg.version.major, pkg.version.minor)),
         ..Default::default()
@@ -76,17 +84,17 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
         "Vibe",
         true,
         &[
-            &PredefinedMenuItem::about(app, None, Some(about_metadata))?,
+            &PredefinedMenuItem::about(app, Some(&format!("About {app_name}")), Some(about_metadata))?,
             &PredefinedMenuItem::separator(app)?,
             &check_updates,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::services(app, None)?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide(app, Some(&format!("Hide {app_name}")))?,
             &PredefinedMenuItem::hide_others(app, None)?,
             &PredefinedMenuItem::show_all(app, None)?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::quit(app, None)?,
+            &PredefinedMenuItem::quit(app, Some(&format!("Quit {app_name}")))?,
         ],
     )?;
 

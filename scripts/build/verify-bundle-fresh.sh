@@ -23,8 +23,8 @@ usage() {
   cat <<'EOF'
 Usage: scripts/build/verify-bundle-fresh.sh [--target=release|debug] [--triple=<triple>] [--quiet]
 
-Verifies that the compiled panda-desktop binary under target/[<triple>/]<target>/
-(the .app's Mach-O on macOS, panda-desktop[.exe] elsewhere)
+Verifies that the compiled Vibe binary under target/[<triple>/]<target>/
+(the .app's Mach-O on macOS, Vibe[.exe] elsewhere)
 is at least as new as viewer/dist/index.html. Exits 1 with a clear message
 otherwise — usually means someone rebuilt the viewer dist without re-running
 `cargo tauri build`, so the bundle ships pre-fix JS.
@@ -54,13 +54,13 @@ fi
 
 # Locate the compiled binary whose mtime we compare against the dist. On macOS
 # the canonical artifact is inside the .app; on Windows/Linux there is no .app,
-# so fall back to the plain compiled binary (panda-desktop[.exe]) — the same
+# so fall back to the plain compiled binary (Vibe[.exe]) — the same
 # Mach-O/PE that generate_context!() baked the dist into at compile time.
 BUNDLE_BIN=""
 for cand in \
-  "${PROFILE_DIR}/bundle/macos/Panda.app/Contents/MacOS/panda-desktop" \
-  "${PROFILE_DIR}/panda-desktop.exe" \
-  "${PROFILE_DIR}/panda-desktop"; do
+  "${PROFILE_DIR}/bundle/macos/Vibe.app/Contents/MacOS/Vibe" \
+  "${PROFILE_DIR}/Vibe.exe" \
+  "${PROFILE_DIR}/Vibe"; do
   if [ -f "${cand}" ]; then BUNDLE_BIN="${cand}"; break; fi
 done
 DIST_INDEX="${REPO_ROOT}/viewer/dist/index.html"

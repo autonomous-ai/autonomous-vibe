@@ -1,4 +1,4 @@
-# Vibe Hardware: Create magical things by chatting with AI
+# Vibe Hardware: Create Magical Things by Chatting with AI
 
 https://github.com/user-attachments/assets/927ef6e1-1868-4e65-b183-52b9e5d155e8
 

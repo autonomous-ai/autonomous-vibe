@@ -349,7 +349,12 @@
   .cad-solid-popover {
     -webkit-backdrop-filter: none !important;
     backdrop-filter: none !important;
-    background-color: black !important;
+    /* --ui-surface-solid is fully opaque in every theme; --popover carries
+       alpha in the glass themes, which is what still read as see-through. */
+    background-color: var(--ui-surface-solid) !important;
+    /* No transparency even mid-animation: an !important opacity beats the
+       entrance fade-in per the CSS cascade. */
+    opacity: 1 !important;
   }
 
   .cad-glass-control {

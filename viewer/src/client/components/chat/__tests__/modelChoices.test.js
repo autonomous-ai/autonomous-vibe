@@ -30,7 +30,7 @@ test("availableModelChoices hides proxy model unless signed in", () => {
 test("labelForModel returns the friendly label for a known model", () => {
   assert.equal(labelForModel("opus"), "Opus");
   assert.equal(labelForModel("sonnet"), "Sonnet");
-  assert.equal(labelForModel("minimax,minimax/minimax-m3"), "MiniMax M3");
+  assert.equal(labelForModel("minimax,minimax/minimax-m3"), "Pro - $20/month");
 });
 
 test("labelForModel falls back to the default label for unset or unknown models", () => {

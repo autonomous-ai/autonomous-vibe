@@ -1,10 +1,16 @@
-# Panda
+# Create magical things by chatting with AI
 
-Imagine. Prompt. Print.
+Vibe is the easiest way to make anything.
 
-Consumer desktop app that turns natural-language CAD requests into 3D-printable
-parts on a Bambu Lab printer. Chat for the design, click for the slice, click
-for the print.
+**1. Design:** Describe what you want. Vibe designs it into a real, precise object — exactly as you pictured it.
+
+**2. Print:** Send it straight to your printer. Clean, watertight parts that land on the bed ready to go.
+
+**3. Bring it to life:** Pull it off the plate and into the world. The thing that only lived in your head — now in your hand.
+
+It's this simple!
+
+https://github.com/user-attachments/assets/927ef6e1-1868-4e65-b183-52b9e5d155e8
 
 ## Status
 

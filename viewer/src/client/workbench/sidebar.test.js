@@ -21,7 +21,9 @@ import {
   entryStlFile,
   gcodeSourceStl,
   soleCatalogStl,
-  shouldDeferFileParamSelection
+  shouldDeferFileParamSelection,
+  writeCadParam,
+  writeCadRefQueryParams
 } from "./sidebar.js";
 import { isPrintableModelEntry } from "./isPrintableModelEntry.js";
 import {
@@ -2265,4 +2267,64 @@ test("soleCatalogStl returns the lone model STL, '' when zero or ambiguous", () 
   // No printable STL at all.
   assert.equal(soleCatalogStl([{ file: "x.gcode", kind: "gcode" }]), "");
   assert.equal(soleCatalogStl([]), "");
+});
+
+// A window whose history.replaceState updates location.{pathname,search,hash}
+// and counts calls — mirrors how the URL writers see the browser.
+function createHistoryWindow({ pathname = "/", search = "", hash = "", throwOnReplace = false } = {}) {
+  const location = { pathname, search, hash, get href() {
+    return `http://localhost${this.pathname}${this.search}${this.hash}`;
+  } };
+  let replaceCalls = 0;
+  return {
+    location,
+    history: {
+      replaceState: (_state, _title, url) => {
+        replaceCalls += 1;
+        if (throwOnReplace) {
+          throw new DOMException("Attempt to use history.replaceState() more than 100 times per 30 seconds", "SecurityError");
+        }
+        const [pathAndSearch, nextHash = ""] = String(url).split("#");
+        const [nextPath, nextSearch = ""] = pathAndSearch.split("?");
+        location.pathname = nextPath;
+        location.search = nextSearch ? `?${nextSearch}` : "";
+        location.hash = nextHash ? `#${nextHash}` : "";
+      }
+    },
+    get replaceCalls() {
+      return replaceCalls;
+    }
+  };
+}
+
+test("writeCadRefQueryParams skips history writes when the URL is unchanged", () => {
+  const originalWindow = globalThis.window;
+  const win = createHistoryWindow({ pathname: "/" });
+  globalThis.window = win;
+  try {
+    // First write sets the param (URL actually changes).
+    writeCadRefQueryParams(["@cad[parts/a#f1]"]);
+    assert.equal(win.replaceCalls, 1);
+    assert.match(win.location.search, /refs=/);
+    // Re-writing the identical selection — as a resize-driven re-render does —
+    // must NOT touch history, or WebKit's replaceState throttle trips and throws.
+    writeCadRefQueryParams(["@cad[parts/a#f1]"]);
+    writeCadRefQueryParams(["@cad[parts/a#f1]"]);
+    assert.equal(win.replaceCalls, 1);
+  } finally {
+    globalThis.window = originalWindow;
+  }
+});
+
+test("URL writers swallow history.replaceState throttle errors instead of throwing", () => {
+  const originalWindow = globalThis.window;
+  globalThis.window = createHistoryWindow({ pathname: "/", throwOnReplace: true });
+  try {
+    // A SecurityError from the throttle must never escape — escaping unmounts
+    // the whole React tree (blank window).
+    assert.doesNotThrow(() => writeCadParam("models/a.step"));
+    assert.doesNotThrow(() => writeCadRefQueryParams(["@cad[parts/a#f1]"]));
+  } finally {
+    globalThis.window = originalWindow;
+  }
 });

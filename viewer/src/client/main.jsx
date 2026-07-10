@@ -1,5 +1,6 @@
 import { StrictMode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
+import AppErrorBoundary from "./components/AppErrorBoundary.jsx";
 import CadWorkspace from "./components/CadWorkspace";
 import ChatSidebar, { readStoredChatSidebarWidth, persistChatSidebarWidth } from "./components/chat/ChatSidebar";
 import { CHAT_MIN_WIDTH, maxChatWidth } from "./workbench/chatLayout.js";
@@ -77,7 +78,9 @@ function bootstrap() {
   };
   root.render(
     <StrictMode>
-      <AppRoot />
+      <AppErrorBoundary>
+        <AppRoot />
+      </AppErrorBoundary>
     </StrictMode>,
   );
 }

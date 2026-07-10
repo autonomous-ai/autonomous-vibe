@@ -78,7 +78,25 @@ export function soleCatalogStl(entries) {
 
 function replaceUrl(url) {
   const nextSearch = url.searchParams.toString();
-  window.history.replaceState({}, "", `${url.pathname}${nextSearch ? `?${nextSearch}` : ""}${url.hash}`);
+  const target = `${url.pathname}${nextSearch ? `?${nextSearch}` : ""}${url.hash}`;
+  // Skip no-op writes. The callers run inside effects that re-fire on unrelated
+  // re-renders (e.g. a window resize re-renders the whole workspace), so without
+  // this the same URL gets rewritten dozens of times a second during a drag.
+  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (target === current) {
+    return;
+  }
+  // WebKit (the Tauri WKWebView) throttles history.replaceState to ~100 calls
+  // per 30s and throws a SecurityError past that. A thrown error here escapes
+  // the effect and unmounts the whole React tree — a blank white window. The
+  // dedupe above prevents the storm; this guard makes an over-limit burst a
+  // no-op instead of a crash.
+  try {
+    window.history.replaceState({}, "", target);
+  } catch {
+    // Rate-limited or otherwise rejected — the URL is a convenience mirror of
+    // in-app state, so dropping a write is harmless.
+  }
 }
 
 function normalizeUrlPath(value) {

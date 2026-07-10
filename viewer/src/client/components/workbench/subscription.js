@@ -25,3 +25,12 @@ export function planDisplayName(planKey) {
 export function activePlanLabel(profile) {
   return isPlanActive(profile) ? planDisplayName(profile.plan) : null;
 }
+
+/**
+ * The plan label to always show for the account (never null): the active tier,
+ * or "Free" when the account has no active subscription. Use where the plan is
+ * shown as an explicit field rather than an accent badge.
+ */
+export function planLabelOrFree(profile) {
+  return activePlanLabel(profile) ?? "Free";
+}

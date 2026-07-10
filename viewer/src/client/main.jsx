@@ -339,7 +339,10 @@ function AppRoot() {
       {content}
       <UpdateNotifier />
       {accountScreenOpen ? (
-        <div className="pointer-events-auto fixed inset-0 z-[100] bg-background/80 backdrop-blur-sm">
+        // z-40 sits above all persistent workbench chrome (max z-30) but below
+        // the modal/toast layer (z-50), so the account screen's own Settings
+        // dialog and copy toast render *over* it instead of behind.
+        <div className="pointer-events-auto fixed inset-0 z-40 bg-background/80 backdrop-blur-sm">
           <AccountScreen
             open={accountScreenOpen}
             onOpenChange={setAccountScreenOpen}

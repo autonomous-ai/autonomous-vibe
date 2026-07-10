@@ -1,15 +1,27 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, BadgeCheck, Boxes, Loader2, LogIn, LogOut, User } from "lucide-react";
+import { ArrowLeft, BadgeCheck, Boxes, Check, Crown, LogIn, Settings, Share2, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { transport } from "@/lib/transport.ts";
 import { cn } from "@/ui/utils";
+import { copyTextToClipboard } from "@/ui/clipboard.js";
 import PublishSignInDialog from "@/components/project/PublishSignInDialog.jsx";
 import UserAvatar from "@/components/workbench/UserAvatar.jsx";
 import PlanBadge from "@/components/workbench/PlanBadge.jsx";
-import { activePlanLabel } from "@/components/workbench/subscription.js";
+import SettingsDialog from "@/components/workbench/SettingsDialog.jsx";
+import { Toast, ToastProvider, ToastTitle, ToastViewport } from "@/components/ui/toast.jsx";
+import { activePlanLabel, planLabelOrFree } from "@/components/workbench/subscription.js";
+
+/**
+ * Public site base for the shareable profile link. The desktop app has no web
+ * origin of its own (`window.location` is a Tauri/localhost URL), so the share
+ * link points at the panda-website profile route (`/profile/{username}`) — the
+ * same URL the website's own "Share profile" copies. Kept in sync with the
+ * hosted login origin in `desktop/src-tauri/src/commands/social.rs`.
+ */
+const PANDA_WEB_BASE = "https://vibe.autonomous.ai";
 
 /** Large round avatar (image with initials fallback). */
 function LargeAvatar({ profile, user }) {
@@ -113,6 +125,8 @@ export default function AccountScreen({ open, onOpenChange, onSignOut }) {
   const [modelsState, setModelsState] = useState("idle");
   const [signInOpen, setSignInOpen] = useState(false);
   const [loadingProfile, setLoadingProfile] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const unsubRef = useRef(null);
 
   // Listen for login progress so we can refresh after a sign-in.
@@ -196,6 +210,20 @@ export default function AccountScreen({ open, onOpenChange, onSignOut }) {
     onOpenChange?.(false);
   };
 
+  // Copy a shareable link to this profile on panda-website. Mirrors the
+  // website's own "Share profile" (copies `/profile/{username}`).
+  const handleCopyProfileLink = useCallback(async (username) => {
+    if (!username) return;
+    try {
+      await copyTextToClipboard(`${PANDA_WEB_BASE}/profile/${username}`);
+      // Re-arm the toast even if it's already open (toggle off→on).
+      setCopiedLink(false);
+      requestAnimationFrame(() => setCopiedLink(true));
+    } catch {
+      /* best-effort — clipboard may be blocked */
+    }
+  }, []);
+
   if (!open) return null;
 
   // ---- Not signed in ------------------------------------------------------
@@ -232,10 +260,12 @@ export default function AccountScreen({ open, onOpenChange, onSignOut }) {
   const displayName = profile?.displayName || user?.displayName || user?.username || "";
   const username = profile?.username || user?.username || "";
   const planLabel = activePlanLabel(profile);
+  const planName = planLabelOrFree(profile);
 
   return (
     <div className="flex h-full flex-col bg-background/80 backdrop-blur-sm">
-      {/* Header */}
+      {/* Header — Back on the left, Share + Settings actions on the right
+          (copied from panda-website's profile header). */}
       <div className="flex items-center gap-3 border-b border-border px-6 py-4">
         <button
           type="button"
@@ -246,6 +276,31 @@ export default function AccountScreen({ open, onOpenChange, onSignOut }) {
           Back
         </button>
         <h1 className="text-lg font-semibold text-foreground">Your Account</h1>
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => void handleCopyProfileLink(username)}
+            disabled={!username}
+            aria-label="Share profile"
+            title={copiedLink ? "Link copied" : "Copy profile link"}
+            className="flex size-10 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+          >
+            {copiedLink ? (
+              <Check className="size-5 text-emerald-500" aria-hidden="true" />
+            ) : (
+              <Share2 className="size-5" aria-hidden="true" />
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            aria-label="Settings"
+            title="Settings"
+            className="flex size-10 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <Settings className="size-5" aria-hidden="true" />
+          </button>
+        </div>
       </div>
 
       <ScrollArea className="min-h-0 flex-1">
@@ -269,6 +324,12 @@ export default function AccountScreen({ open, onOpenChange, onSignOut }) {
               {profile?.email ? (
                 <p className="text-sm text-muted-foreground">{profile.email}</p>
               ) : null}
+              {/* Current plan — always shown (defaults to "Free" with no active sub). */}
+              <div className="mt-2 flex items-center gap-2">
+                <Crown className="size-4 text-muted-foreground" aria-hidden="true" />
+                <span className="text-sm text-muted-foreground">Plan</span>
+                <span className="text-sm font-semibold text-foreground">{planName}</span>
+              </div>
               {profile?.bio ? (
                 <p className="mt-2 text-sm text-foreground">{profile.bio}</p>
               ) : null}
@@ -329,21 +390,24 @@ export default function AccountScreen({ open, onOpenChange, onSignOut }) {
               ))}
             </div>
           )}
-
-          {/* Sign out */}
-          <div className="mt-12 border-t border-border pt-6">
-            <Button
-              type="button"
-              variant="ghost"
-              className="text-muted-foreground hover:text-destructive"
-              onClick={() => void handleSignOut()}
-            >
-              <LogOut className="mr-2 size-4" aria-hidden="true" />
-              Sign out
-            </Button>
-          </div>
         </div>
       </ScrollArea>
+
+      <SettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        onSignOut={() => void handleSignOut()}
+      />
+
+      {/* Copy-confirmation toast — mirrors panda-website's "Profile link copied".
+          The viewport portals to <body> at z-50, so it renders over the account
+          screen (z-40). Positioned top-center (overrides the default top-right). */}
+      <ToastProvider swipeDirection="up">
+        <Toast open={copiedLink} onOpenChange={setCopiedLink} duration={2000}>
+          <ToastTitle>Profile link copied</ToastTitle>
+        </Toast>
+        <ToastViewport className="left-1/2 right-auto w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center" />
+      </ToastProvider>
     </div>
   );
 }

@@ -5,6 +5,7 @@ import {
   activePlanLabel,
   isPlanActive,
   planDisplayName,
+  planLabelOrFree,
 } from "../subscription.js";
 
 test("isPlanActive requires a plan and an active status", () => {
@@ -32,4 +33,12 @@ test("activePlanLabel returns the capitalized label only when active", () => {
   assert.equal(activePlanLabel({ plan: "pro", planStatus: "active" }), "Pro");
   assert.equal(activePlanLabel({ plan: "pro", planStatus: "canceled" }), null);
   assert.equal(activePlanLabel(null), null);
+});
+
+test("planLabelOrFree always resolves to a tier, defaulting to Free", () => {
+  assert.equal(planLabelOrFree({ plan: "pro", planStatus: "active" }), "Pro");
+  // No active subscription → Free.
+  assert.equal(planLabelOrFree({ plan: "pro", planStatus: "canceled" }), "Free");
+  assert.equal(planLabelOrFree({}), "Free");
+  assert.equal(planLabelOrFree(null), "Free");
 });

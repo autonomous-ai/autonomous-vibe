@@ -1230,6 +1230,12 @@ fn from_assistant(o: &Value, turn_id: &str, state: &mut StreamState) -> Vec<Chat
 /// unexpected CLI variant), surface the `result` line's top-level
 /// `result` string so the bubble isn't left empty. `turn_end` itself is
 /// still emitted at the driver level.
+///
+/// This deliberately does NOT special-case errored results (e.g. an API
+/// `402 … paid subscription … Subscribe to continue`): the frontend styles a
+/// billing error and linkifies its call-to-action wherever it lands — whether
+/// as this fallback text bubble or a streamed one — so emitting an extra
+/// `ChatEvent::Error` here would only duplicate the message on screen.
 fn from_result(o: &Value, turn_id: &str, state: &mut StreamState) -> Vec<ChatEvent> {
     if state.any_text_emitted {
         return Vec::new();

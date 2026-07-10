@@ -330,7 +330,7 @@ test("chat_event stream interleaves text, tool_use, artifact and error blocks in
   assert.equal(turn.blocks[3].file, "model.stl");
 });
 
-test("error event flips turn status to error and records lastError", () => {
+test("error event flips turn status to error and renders inline only (no banner dupe)", () => {
   const events = [
     { kind: "turn_start", turnId: "t-3" },
     { kind: "text_delta", turnId: "t-3", text: "thinking..." },
@@ -338,7 +338,9 @@ test("error event flips turn status to error and records lastError", () => {
   ];
   const state = applyEvents(INITIAL_CHAT_STATE, events);
   assert.equal(state.turnInProgress, false);
-  assert.equal(state.lastError, "sandbox timeout");
+  // Turn errors show inline in the turn's error block; the bottom banner
+  // (lastError) stays empty so the same message isn't shown twice.
+  assert.equal(state.lastError, "");
   assert.equal(state.history[0].status, "error");
   const errorBlocks = state.history[0].blocks.filter((b) => b.kind === "error");
   assert.equal(errorBlocks.length, 1);

@@ -597,11 +597,14 @@ function applyChatEventToSession(session, event, now) {
       };
     case "error": {
       const cancelled = isUserCancelled(event.message);
+      // A turn error renders inline as an error block (below); it is deliberately
+      // NOT mirrored into `lastError` — the bottom banner is reserved for
+      // client-side errors (set_error: no project, turn already running) that
+      // have no inline turn. Mirroring both duplicated the same message on screen.
       return {
         ...session,
         currentTurnId: session.currentTurnId === turnId ? "" : session.currentTurnId,
         turnInProgress: false,
-        lastError: cancelled ? session.lastError : event.message,
         history: updateAssistantTurn(
           ensureAssistantTurn(session.history, turnId, now),
           turnId,

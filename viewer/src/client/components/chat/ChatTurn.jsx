@@ -3,6 +3,8 @@ import { Loader2, Undo2 } from "lucide-react";
 import { cn } from "@/ui/utils";
 import PlanBlock from "./PlanBlock";
 import Markdown from "./Markdown";
+import ChatErrorContent from "./ChatErrorContent";
+import { isUpgradeError } from "./upgradeError.js";
 import ChatCopyButton from "./ChatCopyButton";
 import TurnReasoning from "./TurnReasoning";
 import TurnActivity from "./TurnActivity";
@@ -21,6 +23,14 @@ function TextBlock({ text, streaming }) {
         {text}
       </div>
     );
+  }
+  // A billing/subscription error can reach us as ordinary assistant text —
+  // notably on reload, where the transcript rehydrates it as a plain `text`
+  // block (the rehydration schema has no `error` kind). Render it as the same
+  // styled error block a live error event produces, so the "Subscribe to
+  // continue" upgrade link survives a project switch.
+  if (isUpgradeError(text)) {
+    return <ErrorBlock message={text} />;
   }
   return (
     <div data-slot="chat-text">
@@ -60,7 +70,7 @@ function PhaseBadge({ phase, running }) {
 function ErrorBlock({ message }) {
   return (
     <p data-slot="chat-error" className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive">
-      {message}
+      <ChatErrorContent message={message} />
     </p>
   );
 }

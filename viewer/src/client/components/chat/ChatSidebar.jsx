@@ -6,6 +6,7 @@ import { CHAT_MIN_WIDTH, clampChatWidth } from "@/workbench/chatLayout";
 import ChatHistory from "./ChatHistory";
 import ChatInput from "./ChatInput";
 import ChatStatusLine from "./ChatStatusLine";
+import ChatErrorContent from "./ChatErrorContent";
 import { FOCUS_CHAT_INPUT_EVENT } from "./chatInputHelpers";
 // import ActionButtons from "./ActionButtons";
 import { MessageSquare } from "lucide-react";
@@ -256,7 +257,7 @@ export default function ChatSidebar({
           data-slot="chat-error-banner"
           className="border-t border-destructive/40 bg-destructive/10 px-3 py-1 text-xs text-destructive"
         >
-          {lastError}
+          <ChatErrorContent message={lastError} />
         </div>
       ) : null}
 

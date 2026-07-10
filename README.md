@@ -39,5 +39,5 @@ v1 in active development.
 
 ## v1 LLM stance
 
-Panda uses the user's existing Claude Code subscription. v2 will add an
-optional Panda Cloud proxy for users who want a subscription instead.
+Vibe uses the user's existing Claude Code subscription. v2 will add an
+optional Vibe Cloud LLM for users who want a simple subscription instead.

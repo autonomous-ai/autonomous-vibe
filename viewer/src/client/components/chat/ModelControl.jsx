@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Check, ChevronDown, Cpu, Loader2, Lock } from "lucide-react";
+import { Check, ChevronDown, Cpu, Loader2 } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -143,7 +143,7 @@ export default function ModelControl({ className }) {
 
         <DropdownMenuSeparator />
         <DropdownMenuLabel className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Panda Proxy
+          Subscription
         </DropdownMenuLabel>
         {proxyChoices.map((choice) => (
           <DropdownMenuItem
@@ -161,19 +161,10 @@ export default function ModelControl({ className }) {
             }
             className="justify-between gap-3 data-[disabled]:opacity-100 data-[disabled]:bg-background data-[disabled]:text-muted-foreground"
           >
-            <span className="inline-flex items-center gap-2">
-              <span>{choice.label}</span>
-              <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-300">
-                Proxy
-              </span>
-            </span>
-            {signedInToPanda ? (
-              choice.value === active ? <Check className="size-3.5" aria-hidden /> : null
-            ) : (
-              <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                <Lock className="size-3" aria-hidden /> Sign in
-              </span>
-            )}
+            <span>{choice.label}</span>
+            {signedInToPanda && choice.value === active ? (
+              <Check className="size-3.5" aria-hidden />
+            ) : null}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>

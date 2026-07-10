@@ -49,7 +49,7 @@ const REFRESH_URL: &str = "https://panda-social-api.autonomous.ai/api/v1/auth/re
 
 /// Hosted login page the browser opens for step 2 of the sign-in flow (see
 /// `APP_LOGIN_INTEGRATION.md`'s end-to-end flow diagram).
-const WEB_LOGIN_URL: &str = "https://panda.autonomous.ai/desktop-login";
+const WEB_LOGIN_URL: &str = "https://vibe.autonomous.ai/desktop-login";
 
 /// One-time-code exchange endpoint: `POST {code, code_verifier}` →
 /// `{access_token, refresh_token, user}`.

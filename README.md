@@ -1,6 +1,6 @@
-# Vibe Hardware: Create Magical Things by Chatting with AI
+# Let's vibe hardware: create magical things by chatting with AI
 
-It's this simple to make anything with Vibe.
+With Vibe, it's this simple to make anything.
 
 **1. Design:**
 Describe what you want. Vibe designs it into a real, precise object — exactly as you pictured it.

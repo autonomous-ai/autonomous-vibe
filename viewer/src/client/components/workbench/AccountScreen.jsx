@@ -232,7 +232,7 @@ export default function AccountScreen({ open, onOpenChange, onSignOut }) {
       <div className="flex h-full flex-col items-center justify-center gap-6 bg-background/80 backdrop-blur-sm">
         <User className="size-16 text-muted-foreground/40" aria-hidden="true" />
         <div className="flex flex-col items-center gap-2">
-          <h2 className="text-xl font-semibold text-foreground">Sign in to Panda</h2>
+          <h2 className="text-xl font-semibold text-foreground">Sign in to Vibe</h2>
           <p className="max-w-xs text-center text-sm text-muted-foreground">
             Sign in to view your profile, models, and creator stats on panda-social.
           </p>

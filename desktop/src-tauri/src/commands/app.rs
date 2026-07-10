@@ -991,7 +991,7 @@ pub async fn app_set_model(model: String) -> IpcResult<AppSettings> {
     if !is_model_available(&model) {
         return Err(IpcError::new(
             "SOCIAL_TOKEN_REQUIRED",
-            "Sign in to panda-social to use proxy models",
+            "Sign in to vibe-social to use proxy models",
         ));
     }
     let mut settings = load_settings().await.unwrap_or_default();

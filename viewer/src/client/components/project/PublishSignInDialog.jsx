@@ -32,7 +32,7 @@ function describeStage(progress) {
 }
 
 /**
- * Prompt to sign in to panda-social. Opened when a publish returns
+ * Prompt to sign in to vibe-social. Opened when a publish returns
  * `SOCIAL_TOKEN_REQUIRED` (no session, or the saved one expired). Drives the
  * browser + deep-link PKCE flow (`social_login`) — the app opens the system
  * browser at the hosted login page, the user signs in with Google there, and
@@ -101,9 +101,9 @@ export default function PublishSignInDialog({ open, onOpenChange, onSignedIn }) 
     <Dialog open={open} onOpenChange={(next) => !next && handleCancel()}>
       <DialogContent className="sm:max-w-[440px]">
         <DialogHeader>
-          <DialogTitle>Sign in to panda-social</DialogTitle>
+          <DialogTitle>Sign in to vibe-social</DialogTitle>
           <DialogDescription>
-            Publishing designs needs a panda-social account. Sign in with your
+            Publishing designs needs a vibe-social account. Sign in with your
             browser — Panda never sees your password.
           </DialogDescription>
         </DialogHeader>

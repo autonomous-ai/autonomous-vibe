@@ -75,7 +75,7 @@ export default function SidebarUserCard({ onOpenAccountScreen }) {
           onClick={() => setSignInOpen(true)}
         >
           <LogIn className="size-4" aria-hidden="true" />
-          Sign in to Panda
+          Sign in to Vibe
         </button>
         <PublishSignInDialog
           open={signInOpen}

@@ -359,7 +359,7 @@ pub fn social_current_user() -> Option<SocialUser> {
 fn token_required(err: AuthError) -> IpcError {
     match err {
         AuthError::Missing => {
-            IpcError::new("SOCIAL_TOKEN_REQUIRED", "Sign in to panda-social")
+            IpcError::new("SOCIAL_TOKEN_REQUIRED", "Sign in to vibe-social")
         }
         AuthError::Rejected(msg) => {
             log_line(&format!("session rejected ({msg}) — clearing saved session"));
@@ -523,7 +523,7 @@ pub async fn social_my_models() -> IpcResult<Vec<SocialDesign>> {
         .collect())
 }
 
-/// IPC: sign in to panda-social via the browser + deep-link OAuth flow (PKCE-
+/// IPC: sign in to vibe-social via the browser + deep-link OAuth flow (PKCE-
 /// protected). Opens the system browser at [`WEB_LOGIN_URL`], waits for the
 /// `myide://auth/callback` deep link (routed here by [`handle_social_deeplink`]),
 /// exchanges the one-time code for a session, and persists it. Progress
@@ -836,7 +836,7 @@ pub async fn publish_project(workspace: &Path) -> IpcResult<PublishResponse> {
         Err(AuthError::Missing) => {
             return Err(IpcError::new(
                 "SOCIAL_TOKEN_REQUIRED",
-                "Sign in to panda-social to publish",
+                "Sign in to vibe-social to publish",
             ));
         }
         Err(AuthError::Rejected(msg)) => {

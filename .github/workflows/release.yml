@@ -2,7 +2,7 @@ name: release
 
 # Tag-triggered signed release with auto-update artifacts.
 #
-# Pushing a tag like `v0.1.1` builds Panda on every target platform, signs each
+# Pushing a tag like `v0.1.1` builds Vibe on every target platform, signs each
 # bundle with the Apple Developer ID identity (notarized + stapled) and the
 # updater key, and publishes a GitHub Release containing the installers plus
 # `latest.json`. Installed apps poll
@@ -99,7 +99,7 @@ jobs:
       # macos-13 pool was retired). The notarization path tauri-action runs
       # writes a full-size (~1 GB) temp .zip copy of the .app to upload to
       # Apple, and `bundle_dmg.sh` then needs another ~1 GB for the read-write
-      # disk image it builds with `hdiutil create -srcfolder Panda.app`. On top
+      # disk image it builds with `hdiutil create -srcfolder Vibe.app`. On top
       # of the ~1 GB sidecars baked into the bundle and the multi-GB Rust
       # release target dir, that tips the runner into "No space left on device":
       # `hdiutil create` aborts in ~8 s and tauri reports only the opaque
@@ -156,7 +156,7 @@ jobs:
         with:
           projectPath: desktop
           tagName: ${{ github.ref_name }}
-          releaseName: "Panda ${{ github.ref_name }}"
+          releaseName: "Vibe ${{ github.ref_name }}"
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
@@ -173,9 +173,9 @@ jobs:
   # it is the sole, final writer — no race against the parallel matrix jobs that
   # each merge-upload latest.json.
   #
-  #   Panda_<ver>_aarch64.dmg        -> Panda-<ver>-macOS-Apple-Silicon.dmg
-  #   Panda_<ver>_x64.dmg            -> Panda-<ver>-macOS-Intel.dmg
-  #   Panda_<ver>_x64-setup.exe      -> Panda-<ver>-Windows-Setup.exe   (+ .sig)
+  #   Vibe_<ver>_aarch64.dmg         -> Vibe-<ver>-macOS-Apple-Silicon.dmg
+  #   Vibe_<ver>_x64.dmg             -> Vibe-<ver>-macOS-Intel.dmg
+  #   Vibe_<ver>_x64-setup.exe       -> Vibe-<ver>-Windows-Setup.exe    (+ .sig)
   #
   # The two macOS .app.tar.gz updater bundles are left untouched: nobody
   # downloads them by hand (Intel now ships a .dmg) and renaming them would
@@ -211,17 +211,17 @@ jobs:
             echo "renamed *$suffix -> $new"
           }
 
-          rename_suffix "_aarch64.dmg"        "Panda-${VERSION}-macOS-Apple-Silicon.dmg"
-          rename_suffix "_x64.dmg"            "Panda-${VERSION}-macOS-Intel.dmg"
-          rename_suffix "_x64-setup.exe"      "Panda-${VERSION}-Windows-Setup.exe"
-          rename_suffix "_x64-setup.exe.sig"  "Panda-${VERSION}-Windows-Setup.exe.sig"
+          rename_suffix "_aarch64.dmg"        "Vibe-${VERSION}-macOS-Apple-Silicon.dmg"
+          rename_suffix "_x64.dmg"            "Vibe-${VERSION}-macOS-Intel.dmg"
+          rename_suffix "_x64-setup.exe"      "Vibe-${VERSION}-Windows-Setup.exe"
+          rename_suffix "_x64-setup.exe.sig"  "Vibe-${VERSION}-Windows-Setup.exe.sig"
 
           # The Windows updater downloads by the URL baked into latest.json, so
           # point it at the renamed setup .exe. (macOS updater URLs are
           # unchanged — the .app.tar.gz bundles were not renamed.)
           mkdir -p dl
           gh release download "$TAG" -R "$REPO" -p latest.json -D dl --clobber
-          NEW_WIN_URL="https://github.com/${REPO}/releases/download/${TAG}/Panda-${VERSION}-Windows-Setup.exe"
+          NEW_WIN_URL="https://github.com/${REPO}/releases/download/${TAG}/Vibe-${VERSION}-Windows-Setup.exe"
           python3 - dl/latest.json "$NEW_WIN_URL" <<'PY'
           import json, sys
           path, new_url = sys.argv[1], sys.argv[2]

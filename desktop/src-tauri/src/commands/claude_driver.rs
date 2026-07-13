@@ -370,6 +370,13 @@ fn workspace_directive(workspace: &Path) -> String {
     )
 }
 
+/// `--settings` payload that disables every hook in a spawned turn. See the
+/// call site in [`build_command`] for why: hooks are the one plugin/user
+/// mechanism (besides MCP) that runs shell commands and can trip the macOS
+/// "access data from other apps" prompt, and they can't be dropped without also
+/// dropping the `user` setting source (which carries the cadcode skill).
+const DISABLE_HOOKS_SETTINGS: &str = r#"{"disableAllHooks":true}"#;
+
 /// Build the argv for `claude -p` from a [`ClaudeRunConfig`]. The shape
 /// matches cadcode's `build_command` (with model defaulting to `opus`).
 pub fn build_command(cfg: &ClaudeRunConfig) -> Vec<String> {
@@ -441,6 +448,20 @@ pub fn build_command(cfg: &ClaudeRunConfig) -> Vec<String> {
             cmd.push(mcp_cfg.display().to_string());
         }
     }
+    // Disable ALL hooks in the spawned turn. Hooks are the one plugin/user
+    // mechanism (besides MCP, handled just above) that runs arbitrary shell
+    // commands on session/tool events — e.g. a globally-enabled `gitkraken-hooks`
+    // plugin or a user `SessionStart` hook — and one that touches another app's
+    // data pops the macOS "Vibe would like to access data from other apps" prompt
+    // on every turn. `--strict-mcp-config` does NOT cover them: hooks load from
+    // the `user` setting source, not from MCP config. `disableAllHooks` (fed via
+    // `--settings`, a merged override) switches them off while KEEPING the user
+    // source loaded — which is required, because the cadcode skill lives under
+    // `~/.claude/skills` and is dropped whenever the user source is excluded
+    // (verified: `--setting-sources project,local` makes cadcode vanish). The app
+    // defines no hooks of its own, so this is a no-op for its own operation.
+    cmd.push("--settings".into());
+    cmd.push(DISABLE_HOOKS_SETTINGS.into());
     if let Some(session) = &cfg.claude_session_id {
         if claude_session_exists(&cfg.workspace, session) {
             cmd.push("--resume".into());
@@ -845,15 +866,19 @@ async fn generate_project_title(claude_path: PathBuf, user_message: String) -> O
     let mut command = Command::new(&claude_path);
     command
         // `--strict-mcp-config` (with no `--mcp-config`) loads zero MCP servers,
-        // so this concurrent title call can't start the user's global MCPs and
-        // trip a macOS "access data from other apps" prompt (see the main turn
-        // builder). Without it, `claude -p` merges in every discovered config.
+        // and `--settings {"disableAllHooks":true}` turns off every user/plugin
+        // hook, so this concurrent title call can't start the user's global MCPs
+        // or fire a hook and trip a macOS "access data from other apps" prompt
+        // (see the main turn builder). Without them, `claude -p` merges in every
+        // discovered config and runs the user's hooks.
         .args([
             "-p",
             "--output-format",
             "text",
             "--no-session-persistence",
             "--strict-mcp-config",
+            "--settings",
+            DISABLE_HOOKS_SETTINGS,
         ])
         .arg(&prompt)
         .stdin(Stdio::null())
@@ -2799,6 +2824,40 @@ mod tests {
         assert!(
             cmd.iter().any(|a| a == "--strict-mcp-config"),
             "--strict-mcp-config must be present even when the config file is absent"
+        );
+    }
+
+    #[test]
+    fn build_command_disables_all_hooks() {
+        // Hooks (e.g. a globally-enabled `gitkraken-hooks` plugin, or a user
+        // SessionStart hook) run shell commands that can trip the macOS "access
+        // data from other apps" prompt on every turn. They are NOT covered by
+        // `--strict-mcp-config`, so the turn must also pass
+        // `--settings {"disableAllHooks":true}` — and it must ride on `--settings`
+        // (not `--setting-sources`), because excluding the user source would drop
+        // the cadcode skill under `~/.claude/skills`.
+        let cfg = ClaudeRunConfig {
+            prompt: "test".into(),
+            workspace: PathBuf::from("/tmp/proj"),
+            claude_session_id: None,
+            model: None,
+            images: Vec::new(),
+            phase: TurnPhase::Implement,
+        };
+        let cmd = build_command(&cfg);
+        let pos = cmd
+            .iter()
+            .position(|a| a == "--settings")
+            .expect("--settings flag must be present to disable hooks");
+        assert_eq!(
+            cmd[pos + 1], DISABLE_HOOKS_SETTINGS,
+            "--settings must carry the disableAllHooks payload"
+        );
+        // Guard against the regression that broke cadcode: the user setting
+        // source must stay loaded, so we must NOT exclude it via --setting-sources.
+        assert!(
+            !cmd.iter().any(|a| a == "--setting-sources"),
+            "must not use --setting-sources — it drops the ~/.claude/skills cadcode skill"
         );
     }
 

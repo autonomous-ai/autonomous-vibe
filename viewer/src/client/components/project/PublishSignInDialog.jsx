@@ -144,7 +144,7 @@ export default function PublishSignInDialog({ open, onOpenChange, onSignedIn }) 
               ? "Signing in…"
               : stage === "error"
                 ? "Try again"
-                : "Sign in with Panda"}
+                : "Sign in with Vibe"}
           </Button>
         </DialogFooter>
       </DialogContent>

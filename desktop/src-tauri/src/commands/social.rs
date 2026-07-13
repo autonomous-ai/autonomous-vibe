@@ -366,7 +366,7 @@ fn token_required(err: AuthError) -> IpcError {
             let _ = clear_stored_session();
             IpcError::new(
                 "SOCIAL_TOKEN_REQUIRED",
-                "Your panda-social session expired — sign in again",
+                "Your vibe-social session expired — sign in again",
             )
         }
     }
@@ -422,13 +422,13 @@ pub async fn social_profile() -> IpcResult<SocialProfile> {
         .bearer_auth(&access)
         .send()
         .await
-        .map_err(|e| IpcError::new("SOCIAL_PROFILE_FAILED", format!("could not reach panda-social: {e}")))?;
+        .map_err(|e| IpcError::new("SOCIAL_PROFILE_FAILED", format!("could not reach vibe-social: {e}")))?;
     let status = resp.status();
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
         let _ = clear_stored_session();
         return Err(IpcError::new(
             "SOCIAL_TOKEN_REQUIRED",
-            "Your panda-social session expired — sign in again",
+            "Your vibe-social session expired — sign in again",
         ));
     }
     if !status.is_success() {
@@ -490,13 +490,13 @@ pub async fn social_my_models() -> IpcResult<Vec<SocialDesign>> {
         .bearer_auth(&access)
         .send()
         .await
-        .map_err(|e| IpcError::new("SOCIAL_MODELS_FAILED", format!("could not reach panda-social: {e}")))?;
+        .map_err(|e| IpcError::new("SOCIAL_MODELS_FAILED", format!("could not reach vibe-social: {e}")))?;
     let status = resp.status();
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
         let _ = clear_stored_session();
         return Err(IpcError::new(
             "SOCIAL_TOKEN_REQUIRED",
-            "Your panda-social session expired — sign in again",
+            "Your vibe-social session expired — sign in again",
         ));
     }
     if !status.is_success() {
@@ -773,9 +773,9 @@ async fn exchange_code_for_tokens(code: &str, verifier: &str) -> IpcResult<(Stri
                         map_exchange_error(&text),
                     ));
                 }
-                format!("panda-social sign-in returned HTTP {status}")
+                format!("vibe-social sign-in returned HTTP {status}")
             }
-            Err(e) => format!("could not reach panda-social sign-in: {e}"),
+            Err(e) => format!("could not reach vibe-social sign-in: {e}"),
         };
 
         if attempt >= MAX_ATTEMPTS {
@@ -798,7 +798,7 @@ fn map_exchange_error(body: &str) -> String {
     } else if b.contains("pkce_verification_failed") {
         "Sign-in verification failed. Please try again.".to_string()
     } else {
-        "panda-social sign-in failed. Please try again.".to_string()
+        "vibe-social sign-in failed. Please try again.".to_string()
     }
 }
 
@@ -844,7 +844,7 @@ pub async fn publish_project(workspace: &Path) -> IpcResult<PublishResponse> {
             let _ = clear_stored_session();
             return Err(IpcError::new(
                 "SOCIAL_TOKEN_REQUIRED",
-                "Your panda-social session expired — sign in again to publish",
+                "Your vibe-social session expired — sign in again to publish",
             ));
         }
     };
@@ -858,7 +858,7 @@ pub async fn publish_project(workspace: &Path) -> IpcResult<PublishResponse> {
             let _ = clear_stored_session();
             return Err(IpcError::new(
                 "SOCIAL_TOKEN_REQUIRED",
-                "panda-social rejected your session — sign in again to publish",
+                "vibe-social rejected your session — sign in again to publish",
             ));
         }
         Err(e) => {

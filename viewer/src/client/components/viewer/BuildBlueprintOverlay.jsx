@@ -176,7 +176,7 @@ export default function BuildBlueprintOverlay({ visible, title }) {
             className="mt-6 pt-2 text-right font-mono text-[10px] tracking-[0.2em]"
             style={{ color: bp(0.35), borderTop: `1px solid ${bp(0.15)}` }}
           >
-            PANDA CAD 
+            VIBE CAD
           </div>
         </div>
       </div>

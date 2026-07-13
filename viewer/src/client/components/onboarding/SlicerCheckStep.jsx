@@ -118,7 +118,7 @@ export default function SlicerCheckStep({ onAdvance, initialStatus = "checking" 
       <header className="flex flex-col gap-1">
         <h2 className="text-2xl font-semibold">Set up OrcaSlicer</h2>
         <p className="text-sm text-muted-foreground">
-          Panda turns your models into printable G-code with OrcaSlicer. We’ll
+          Vibe turns your models into printable G-code with OrcaSlicer. We’ll
           install it for you — no manual setup needed.
         </p>
       </header>

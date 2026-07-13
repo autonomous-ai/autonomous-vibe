@@ -308,7 +308,7 @@ function describePublishError(err) {
     err && typeof err === "object" && "message" in err ? String(err.message || "") : String(err || "");
   switch (code) {
     case "SOCIAL_NO_TOKEN":
-      return "Publishing isn't set up yet (no panda-social access token).";
+      return "Publishing isn't set up yet (no vibe-social access token).";
     case "SOCIAL_NO_MODEL":
       return "Build a model before publishing.";
     case "SOCIAL_NO_COVER":
@@ -6767,8 +6767,8 @@ export default function CadWorkspace({
       setPublishStatusError(false);
       setPublishStatus(
         res?.alreadyPublished
-          ? `Republished “${res?.title || "model"}” to panda-social`
-          : `Published “${res?.title || "model"}” to panda-social`,
+          ? `Republished “${res?.title || "model"}” to vibe-social`
+          : `Published “${res?.title || "model"}” to vibe-social`,
       );
     } catch (err) {
       console.error("publish failed", err);

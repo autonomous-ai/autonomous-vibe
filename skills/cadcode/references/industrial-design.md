@@ -1,6 +1,6 @@
 # Industrial design — the premium-product bar
 
-Panda parts should look like a high-end consumer product, not a blocky CAD
+Vibe parts should look like a high-end consumer product, not a blocky CAD
 default. The anchor is Apple / Jony Ive — calm, reductive, cohesive — but the
 range is broader: tasteful texture, contrast, and ergonomic sculpting are all
 fair game when they serve the object. This doc is the rubric the build's

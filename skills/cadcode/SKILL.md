@@ -135,7 +135,7 @@ what makes you feel like an engineer instead of an autocomplete.
 
 ## Plan-phase design discipline
 
-When Panda runs you in its **Plan phase** (enforced by the phase system
+When Vibe runs you in its **Plan phase** (enforced by the phase system
 prompt: no writing `.py`, no running the generator), you write no geometry —
 you produce the plan the user approves before the build. That plan
 is an **engineering spec**, not a sales pitch. Hold it to five rules:
@@ -169,7 +169,7 @@ the holes 5 mm apart") needs only the exact before→after values and any physic
 consequence — one to three lines. A new part or any multi-part / load-bearing
 design gets the full treatment.
 
-**Aesthetic discipline.** A Panda part should look like a premium consumer
+**Aesthetic discipline.** A Vibe part should look like a premium consumer
 product (Apple-anchored, but a broad high-end range — see
 `references/industrial-design.md`), not a blocky CAD default. For any
 user-facing part, give each part in the plan a one-line **`Form`** clause naming
@@ -459,7 +459,7 @@ multi-part union), `Read` one of the example assets in this skill's
 In your reasoning, write down: parameters (name + value + unit), key
 features, build order. Catch dimension errors before they cost a render
 cycle. For multi-feature parts, decide the union order — most stable
-anchor first. (In Panda's planning phase this becomes the user-facing
+anchor first. (In Vibe's planning phase this becomes the user-facing
 spec — see [Plan-phase design discipline](#plan-phase-design-discipline).)
 
 ### 4. Edit the `.py`

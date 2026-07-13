@@ -811,8 +811,14 @@ function stubResponse<T>(cmd: string, args: Record<string, unknown>): T {
         pid: 0,
       } as unknown as T;
     case "app_prereq_check":
+      // The stub's chat "works" (chat_start_turn returns a fake turn), so its
+      // Claude CLI must read as present — otherwise the pre-send gate in
+      // store/claudeSetup.js would park every stubbed send behind an installer
+      // this environment can't run (app_install_claude_code is
+      // PLATFORM_UNSUPPORTED here). python/slicer stay "missing" so those
+      // install flows remain previewable in the browser.
       return {
-        claudeCli: { found: false },
+        claudeCli: { found: true, version: "0.0.0-stub" },
         python: { found: false, healthy: false },
         slicer: { found: false, binaryPath: "" },
       } as unknown as T;

@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { DRAWING_TOOL } from "../../../workbench/constants";
+import { DRAWING_TOOL } from "@/workbench/constants";
 
 export function useViewerDrawingOverlay({
   drawingCanvasRef,

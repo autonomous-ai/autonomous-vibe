@@ -278,7 +278,7 @@ function ChatInput({ className }, ref) {
           onChange={(event) => setValue(event.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          placeholder="Do anything"
+          placeholder="Make anything"
           rows={2}
           className="scrollbar-thin min-h-10 resize-none border-0 bg-transparent! px-0 py-0 text-sm shadow-none placeholder:text-muted-foreground/70 focus-visible:ring-0 dark:bg-transparent!"
           data-slot="chat-input-textarea"

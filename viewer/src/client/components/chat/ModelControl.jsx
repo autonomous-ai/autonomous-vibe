@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Check, ChevronDown, Cpu, Loader2 } from "lucide-react";
+import { Check, ChevronDown, Cpu, ExternalLink, Loader2 } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -151,17 +151,27 @@ export default function ModelControl({ className }) {
             onSelect={() => {
               if (signedInToPanda) {
                 void pick(choice.value);
+              } else {
+                // Not subscribed: send them to the hosted plans page in the
+                // system browser (the desktop app has no in-app checkout).
+                void transport.social_open_pricing();
               }
             }}
-            disabled={!signedInToPanda}
             data-testid={
               signedInToPanda
                 ? `model-option-${choice.value}`
                 : `model-option-${choice.value}-locked`
             }
-            className="justify-between gap-3 data-[disabled]:opacity-100 data-[disabled]:bg-background data-[disabled]:text-muted-foreground"
+            className="justify-between gap-3"
           >
-            <span>{choice.label}</span>
+            {signedInToPanda ? (
+              <span>{choice.label}</span>
+            ) : (
+              <span className="inline-flex items-center gap-1 font-medium text-orange-500 underline underline-offset-2">
+                {choice.label}
+                <ExternalLink className="size-3" aria-hidden />
+              </span>
+            )}
             {signedInToPanda && choice.value === active ? (
               <Check className="size-3.5" aria-hidden />
             ) : null}

@@ -1,22 +1,14 @@
 import {
   AlertTriangle,
   Box,
-  Crosshair,
   Layers,
-  MousePointer2,
   PenTool,
   Printer,
-  Ruler,
   Share2
 } from "lucide-react";
 import { RENDER_FORMAT } from "@/workbench/constants";
-import {
-  isMeshRenderFormat,
-  isRobotRenderFormat
-} from "cadjs/lib/fileFormats";
 import { TooltipProvider } from "../ui/tooltip";
 import DrawingToolbar from "./DrawingToolbar";
-import RulerToolbar from "./RulerToolbar";
 import { ToolbarButton } from "./ToolbarButton";
 import { CAD_WORKSPACE_TOOLBAR_DESKTOP_WIDTH_CLASS } from "./ToolbarShell";
 
@@ -82,19 +74,7 @@ function DesktopFloatingToolBar({
   handleOpenInStudio
 }) {
   const dxfMode = renderFormat === RENDER_FORMAT.DXF;
-  const urdfMode = renderFormat === RENDER_FORMAT.URDF;
-  const robotMode = isRobotRenderFormat(renderFormat);
-  const meshOnlyMode = isMeshRenderFormat(renderFormat);
-  const gcodeMode = renderFormat === RENDER_FORMAT.GCODE;
-  const stepMode = renderFormat === RENDER_FORMAT.STEP;
   const captureDisabled = viewerLoading || (dxfMode ? !selectedDxfData : !selectedMeshData);
-  const selectDisabled = viewerLoading ||
-    !selectedMeshData ||
-    referenceSelectionPending ||
-    referenceSelectionUnavailable ||
-    referenceSelectionDeferred;
-  const posePickerDisabled = viewerLoading || !selectedMeshData || !urdfPosePickerAvailable;
-  const selectLabel = referenceSelectionPending ? "Preparing selection" : "Select";
 
   return (
     <div
@@ -103,24 +83,9 @@ function DesktopFloatingToolBar({
     >
       <TooltipProvider delayDuration={250}>
         <div className={`pointer-events-auto inline-flex w-fit items-center gap-1 self-end rounded-md p-1 ${FLOATING_TOOL_BAR_SURFACE_CLASS}`}>
-          {/* Select needs B-rep topology, so it stays STEP-only (non-mesh). */}
-          {!dxfMode && !robotMode && !meshOnlyMode && !gcodeMode ? (
-            <ToolbarButton
-              label={selectLabel}
-              active={referenceSelectionDeferred ? false : selectionToolActive}
-              onClick={() => handleSelectTabToolMode("references")}
-              disabled={selectDisabled}
-              aria-pressed={referenceSelectionDeferred ? false : selectionToolActive}
-            >
-              <MousePointer2 className="size-3.5" strokeWidth={2} aria-hidden="true" />
-            </ToolbarButton>
-          ) : null}
-
-          {/* Draw is a screen-space overlay — works on STEP parts and raw
-              meshes (STL/OBJ/GLB), just not DXF / G-code / robot views. Toggles:
-              click again to leave draw mode (the only exit on meshes, where the
-              Select button is hidden). */}
-          {!dxfMode && !robotMode && !gcodeMode ? (
+          {/* Draw is a screen-space annotation overlay — available for the mesh (STL)
+              preview, not for DXF. Toggles: click again to leave draw mode. */}
+          {!dxfMode ? (
             <ToolbarButton
               label={drawToolActive ? "Done drawing" : "Draw"}
               active={drawToolActive}
@@ -129,30 +94,6 @@ function DesktopFloatingToolBar({
               aria-pressed={drawToolActive}
             >
               <PenTool className="size-3.5" strokeWidth={2} aria-hidden="true" />
-            </ToolbarButton>
-          ) : null}
-
-          {!dxfMode && !robotMode && !gcodeMode ? (
-            <ToolbarButton
-              label="Measure"
-              active={rulerToolActive}
-              onClick={() => handleSelectTabToolMode("ruler")}
-              disabled={viewerLoading || !selectedMeshData}
-              aria-pressed={rulerToolActive}
-            >
-              <Ruler className="size-3.5" strokeWidth={2} aria-hidden="true" />
-            </ToolbarButton>
-          ) : null}
-
-          {!dxfMode && urdfMode ? (
-            <ToolbarButton
-              label="Select Pose"
-              active={urdfPosePickerActive}
-              onClick={handleToggleUrdfPosePicker}
-              disabled={posePickerDisabled}
-              aria-pressed={urdfPosePickerActive}
-            >
-              <Crosshair className="size-3.5" strokeWidth={2} aria-hidden="true" />
             </ToolbarButton>
           ) : null}
 
@@ -250,7 +191,7 @@ function DesktopFloatingToolBar({
         </div>
       ) : null}
 
-      {!dxfMode && !robotMode && !gcodeMode && drawToolActive ? (
+      {!dxfMode && drawToolActive ? (
         <DrawingToolbar
           className={CAD_WORKSPACE_TOOLBAR_DESKTOP_WIDTH_CLASS}
           drawingToolOptions={drawingToolOptions}
@@ -263,24 +204,6 @@ function DesktopFloatingToolBar({
           canUndoDrawing={canUndoDrawing}
           canRedoDrawing={canRedoDrawing}
           drawingStrokes={drawingStrokes}
-        />
-      ) : null}
-
-      {!dxfMode && !robotMode && !gcodeMode && rulerToolActive ? (
-        <RulerToolbar
-          className={CAD_WORKSPACE_TOOLBAR_DESKTOP_WIDTH_CLASS}
-          rulerToolOptions={rulerToolOptions}
-          rulerTool={rulerTool}
-          rulerUnit={rulerUnit}
-          rulerMeasurements={rulerMeasurements}
-          rulerVisible={rulerVisible}
-          isStepView={stepMode}
-          handleSelectRulerTool={handleSelectRulerTool}
-          handleSelectRulerUnit={handleSelectRulerUnit}
-          handleToggleRulerVisible={handleToggleRulerVisible}
-          handleClearRulerMeasurements={handleClearRulerMeasurements}
-          handleRemoveRulerMeasurement={handleRemoveRulerMeasurement}
-          handleCopyRulerMeasurement={handleCopyRulerMeasurement}
         />
       ) : null}
     </div>

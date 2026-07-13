@@ -6,7 +6,7 @@ import { init as initGcodePreview } from "gcode-preview";
 import { loadRenderText } from "cadjs/lib/renderAssetClient";
 import { copyImageBlobToClipboard } from "@/ui/clipboard";
 import { triggerBlobDownload } from "@/ui/download";
-import ViewPlaneControl from "../viewer/ViewPlaneControl";
+import ViewPlaneControl from "../viewer3d/ViewPlaneControl";
 
 // Bambu Lab is the only supported printer family (v1), so a fixed bed box is a
 // reasonable default for the build-volume overlay. Most Bambu G-code lives in

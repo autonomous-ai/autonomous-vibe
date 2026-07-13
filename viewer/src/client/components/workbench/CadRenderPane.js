@@ -1,22 +1,13 @@
-import { useEffect } from "react";
-import CadViewer from "../CadViewer";
-import DxfViewer from "../DxfViewer";
-import GcodePreviewPane from "./GcodePreviewPane";
-import ImplicitCadViewer from "../ImplicitCadViewer";
-import { CircleAlert, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { CircleAlert } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
-import { Button } from "../ui/button";
 import { cn } from "@/ui/utils";
-import { RENDER_FORMAT, RULER_TOOL } from "@/workbench/constants";
-import {
-  isMeshRenderFormat,
-  isRobotRenderFormat,
-  renderFormatFromPath
-} from "cadjs/lib/fileFormats";
-import { VIEWER_SCENE_SCALE } from "cadjs/lib/viewer/sceneScale";
-import { VIEWER_PICK_MODE } from "cadjs/lib/viewer/constants";
+import { ModelCanvas } from "../viewer3d/ModelCanvas";
+import { CanvasErrorBoundary } from "../viewer3d/CanvasErrorBoundary";
+import { ViewerTools } from "../viewer3d/ViewerTools";
+import { DrawingOverlay } from "../viewer3d/DrawingOverlay";
+import GcodePreviewPane from "./GcodePreviewPane";
 
-const EMPTY_LIST = Object.freeze([]);
 const VIEWPORT_ISSUE_META = Object.freeze({
   error: {
     label: "Error",
@@ -43,280 +34,201 @@ function viewportIssueMetaForAlert(alert) {
     : VIEWPORT_ISSUE_META.error;
 }
 
+function triggerBlobDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function copyBlobToClipboard(blob) {
+  if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
+    throw new Error("Clipboard image copy is not supported in this environment.");
+  }
+  await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+}
+
+/**
+ * The 3D render surface. A single STL viewer (react-three-fiber) fed the selected
+ * entry's preview `.stl` URL. Overlays for a missing file and viewer errors ride on
+ * top; the surrounding chrome (chat, sidebar, toolbar) lives in CadWorkspace.
+ */
 export default function CadRenderPane({
   viewerRef,
-  renderFormat,
-  renderPartsIndividually = false,
-  selectedMeshData,
-  selectedDxfData,
-  selectedDxfMeshData,
+  stlUrl = "",
   selectedKey,
-  selectedDxfKey,
+  missingFileRef = "",
+  previewMode,
+  showBed = false,
+  viewportFrameInsets,
+  viewerAlert,
+  drawToolActive = false,
+  drawingTool,
+  drawingStrokes,
+  onDrawingStrokesChange,
   gcodeUrl = "",
   gcodeTopLayer = null,
   gcodeShowTravel = false,
   gcodeRenderTubes = false,
   onGcodeReady,
   onGcodeViewerAlertChange,
-  missingFileRef = "",
-  viewerPerspective,
-  viewerPerspectiveRef,
-  themeSettings,
-  previewMode,
-  buildActive = false,
-  materializeOnModelChange = false,
-  viewportFrameInsets,
-  viewerLoading,
-  viewerAlert,
-  implicitModel = null,
-  implicitGraphicsSettings = null,
-  implicitError = "",
-  stepUpdateInProgress,
-  referenceSelectionPending = false,
-  referenceSelectionUnavailable = false,
-  referenceSelectionDeferred = false,
-  viewPlaneOffsetRight = 16,
-  viewerMode,
-  assemblyParts,
-  hiddenPartIds,
-  selectedPartIds,
-  hoveredPartId,
-  hoveredReferenceId,
-  selectedReferenceIds,
-  selectorRuntime,
-  displayEdgeRuntime,
-  stepParameters = null,
-  pickableFaces,
-  pickableEdges,
-  pickableVertices,
-  focusedPartIds = "",
-  displaySettings = null,
-  drawToolActive,
-  drawingTool,
-  drawingStrokes,
-  handleDrawingStrokesChange,
-  rulerToolActive = false,
-  rulerTool,
-  rulerUnit,
-  rulerMeasurements,
-  rulerVisible = true,
-  handleRulerMeasurementsChange,
-  handleDeactivateRulerTool,
-  handlePerspectiveChange,
-  handleModelHoverChange,
-  handleModelReferenceActivate,
-  handleModelReferenceDoubleActivate,
-  handleViewerAlertChange,
-  handleStepModuleTransformDetectedChange,
-  selectionCount,
-  copyButtonLabel,
-  handleCopySelection,
-  handleScreenshotCopy,
-  urdfPosePicker = null
+  handleViewerAlertChange
 }) {
-  const resolvedStepParameters = stepParameters;
   const viewerAlertIconLabel = "Viewer error. See the Issues section for details.";
-  const dxfMode = renderFormat === RENDER_FORMAT.DXF;
-  const implicitMode = renderFormat === RENDER_FORMAT.IMPLICIT;
-  // Belt-and-suspenders: route to the gcode-preview pane whenever the asset is a
-  // `.gcode`, not only when entrySourceFormat resolved renderFormat to GCODE.
-  // That format is derived from the catalog entry's `kind`; if a `.gcode` ever
-  // reaches the viewer without `kind: "gcode"` (resolved straight from a
-  // URL/path), match on the URL/file extension so the toolpath never falls
-  // through to the mesh CadViewer. renderFormatFromPath strips the `?v=` cache
-  // token, and returns "" for empty input so non-gcode views are unaffected.
-  const gcodeMode =
-    renderFormat === RENDER_FORMAT.GCODE ||
-    renderFormatFromPath(gcodeUrl) === RENDER_FORMAT.GCODE ||
-    renderFormatFromPath(selectedKey) === RENDER_FORMAT.GCODE;
-  const urdfMode = isRobotRenderFormat(renderFormat);
-  const meshOnlyMode = isMeshRenderFormat(renderFormat);
-  const pathPreviewMode = meshOnlyMode || gcodeMode;
-  const dxfMeshPreviewReady = dxfMode && !!selectedDxfMeshData;
-  const activeMeshData = dxfMeshPreviewReady ? selectedDxfMeshData : selectedMeshData;
-  const activeModelKey = dxfMeshPreviewReady ? (selectedDxfKey || selectedKey) : selectedKey;
   const missingFileLabel = String(missingFileRef || "").trim();
-  const topologySelectionPending = Boolean(referenceSelectionPending && !dxfMode && !urdfMode && !pathPreviewMode);
-  const topologySelectionUnavailable = Boolean(referenceSelectionUnavailable && !dxfMode && !urdfMode && !pathPreviewMode);
-  const topologySelectionDeferred = Boolean(referenceSelectionDeferred && activeMeshData && !dxfMode && !urdfMode && !pathPreviewMode);
-  // Ruler works on STEP topology and raw meshes (STL); it is off for DXF, gcode,
-  // robot and implicit views. When active it suppresses topology selection so a
-  // measurement click does not also select/deselect a face.
-  const rulerActive = Boolean(rulerToolActive && !dxfMode && !gcodeMode && !urdfMode && !implicitMode);
-  // Feature mode keeps topology hover/pick ON (pickMode AUTO) and routes the click
-  // to the ruler; the free-point modes suppress picking entirely (pickMode NONE).
-  // Feature mode needs B-rep topology, so it is STEP-only.
-  const stepMode = renderFormat === RENDER_FORMAT.STEP;
-  const rulerFeatureMode = rulerActive && rulerTool === RULER_TOOL.FEATURES && stepMode;
-  const rulerFreePointMode = rulerActive && !rulerFeatureMode;
-  const urdfPosePickerActive = Boolean(urdfPosePicker?.active);
-  const urdfPosePickerPrompt = "Select target";
-  const posePickerExitStyle = {
-    left: `calc(${Math.max(Number(viewportFrameInsets?.left) || 0, 0)}px + 0.75rem)`,
-    top: `calc(${Math.max(Number(viewportFrameInsets?.top) || 0, 0)}px + 0.75rem)`
-  };
-  // Drawing works on meshes too (it's a 2D overlay); only topology-bound
-  // features stay gated by pathPreviewMode. G-code/DXF never draw.
-  const drawingFormatActive = !dxfMode && !gcodeMode && drawToolActive;
-  const ctaMode = drawingFormatActive
-    ? "screenshot"
-    : selectionCount > 0
-      ? "selection"
-      : "";
-  const bottomOverlayStyle = {
-    bottom: "1rem"
-  };
+  // A sliced `.gcode` toolpath is rendered by the dedicated gcode preview pane; STL
+  // models by the fiber ModelCanvas. gcode takes precedence when both resolve.
+  const gcodeMode = Boolean(gcodeUrl);
+  const hasModel = !gcodeMode && Boolean(stlUrl);
+  // Imperative reset published by ModelCanvas (re-frames to the default view) plus the
+  // print-bed / dimensions toggle — both driven from the ViewerTools overlay.
+  const resetViewerRef = useRef(null);
+  const [showBedOverlay, setShowBedOverlay] = useState(showBed);
+  // ModelCanvas publishes its capture handle here; the drawing overlay publishes its
+  // 2D canvas here. CadRenderPane owns `viewerRef` and composites the two so a
+  // screenshot (e.g. "Send to chat") carries the annotations drawn on the model.
+  const modelCaptureRef = useRef(null);
+  const drawingCanvasElRef = useRef(null);
+
+  useEffect(() => {
+    // In gcode mode the preview pane owns `viewerRef` (via its own imperative handle),
+    // so the STL composite handle must not clobber it.
+    if (!viewerRef || gcodeMode) {
+      return undefined;
+    }
+    viewerRef.current = {
+      getCanvas() {
+        return modelCaptureRef.current?.getCanvas?.() || null;
+      },
+      // Screen rect of the 2D annotation canvas, used to place the region-note
+      // popover (draw a region → type a prompt → send to the model).
+      getDrawingCanvasRect() {
+        return drawingCanvasElRef.current?.getBoundingClientRect() || null;
+      },
+      async captureScreenshot({ mode = "blob", filename } = {}) {
+        const modelCanvas = modelCaptureRef.current?.getCanvas?.();
+        if (!modelCanvas) {
+          return undefined;
+        }
+        const width = modelCanvas.width || 1;
+        const height = modelCanvas.height || 1;
+        const composite = document.createElement("canvas");
+        composite.width = width;
+        composite.height = height;
+        const ctx = composite.getContext("2d");
+        if (!ctx) {
+          return undefined;
+        }
+        ctx.drawImage(modelCanvas, 0, 0, width, height);
+        const drawingCanvas = drawingCanvasElRef.current;
+        if (drawingCanvas && drawingCanvas.width && drawingCanvas.height) {
+          // The annotation canvas covers the same viewport; scale it onto the export.
+          ctx.drawImage(drawingCanvas, 0, 0, width, height);
+        }
+        const blob = await new Promise((resolve) => composite.toBlob((b) => resolve(b), "image/png"));
+        if (!blob) {
+          return undefined;
+        }
+        if (mode === "download") {
+          triggerBlobDownload(blob, filename || "model.png");
+          return undefined;
+        }
+        if (mode === "clipboard") {
+          await copyBlobToClipboard(blob);
+          return undefined;
+        }
+        return blob;
+      }
+    };
+    return () => {
+      if (viewerRef) {
+        viewerRef.current = null;
+      }
+    };
+  }, [viewerRef, gcodeMode]);
+  const blockingViewerAlert = viewerAlert && viewerAlert.blocking !== false && (
+    viewerAlert.blocking ||
+    viewerAlert.severity !== "warning" ||
+    !(hasModel || gcodeMode)
+  )
+    ? viewerAlert
+    : null;
+  const viewportIssueMeta = viewportIssueMetaForAlert(blockingViewerAlert);
+
   const modelViewportOverlayStyle = {
     left: `${viewportInsetPx(viewportFrameInsets?.left)}px`,
     right: `${viewportInsetPx(viewportFrameInsets?.right)}px`,
     top: `${viewportInsetPx(viewportFrameInsets?.top)}px`,
     bottom: `${viewportInsetPx(viewportFrameInsets?.bottom)}px`
   };
-  const modelViewportBottomOverlayStyle = {
-    left: `${viewportInsetPx(viewportFrameInsets?.left)}px`,
-    right: `${viewportInsetPx(viewportFrameInsets?.right)}px`,
-    bottom: `calc(${viewportInsetPx(viewportFrameInsets?.bottom)}px + 1rem)`
-  };
-  const ctaOverlayStyle = {
-    ...bottomOverlayStyle,
-    left: `calc(${viewportInsetPx(viewportFrameInsets?.left)}px + 1rem)`,
-    right: `calc(${viewportInsetPx(viewportFrameInsets?.right)}px + 1rem)`
-  };
-  const ctaLabel = ctaMode === "screenshot" ? "Copy Screenshot" : copyButtonLabel;
-  const ctaTitle = ctaMode === "screenshot" ? "Copy screenshot to clipboard" : copyButtonLabel;
-  const ctaDisabled = ctaMode === "screenshot" ? viewerLoading || !activeMeshData : false;
-  const viewportHasRenderableContent = dxfMode && !dxfMeshPreviewReady
-    ? !!selectedDxfData
-    : !!activeMeshData;
-  const blockingViewerAlert = viewerAlert && viewerAlert.blocking !== false && (
-    viewerAlert.blocking ||
-    viewerAlert.severity !== "warning" ||
-    !viewportHasRenderableContent
-  )
-    ? viewerAlert
-    : null;
-  const viewportIssueMeta = viewportIssueMetaForAlert(blockingViewerAlert);
-
-  useEffect(() => {
-    if (!urdfPosePickerActive || typeof window === "undefined" || typeof document === "undefined") {
-      return undefined;
-    }
-    const handleEscape = (event) => {
-      if (event.defaultPrevented) {
-        return;
-      }
-      if (event.key !== "Escape" && event.key !== "Esc" && event.code !== "Escape") {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      urdfPosePicker?.onCancel?.();
-    };
-    window.addEventListener("keydown", handleEscape, true);
-    document.addEventListener("keydown", handleEscape, true);
-    return () => {
-      window.removeEventListener("keydown", handleEscape, true);
-      document.removeEventListener("keydown", handleEscape, true);
-    };
-  }, [urdfPosePicker, urdfPosePickerActive]);
+  // The render pane is a full-bleed layer behind the floating sidebars; inset the
+  // actual 3D stage by the sidebar/sheet widths so the canvas lives in the visible
+  // column *between* the left (Models) sidebar and the right (file sheet) panel
+  // instead of stretching underneath them.
+  const modelStageStyle = modelViewportOverlayStyle;
 
   return (
     <div className="absolute inset-0">
-      {implicitMode ? (
-        <ImplicitCadViewer
-          ref={viewerRef}
-          model={implicitModel}
-          modelKey={selectedKey}
-          graphicsSettings={implicitGraphicsSettings}
-          isLoading={viewerLoading}
-          previewMode={previewMode}
+      <div className="absolute overflow-hidden" style={modelStageStyle}>
+        {gcodeMode ? (
+          <GcodePreviewPane
+            ref={viewerRef}
+            gcodeUrl={gcodeUrl}
+            modelKey={selectedKey}
+            topLayer={gcodeTopLayer}
+            showTravel={gcodeShowTravel}
+            renderTubes={gcodeRenderTubes}
+            onReady={onGcodeReady}
+            onViewerAlertChange={onGcodeViewerAlertChange || handleViewerAlertChange}
+          />
+        ) : hasModel ? (
+          <CanvasErrorBoundary
+            resetKey={stlUrl}
+            fallback={
+              <div className="pointer-events-none absolute inset-0 grid place-items-center bg-background/60 px-6 text-center">
+                <p className="text-sm text-muted-foreground">Could not load the model preview.</p>
+              </div>
+            }
+          >
+            <ModelCanvas
+              key={selectedKey || stlUrl}
+              url={stlUrl}
+              captureRef={modelCaptureRef}
+              resetRef={resetViewerRef}
+              showBed={showBedOverlay}
+            />
+          </CanvasErrorBoundary>
+        ) : (
+          <div className="absolute inset-0 grid place-items-center bg-background text-center">
+            <p className="px-6 text-sm text-muted-foreground">No model to preview yet.</p>
+          </div>
+        )}
+
+        {hasModel ? (
+          <DrawingOverlay
+            enabled={Boolean(drawToolActive) && !previewMode}
+            drawingTool={drawingTool}
+            drawingStrokes={drawingStrokes}
+            onDrawingStrokesChange={onDrawingStrokesChange}
+            previewMode={previewMode}
+            canvasElementRef={drawingCanvasElRef}
+          />
+        ) : null}
+      </div>
+
+      {hasModel && !previewMode ? (
+        <ViewerTools
+          resetRef={resetViewerRef}
+          showBed={showBedOverlay}
+          onToggleBed={() => setShowBedOverlay((value) => !value)}
           viewportFrameInsets={viewportFrameInsets}
-          viewPlaneOffsetRight={viewPlaneOffsetRight}
-          themeSettings={themeSettings}
-          perspective={viewerPerspective}
-          perspectiveRef={viewerPerspectiveRef}
-          onPerspectiveChange={handlePerspectiveChange}
-          onViewerAlertChange={handleViewerAlertChange}
         />
-      ) : dxfMode && !dxfMeshPreviewReady ? (
-        <DxfViewer
-          ref={viewerRef}
-          dxfData={selectedDxfData}
-          modelKey={selectedDxfKey}
-          onViewerAlertChange={handleViewerAlertChange}
-        />
-      ) : gcodeMode ? (
-        <GcodePreviewPane
-          ref={viewerRef}
-          gcodeUrl={gcodeUrl}
-          modelKey={selectedKey}
-          topLayer={gcodeTopLayer}
-          showTravel={gcodeShowTravel}
-          renderTubes={gcodeRenderTubes}
-          onReady={onGcodeReady}
-          onViewerAlertChange={onGcodeViewerAlertChange || handleViewerAlertChange}
-        />
-      ) : (
-        <CadViewer
-          ref={viewerRef}
-          meshData={activeMeshData}
-          modelKey={activeModelKey}
-          renderFormat={renderFormat}
-          perspective={viewerPerspective}
-          perspectiveRef={viewerPerspectiveRef}
-          showEdges={!gcodeMode}
-          recomputeNormals={false}
-          themeSettings={themeSettings}
-          displaySettings={dxfMode || pathPreviewMode ? null : displaySettings}
-          previewMode={dxfMode ? false : previewMode}
-          buildActive={dxfMode || gcodeMode ? false : buildActive}
-          materializeOnModelChange={dxfMode || gcodeMode ? false : materializeOnModelChange}
-          showViewPlane={dxfMode || gcodeMode ? true : !previewMode}
-          scale={urdfMode ? VIEWER_SCENE_SCALE.URDF : VIEWER_SCENE_SCALE.CAD}
-          viewPlaneOffsetRight={viewPlaneOffsetRight}
-          viewPlaneOffsetBottom="1rem"
-          compactViewPlane={false}
-          viewportFrameInsets={viewportFrameInsets}
-          isLoading={viewerLoading}
-          pickMode={
-            rulerFreePointMode || urdfMode || pathPreviewMode || topologySelectionPending || topologySelectionUnavailable || topologySelectionDeferred
-              ? VIEWER_PICK_MODE.NONE
-              : (!dxfMode && viewerMode === "assembly" ? VIEWER_PICK_MODE.ASSEMBLY : VIEWER_PICK_MODE.AUTO)
-          }
-          renderPartsIndividually={urdfMode ? true : (renderPartsIndividually || Boolean(resolvedStepParameters?.definition))}
-          pickableParts={dxfMode || urdfMode || pathPreviewMode ? EMPTY_LIST : assemblyParts}
-          hiddenPartIds={dxfMode || pathPreviewMode ? [] : hiddenPartIds}
-          selectedPartIds={dxfMode || pathPreviewMode ? [] : selectedPartIds}
-          hoveredPartId={dxfMode || pathPreviewMode ? "" : hoveredPartId}
-          hoveredReferenceId={dxfMode || pathPreviewMode ? "" : hoveredReferenceId}
-          selectedReferenceIds={dxfMode || pathPreviewMode ? [] : selectedReferenceIds}
-          selectorRuntime={dxfMode || pathPreviewMode ? null : selectorRuntime}
-          displayEdgeRuntime={dxfMode || pathPreviewMode ? null : displayEdgeRuntime}
-          stepParameters={dxfMode || pathPreviewMode ? null : resolvedStepParameters}
-          pickableFaces={dxfMode || pathPreviewMode ? [] : pickableFaces}
-          pickableEdges={dxfMode || pathPreviewMode ? [] : pickableEdges}
-          pickableVertices={dxfMode || pathPreviewMode ? [] : pickableVertices}
-          focusedPartId={dxfMode || pathPreviewMode ? "" : focusedPartIds}
-          drawingEnabled={drawingFormatActive}
-          drawingTool={drawingTool}
-          drawingStrokes={dxfMode || gcodeMode ? [] : drawingStrokes}
-          onDrawingStrokesChange={handleDrawingStrokesChange}
-          rulerEnabled={rulerActive}
-          rulerTool={rulerTool}
-          rulerUnit={rulerUnit}
-          rulerMeasurements={dxfMode || gcodeMode || urdfMode ? EMPTY_LIST : rulerMeasurements}
-          rulerVisible={rulerVisible}
-          onRulerMeasurementsChange={handleRulerMeasurementsChange}
-          onDeactivateRuler={handleDeactivateRulerTool}
-          onPerspectiveChange={handlePerspectiveChange}
-          onHoverReferenceChange={handleModelHoverChange}
-          onActivateReference={rulerFreePointMode ? undefined : handleModelReferenceActivate}
-          onDoubleActivateReference={rulerFreePointMode ? undefined : handleModelReferenceDoubleActivate}
-          onViewerAlertChange={handleViewerAlertChange}
-          onStepModuleTransformDetectedChange={handleStepModuleTransformDetectedChange}
-          urdfPosePicker={urdfPosePicker}
-        />
-      )}
+      ) : null}
+
       {!previewMode && missingFileLabel ? (
         <div
           className="pointer-events-none absolute z-30 flex min-w-0 items-center justify-center px-4 py-4"
@@ -336,6 +248,7 @@ export default function CadRenderPane({
           </Alert>
         </div>
       ) : null}
+
       {!previewMode && blockingViewerAlert ? (
         <div
           className="pointer-events-none absolute z-30 flex min-w-0 items-center justify-center px-3 py-3 sm:px-4"
@@ -378,76 +291,6 @@ export default function CadRenderPane({
               ) : null}
             </div>
           </div>
-        </div>
-      ) : null}
-      {!previewMode && stepUpdateInProgress ? (
-        <div className="pointer-events-none absolute z-20 flex justify-center px-4" style={modelViewportBottomOverlayStyle}>
-          <Alert
-            role="status"
-            className="cad-glass-popover w-auto px-3 py-1.5 text-[11px] font-medium text-popover-foreground shadow-sm"
-          >
-            STEP changed. Updating/regenerating references...
-          </Alert>
-        </div>
-      ) : null}
-      {!previewMode && !stepUpdateInProgress && topologySelectionPending ? (
-        <div className="pointer-events-none absolute z-20 flex justify-center px-4" style={modelViewportBottomOverlayStyle}>
-          <Alert
-            role="status"
-            className="cad-glass-popover w-auto px-3 py-1.5 text-[11px] font-medium text-popover-foreground shadow-sm"
-          >
-            Preparing selectable topology...
-          </Alert>
-        </div>
-      ) : null}
-      {!previewMode && urdfPosePickerActive ? (
-        <Button
-          type="button"
-          variant="outline"
-          size="icon-xs"
-          className="cad-glass-popover pointer-events-auto absolute z-30 size-6 rounded-md border-sidebar-border p-0 text-popover-foreground shadow-sm"
-          style={posePickerExitStyle}
-          onClick={() => {
-            urdfPosePicker?.onCancel?.();
-          }}
-          aria-label="Exit Select Pose"
-          title="Exit Select Pose"
-        >
-          <X className="size-3.5" strokeWidth={2} aria-hidden="true" />
-        </Button>
-      ) : null}
-      {!previewMode && urdfPosePickerActive ? (
-        <div className="pointer-events-none absolute z-20 flex justify-center px-4" style={modelViewportBottomOverlayStyle}>
-          <Alert
-            role="status"
-            className="cad-glass-popover w-auto px-3 py-1.5 text-[11px] font-medium text-popover-foreground shadow-sm"
-          >
-            {urdfPosePickerPrompt}
-          </Alert>
-        </div>
-      ) : null}
-      {!previewMode && ctaMode && !stepUpdateInProgress && !topologySelectionPending && !topologySelectionUnavailable && !topologySelectionDeferred ? (
-        <div
-          className="pointer-events-none absolute z-20 flex min-w-0 justify-center"
-          style={ctaOverlayStyle}
-        >
-          <Button
-            type="button"
-            variant="default"
-            size="sm"
-            className="pointer-events-auto h-9 w-fit min-w-0 max-w-[min(28rem,100%)] shrink overflow-hidden border border-primary/20 bg-primary/85 px-4 text-[12px] font-semibold text-primary-foreground shadow-lg shadow-black/20 hover:bg-primary/75 focus-visible:ring-primary/35 max-sm:w-full"
-            disabled={ctaDisabled}
-            onClick={() => {
-              if (ctaMode === "screenshot") {
-                void handleScreenshotCopy?.();
-                return;
-              }
-              void handleCopySelection();
-            }}
-            title={ctaTitle}
-          >
-            <span className="block min-w-0 max-w-full truncate">{ctaLabel}</span>
-          </Button>
         </div>
       ) : null}
     </div>

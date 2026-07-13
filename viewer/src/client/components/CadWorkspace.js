@@ -14,7 +14,6 @@ import StatusToast from "./workbench/StatusToast";
 import UrdfFileSheet from "./workbench/UrdfFileSheet";
 import ViewerAlertDialog from "./workbench/ViewerAlertDialog";
 import ViewerLoadingOverlay from "./workbench/ViewerLoadingOverlay";
-import BuildBlueprintOverlay from "./viewer/BuildBlueprintOverlay";
 import FloatingToolBar from "./workbench/FloatingToolBar";
 import RegionNotePopover from "./workbench/RegionNotePopover";
 import { isRegionStroke, regionStrokes } from "cadjs/lib/viewer/drawingTools";
@@ -1070,6 +1069,18 @@ export default function CadWorkspace({
   );
   const selectedEntrySourceFormat = entrySourceFormat(selectedEntry);
   const selectedFileSheetKind = fileSheetKindForEntry(selectedEntry);
+  // Preview `.stl` URL for the STL render surface. STEP entries expose the sibling
+  // preview STL on `artifact.stlUrl`; STL-source entries are the STL themselves.
+  const selectedStlUrl = useMemo(() => {
+    if (!selectedEntry) {
+      return "";
+    }
+    return (
+      selectedEntry?.artifact?.stlUrl ||
+      entryAssetUrl(selectedEntry, RENDER_FORMAT.STL) ||
+      ""
+    );
+  }, [selectedEntry]);
   const viewerServerBackend = String(viewerServerInfo?.backend || "").trim();
   const viewerAssetBackend = viewerAssetBackendFromEnv();
   const stepArtifactGenerationAvailable = viewerServerInfo
@@ -7326,79 +7337,23 @@ export default function CadWorkspace({
       <div className="absolute inset-0 z-0">
         <CadRenderPane
           viewerRef={viewerRef}
-          renderFormat={effectiveRenderFormat}
-          renderPartsIndividually={isUrdfView || Boolean(selectedStepParameterRuntime)}
-          stepParameters={selectedStepParameterRuntime}
-          selectedMeshData={selectedMeshData}
-          selectedDxfData={selectedDxfData}
-          selectedDxfMeshData={selectedDxfMeshData}
+          stlUrl={selectedStlUrl}
           selectedKey={selectedKey}
-          selectedDxfKey={selectedDxfPreviewKey}
+          missingFileRef={missingFileRef}
+          previewMode={previewMode}
+          viewportFrameInsets={viewportFrameInsets}
+          viewerAlert={viewerAlert}
+          drawToolActive={drawToolActive}
+          drawingTool={drawingTool}
+          drawingStrokes={drawingStrokes}
+          onDrawingStrokesChange={handleDrawingStrokesChange}
           gcodeUrl={selectedGcodeUrl}
           gcodeTopLayer={gcodePaneTopLayer}
           gcodeShowTravel={gcodeShowTravel}
           gcodeRenderTubes={gcodeRenderTubes}
           onGcodeReady={handleGcodeReady}
           onGcodeViewerAlertChange={handleGcodeViewerAlertChange}
-          missingFileRef={missingFileRef}
-          viewerPerspective={viewerPerspective}
-          viewerPerspectiveRef={activePerspectiveRef}
-          themeSettings={resolvedThemeSettings}
-          displaySettings={renderDisplaySettings}
-          previewMode={previewMode}
-          buildActive={buildLive}
-          materializeOnModelChange={buildLive}
-          viewportFrameInsets={viewportFrameInsets}
-          viewerLoading={viewerLoading}
-          viewerAlert={viewerAlert}
-          implicitModel={implicitWorkspace.model}
-          implicitGraphicsSettings={implicitWorkspace.graphicsSettings}
-          implicitError={implicitWorkspace.error || implicitError}
-          stepUpdateInProgress={effectiveRenderFormat === RENDER_FORMAT.STEP && stepUpdateInProgress}
-          referenceSelectionPending={referenceSelectionPending}
-          referenceSelectionUnavailable={referenceSelectionUnavailable}
-          referenceSelectionDeferred={selectedTopologyDeferredByCost}
-          viewPlaneOffsetRight={viewportFrameInsets.right + 16}
-          viewerMode={viewerMode}
-          assemblyParts={viewerAssemblyRenderParts}
-          hiddenPartIds={viewerHiddenPartIds}
-          selectedPartIds={viewerSelectedPartIds}
-          hoveredPartId={viewerHoveredPartIds}
-          hoveredReferenceId={hoveredReferenceId}
-          selectedReferenceIds={selectedReferenceIds}
-          selectorRuntime={effectiveSelectorRuntime}
-          displayEdgeRuntime={selectedDisplayEdgeRuntime}
-          pickableFaces={viewerPickableFaces}
-          pickableEdges={viewerPickableEdges}
-          pickableVertices={viewerPickableVertices}
-          focusedPartIds={viewerFocusedPartIds}
-          drawToolActive={drawToolActive}
-          drawingTool={drawingTool}
-          drawingStrokes={drawingStrokes}
-          handleDrawingStrokesChange={handleDrawingStrokesChange}
-          rulerToolActive={rulerToolActive}
-          rulerTool={rulerTool}
-          rulerUnit={rulerUnit}
-          rulerMeasurements={rulerMeasurements}
-          rulerVisible={rulerVisible}
-          handleRulerMeasurementsChange={handleRulerMeasurementsChange}
-          handleDeactivateRulerTool={handleDeactivateRulerTool}
-          handlePerspectiveChange={handlePerspectiveChange}
-          handleModelHoverChange={handleModelHoverChange}
-          handleModelReferenceActivate={handleModelReferenceActivate}
-          handleModelReferenceDoubleActivate={handleModelReferenceDoubleActivate}
           handleViewerAlertChange={handleViewerAlertChange}
-          handleStepModuleTransformDetectedChange={handleStepModuleTransformDetectedChange}
-          selectionCount={selectionCount}
-          copyButtonLabel={copyButtonLabel}
-          handleCopySelection={handleCopySelection}
-          handleScreenshotCopy={handleScreenshotCopy}
-          urdfPosePicker={isUrdfView && selectedUrdfMoveIt2ActionsEnabled ? {
-            active: urdfPosePickerActive,
-            center: URDF_POSE_PICKER_DEFAULT_CENTER,
-            onPickPoint: handleUrdfPosePointPick,
-            onCancel: handleCancelUrdfPosePicker
-          } : null}
         />
       </div>
 
@@ -7547,17 +7502,6 @@ export default function CadWorkspace({
                 viewerLoading={effectiveViewerLoading}
                 previewMode={previewMode}
               />
-
-              {/* Live build stage — pre-artifact phase: while the active project
-                  is building and no model is on screen yet, draft the blueprint.
-                  Kept mounted for the whole build so it can fade out (crossfade
-                  into the 3D materialize) the moment the first model is selected. */}
-              {buildLive && !previewMode ? (
-                <BuildBlueprintOverlay
-                  visible={!selectedKey}
-                  title={currentProjectName}
-                />
-              ) : null}
             </div>
 
             {selectedFileSheetKind === "dxf" ? (

@@ -596,6 +596,7 @@ function mergeStepSourceStatusIntoEntry(entry, stepSourceStatus) {
 export default function CadWorkspace({
   manifestEntries: manifestEntriesProp = [],
   selectableEntries: selectableEntriesProp = [],
+  imageEntries: imageEntriesProp = [],
   generationStatus = null,
   manifestRevision = 0,
   catalogHydrated = false,
@@ -1081,6 +1082,46 @@ export default function CadWorkspace({
       ""
     );
   }, [selectedEntry]);
+
+  // Every generated `.png` render in the project (the `<stem>_review/` QA
+  // images), mapped for the viewer's Image tab — a project-wide gallery paged by
+  // the slider. Cover + QA grid are ordered first, then section cutaways.
+  const viewerImages = useMemo(() => {
+    const mapped = (Array.isArray(imageEntriesProp) ? imageEntriesProp : [])
+      .map((entry) => ({
+        url: entry?.url || "",
+        file: entry?.file || "",
+        name: sidebarLabelForEntry(entry),
+      }))
+      .filter((image) => image.url);
+    const rank = (file) =>
+      file.includes("_assembled") ? 0 : file.includes("_qa") ? 1 : 2;
+    return [...mapped].sort(
+      (a, b) => rank(a.file) - rank(b.file) || a.file.localeCompare(b.file)
+    );
+  }, [imageEntriesProp]);
+
+  // Every renderable 3D file in the project — each top-level model plus its
+  // assembly parts (the synthesized `.stl` entries kept under `entry.parts` and
+  // out of the rail). Drives the 3D tab's slider so an assembly pages through the
+  // integrated model AND each of its parts, not just the one integrated model.
+  const viewerModels = useMemo(() => {
+    const list = [];
+    for (const entry of catalogEntries) {
+      list.push(entry);
+      for (const part of entry.parts || []) {
+        list.push(part);
+      }
+    }
+    return list;
+  }, [catalogEntries]);
+  // Position of the selected model/part among those files — drives the 3D tab's
+  // slider (prev/next + dots). `goToSlide` is defined after `handleSelectEntry`.
+  const activeSlide = useMemo(
+    () => viewerModels.findIndex((entry) => fileKey(entry) === selectedKey),
+    [viewerModels, selectedKey]
+  );
+
   const viewerServerBackend = String(viewerServerInfo?.backend || "").trim();
   const viewerAssetBackend = viewerAssetBackendFromEnv();
   const stepArtifactGenerationAvailable = viewerServerInfo
@@ -5806,6 +5847,22 @@ export default function CadWorkspace({
     }
   }, [activateEntryTab, entryMap, isDesktop, writeCadParam]);
 
+  // Select the 3D file at `index` in the project's model/part list, wrapping
+  // around the ends — drives the 3D tab's prev/next slide arrows and dots.
+  const goToSlide = useCallback(
+    (index) => {
+      const count = viewerModels.length;
+      if (count < 1) {
+        return;
+      }
+      const target = viewerModels[((index % count) + count) % count];
+      if (target) {
+        handleSelectEntry(fileKey(target));
+      }
+    },
+    [viewerModels, handleSelectEntry]
+  );
+
   // The catalog entry whose model produced the currently-viewed `.gcode`, or null
   // when the selection isn't a sliced toolpath (or its source model is gone).
   // `gcodeSourceStl` maps the gcode back to its workspace-relative `.stl`; we
@@ -7354,6 +7411,10 @@ export default function CadWorkspace({
           onGcodeReady={handleGcodeReady}
           onGcodeViewerAlertChange={handleGcodeViewerAlertChange}
           handleViewerAlertChange={handleViewerAlertChange}
+          images={viewerImages}
+          slideCount={viewerModels.length}
+          activeSlide={activeSlide}
+          onSlideChange={goToSlide}
         />
       </div>
 

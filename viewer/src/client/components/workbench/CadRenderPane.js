@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { CircleAlert } from "lucide-react";
+import { Box, ChevronLeft, ChevronRight, CircleAlert, Image as ImageIcon } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { cn } from "@/ui/utils";
 import { ModelCanvas } from "../viewer3d/ModelCanvas";
@@ -7,6 +7,9 @@ import { CanvasErrorBoundary } from "../viewer3d/CanvasErrorBoundary";
 import { ViewerTools } from "../viewer3d/ViewerTools";
 import { DrawingOverlay } from "../viewer3d/DrawingOverlay";
 import GcodePreviewPane from "./GcodePreviewPane";
+
+const SLIDE_BTN =
+  "pointer-events-auto flex size-9 items-center justify-center rounded-full cad-glass-surface border border-sidebar-border text-sidebar-foreground shadow-sm transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground";
 
 const VIEWPORT_ISSUE_META = Object.freeze({
   error: {
@@ -76,7 +79,11 @@ export default function CadRenderPane({
   gcodeRenderTubes = false,
   onGcodeReady,
   onGcodeViewerAlertChange,
-  handleViewerAlertChange
+  handleViewerAlertChange,
+  images = [],
+  slideCount = 0,
+  activeSlide = 0,
+  onSlideChange
 }) {
   const viewerAlertIconLabel = "Viewer error. See the Issues section for details.";
   const missingFileLabel = String(missingFileRef || "").trim();
@@ -84,6 +91,41 @@ export default function CadRenderPane({
   // models by the fiber ModelCanvas. gcode takes precedence when both resolve.
   const gcodeMode = Boolean(gcodeUrl);
   const hasModel = !gcodeMode && Boolean(stlUrl);
+  const imageList = Array.isArray(images) ? images : [];
+  const hasImages = imageList.length > 0;
+  // Two tabs sharing one slider: the 3D tab pages through every 3D model in the
+  // project (each selection drives the canvas); the Image tab pages through every
+  // generated render. The toggle switches tabs; the slider (arrows + dots) pages
+  // within the active tab. gcode mode owns the stage and shows neither.
+  const [viewMode, setViewMode] = useState("3d");
+  const [imageIndex, setImageIndex] = useState(0);
+  // Fall back to 3D whenever the project has no images so the Image tab can never
+  // strand the viewer on an empty stage.
+  useEffect(() => {
+    if (!hasImages && viewMode !== "3d") {
+      setViewMode("3d");
+    }
+  }, [hasImages, viewMode]);
+  const imageMode = !gcodeMode && viewMode === "image" && hasImages;
+  const safeImageIndex = hasImages ? Math.min(imageIndex, imageList.length - 1) : 0;
+  const currentImage = imageMode ? imageList[safeImageIndex] : null;
+  const showModel = !gcodeMode && !imageMode && hasModel;
+  const showImage = Boolean(currentImage);
+  const goToImage = (index) => {
+    const len = imageList.length;
+    if (len < 1) {
+      return;
+    }
+    setImageIndex(((index % len) + len) % len);
+  };
+
+  // The slider is tab-aware: models in the 3D tab, images in the Image tab.
+  const sliderCount = imageMode ? imageList.length : slideCount;
+  const sliderIndex = imageMode ? safeImageIndex : activeSlide;
+  const slideTo = imageMode ? goToImage : (index) => onSlideChange?.(index);
+  const slideNoun = imageMode ? "image" : "model";
+  const showSlider = !previewMode && !gcodeMode && sliderCount > 1;
+  const canToggleView = !previewMode && !gcodeMode && hasImages && hasModel;
   // Imperative reset published by ModelCanvas (re-frames to the default view) plus the
   // print-bed / dimensions toggle — both driven from the ViewerTools overlay.
   const resetViewerRef = useRef(null);
@@ -185,7 +227,7 @@ export default function CadRenderPane({
             onReady={onGcodeReady}
             onViewerAlertChange={onGcodeViewerAlertChange || handleViewerAlertChange}
           />
-        ) : hasModel ? (
+        ) : showModel ? (
           <CanvasErrorBoundary
             resetKey={stlUrl}
             fallback={
@@ -202,13 +244,22 @@ export default function CadRenderPane({
               showBed={showBedOverlay}
             />
           </CanvasErrorBoundary>
+        ) : showImage ? (
+          <div className="absolute inset-0 bg-background">
+            <img
+              src={currentImage.url}
+              alt={currentImage.name || "Preview image"}
+              className="h-full w-full bg-background object-contain"
+              draggable={false}
+            />
+          </div>
         ) : (
           <div className="absolute inset-0 grid place-items-center bg-background text-center">
             <p className="px-6 text-sm text-muted-foreground">No model to preview yet.</p>
           </div>
         )}
 
-        {hasModel ? (
+        {showModel ? (
           <DrawingOverlay
             enabled={Boolean(drawToolActive) && !previewMode}
             drawingTool={drawingTool}
@@ -218,9 +269,71 @@ export default function CadRenderPane({
             canvasElementRef={drawingCanvasElRef}
           />
         ) : null}
+
+        {/* Prev/next within the active tab — all 3D models (3D tab) or all
+            renders (Image tab). Arrows flank the stage, dots mark the position. */}
+        {showSlider ? (
+          <>
+            <button
+              type="button"
+              onClick={() => slideTo(sliderIndex - 1)}
+              aria-label={`Previous ${slideNoun}`}
+              className={cn(SLIDE_BTN, "absolute left-4 top-1/2 z-20 -translate-y-1/2")}
+            >
+              <ChevronLeft className="size-5" strokeWidth={2} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              onClick={() => slideTo(sliderIndex + 1)}
+              aria-label={`Next ${slideNoun}`}
+              className={cn(SLIDE_BTN, "absolute right-4 top-1/2 z-20 -translate-y-1/2")}
+            >
+              <ChevronRight className="size-5" strokeWidth={2} aria-hidden="true" />
+            </button>
+            <div className="pointer-events-auto absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full cad-glass-surface border border-sidebar-border px-3 py-2 shadow-sm">
+              {Array.from({ length: sliderCount }).map((_, i) => (
+                <button
+                  // Dots index a fixed-length slide list, so position is a stable key.
+                  // eslint-disable-next-line react/no-array-index-key
+                  key={i}
+                  type="button"
+                  onClick={() => slideTo(i)}
+                  aria-label={`Go to ${slideNoun} ${i + 1}`}
+                  aria-current={i === sliderIndex}
+                  className={cn(
+                    "h-2 rounded-full transition-all",
+                    i === sliderIndex
+                      ? "w-6 bg-primary"
+                      : "w-2 bg-muted-foreground/40 hover:bg-muted-foreground/70",
+                  )}
+                />
+              ))}
+            </div>
+          </>
+        ) : null}
+
+        {/* 3D / Image tab toggle — bottom-left glass pill, mirrors the model
+            website's viewer. Shown only when the project has both a model and
+            images to switch between. */}
+        {canToggleView ? (
+          <div className="pointer-events-auto absolute bottom-4 left-4 z-20 flex items-center gap-1 rounded-full cad-glass-surface border border-sidebar-border p-1 shadow-sm">
+            <ViewModeButton
+              active={!imageMode}
+              onClick={() => setViewMode("3d")}
+              icon={<Box className="size-4" strokeWidth={2} aria-hidden="true" />}
+              label="3D"
+            />
+            <ViewModeButton
+              active={imageMode}
+              onClick={() => setViewMode("image")}
+              icon={<ImageIcon className="size-4" strokeWidth={2} aria-hidden="true" />}
+              label="Image"
+            />
+          </div>
+        ) : null}
       </div>
 
-      {hasModel && !previewMode ? (
+      {showModel && !previewMode ? (
         <ViewerTools
           resetRef={resetViewerRef}
           showBed={showBedOverlay}
@@ -294,5 +407,25 @@ export default function CadRenderPane({
         </div>
       ) : null}
     </div>
+  );
+}
+
+/** Segmented control button used by the 3D / Image view toggle. */
+function ViewModeButton({ active, onClick, icon, label }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "flex items-center gap-1.5 rounded-full px-3 py-1 text-[0.8125rem] font-medium transition-colors",
+        active
+          ? "bg-primary/85 text-primary-foreground"
+          : "text-sidebar-foreground/70 hover:text-sidebar-foreground",
+      )}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }

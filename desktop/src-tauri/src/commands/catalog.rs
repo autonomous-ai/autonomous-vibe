@@ -206,18 +206,24 @@ pub fn scan_workspace(root: &Path) -> IpcResult<Vec<CatalogEntry>> {
 /// should not clutter the workspace file list as standalone entries:
 /// - `.json` — `.topology.json` / `.step.json` sidecars + other metadata
 ///   (surfaced via a `.step` entry's `artifact`, never on their own).
-/// - `.png` — QA render images; never an app deliverable (the viewer renders the `.stl`).
+/// - `.png` — QA render images; hidden by default (the viewer renders the
+///   `.stl`), EXCEPT the renders written under a `<stem>_review/` directory,
+///   which the viewer surfaces as image slides alongside the 3D model.
 /// - underscore-prefixed `.py` — internal helper scripts (e.g. `_export.py`,
 ///   `_render.py`), not the user's editable source.
 ///
-/// Kept: `.step`/`.stp`/`.stl`/`.gcode` and real (non-underscore) `.py`.
+/// Kept: `.step`/`.stp`/`.stl`/`.gcode`, `<stem>_review/*.png` and real
+/// (non-underscore) `.py`.
 ///
 /// Per-part STLs under a `<stem>_parts/` directory are also hidden from the flat
 /// list: they are surfaced (grouped) via the integrated `.step` entry's
 /// `artifact.parts`, not as standalone top-level models.
 fn is_auxiliary_file(absolute: &Path, kind: CatalogKind) -> bool {
     match kind {
-        CatalogKind::Json | CatalogKind::Png => true,
+        CatalogKind::Json => true,
+        // Surface only the `<stem>_review/` QA renders; root-level / stray pngs
+        // stay hidden (they are not model deliverables).
+        CatalogKind::Png => !is_review_render(absolute),
         CatalogKind::Stl => is_part_stl(absolute),
         CatalogKind::Py => absolute
             .file_name()
@@ -226,6 +232,18 @@ fn is_auxiliary_file(absolute: &Path, kind: CatalogKind) -> bool {
             .unwrap_or(false),
         _ => false,
     }
+}
+
+/// True when a `.png` lives in a `<stem>_review/` directory — the QA renders the
+/// review pass writes next to a model (cover, multi-view grid, cross-sections).
+/// These are the images the viewer pages through alongside the 3D model.
+fn is_review_render(absolute: &Path) -> bool {
+    absolute
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .map(|n| n.ends_with("_review"))
+        .unwrap_or(false)
 }
 
 /// True when an `.stl` lives in a `<stem>_parts/` directory written by the
@@ -567,6 +585,41 @@ mod tests {
         let artifact = step.artifact.clone().expect("sidecars attached to .step");
         assert!(artifact.stl_url.unwrap().contains("model.stl"));
         assert!(artifact.metadata_url.unwrap().ends_with("model.step.json"));
+    }
+
+    #[test]
+    fn surfaces_review_renders_but_hides_stray_pngs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        touch(&root.join("model.stl"));
+        // Stray / root-level pngs stay hidden.
+        touch(&root.join("model_iso.png"));
+        // QA renders under `<stem>_review/` surface as image entries.
+        let review = root.join("model_review");
+        fs::create_dir_all(&review).unwrap();
+        touch(&review.join("_assembled.png"));
+        touch(&review.join("_qa.png"));
+        touch(&review.join("model_section_x.png"));
+
+        let entries = scan_workspace(root).unwrap();
+        let pngs: Vec<&str> = entries
+            .iter()
+            .filter(|e| e.kind == CatalogKind::Png)
+            .map(|e| e.file.as_str())
+            .collect();
+        assert_eq!(
+            pngs,
+            vec![
+                "model_review/_assembled.png",
+                "model_review/_qa.png",
+                "model_review/model_section_x.png",
+            ],
+            "only the <stem>_review/ renders surface; root-level pngs stay hidden",
+        );
+        // Each surfaced render carries a loadable asset URL.
+        for entry in entries.iter().filter(|e| e.kind == CatalogKind::Png) {
+            assert!(entry.url.contains("_review"), "png url was {}", entry.url);
+        }
     }
 
     #[test]

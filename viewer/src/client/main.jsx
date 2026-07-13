@@ -283,6 +283,19 @@ function AppRoot() {
     [manifest.entries],
   );
 
+  // Generated `.png` QA renders (e.g. model_iso.png) surfaced for the viewer's
+  // Image view — a project-level gallery paged alongside the 3D model. Kept out
+  // of the Models rail (isPrintableModelEntry excludes png); reference images
+  // under inputs/ never enter the catalog (SKIPPED_DIRECTORIES), so every png
+  // here is a pipeline render.
+  const imageEntries = useMemo(
+    () =>
+      manifest.entries.filter(
+        (entry) => String(entry?.kind || "").toLowerCase() === "png",
+      ),
+    [manifest.entries],
+  );
+
   // The in-window menu bar duplicates the native macOS menu (see menu.rs) and
   // only earns its place on Windows, which has no native global menu bar; macOS
   // and Linux hide it. When hidden, the workspace + chat reclaim the full height
@@ -312,6 +325,7 @@ function AppRoot() {
               manifestRevision={revision}
               manifestEntries={modelEntries}
               selectableEntries={selectableEntries}
+              imageEntries={imageEntries}
               generationStatus={generationStatus}
               catalogHydrated={catalogHydrated}
               catalogRefreshing={catalogRefreshing}

@@ -10,6 +10,11 @@
 
 import { useSyncExternalStore } from "react";
 import { __setTransportForTesting, getTransport } from "../lib/transport.ts";
+import {
+  ensureClaudeReady,
+  isClaudeMissingError,
+  openClaudeSetup,
+} from "./claudeSetup.js";
 
 /**
  * @typedef {Object} ChatTextBlock
@@ -1096,6 +1101,13 @@ export function attachChatEventStream(transport = getTransport()) {
   }
   eventUnsubscribe = transport.events.subscribe("chat_event", (event) => {
     dispatch({ type: "chat_event", event });
+    // Belt-and-braces behind the pre-send gate in `startTurn`: if a turn still
+    // reached the driver without a `claude` CLI (e.g. it vanished mid-session,
+    // or an approve-path raced the gate), open the in-app installer instead of
+    // leaving the user with only the raw "install Claude Code" error text.
+    if (event?.kind === "error" && isClaudeMissingError(event.message)) {
+      openClaudeSetup(transport);
+    }
     if (event?.kind === "turn_end") {
       // A finished turn may have produced Claude Code's AI title for the
       // session; refresh the project list so the placeholder name upgrades in
@@ -1131,6 +1143,13 @@ export async function startTurn(userMessage, { attachments = [] } = {}, transpor
   const images = Array.isArray(attachments) ? attachments : [];
   // A turn needs either text or at least one attached image.
   if (!text && !images.length) return null;
+  // No inference without a working `claude` CLI. When it's missing, this parks
+  // the send behind the setup dialog (which auto-runs the in-app installer) and
+  // resumes here on success; a dismissed dialog resolves false and the send is
+  // dropped (the composer keeps the text — we return null before consuming).
+  if (!(await ensureClaudeReady(transport))) return null;
+  // Read state AFTER the gate: an install wait can span minutes, and the user
+  // may have switched projects or queued tokens in the meantime.
   const state = getChatState();
   if (!state.currentProjectId) {
     dispatch({ type: "set_error", message: "No project selected" });
@@ -1188,6 +1207,8 @@ export async function startTurn(userMessage, { attachments = [] } = {}, transpor
  * mode; the resulting `turn_start` (phase "implement") drives the rest.
  */
 export async function approvePlan(planText, transport = getTransport()) {
+  // The build turn is inference too — same CLI gate as `startTurn`.
+  if (!(await ensureClaudeReady(transport))) return null;
   const state = getChatState();
   if (!state.awaitingApproval || !state.currentProjectId) return null;
   const turnId = state.activePlanTurnId;
@@ -1210,6 +1231,8 @@ export async function approvePlan(planText, transport = getTransport()) {
  * prior plan is marked superseded and a fresh plan turn streams in.
  */
 export async function requestPlanChanges(feedback, transport = getTransport()) {
+  // Revising the plan resumes the Claude session — gate it like any turn.
+  if (!(await ensureClaudeReady(transport))) return null;
   const state = getChatState();
   if (!state.awaitingApproval || !state.currentProjectId) return null;
   const turnId = state.activePlanTurnId;

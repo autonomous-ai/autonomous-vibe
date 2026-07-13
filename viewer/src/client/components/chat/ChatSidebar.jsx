@@ -7,6 +7,7 @@ import ChatHistory from "./ChatHistory";
 import ChatInput from "./ChatInput";
 import ChatStatusLine from "./ChatStatusLine";
 import ChatErrorContent from "./ChatErrorContent";
+import ClaudeSetupDialog from "./ClaudeSetupDialog";
 import { FOCUS_CHAT_INPUT_EVENT } from "./chatInputHelpers";
 // import ActionButtons from "./ActionButtons";
 import { MessageSquare } from "lucide-react";
@@ -267,6 +268,11 @@ export default function ChatSidebar({
           <ChatInput ref={chatInputRef} />
         </>
       )}
+
+      {/* Auto-install gate: opens when a send needs the `claude` CLI and it's
+          missing (see store/claudeSetup.js). Mounted here because the sidebar
+          is permanent — it covers every send path in the app. */}
+      <ClaudeSetupDialog />
     </aside>
   );
 }

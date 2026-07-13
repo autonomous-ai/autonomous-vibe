@@ -25,9 +25,12 @@ test("app_info returns the labeled stub", async () => {
   assert.equal(typeof info.rootPath, "string");
 });
 
-test("app_prereq_check returns all-false stub", async () => {
+test("app_prereq_check stub reports the Claude CLI ready, tools missing", async () => {
   const check = await transport.app_prereq_check();
-  assert.equal(check.claudeCli.found, false);
+  // The stub's chat works (chat_start_turn answers), so claudeCli must read
+  // found — otherwise the pre-send gate (store/claudeSetup.js) would park
+  // every stubbed send behind an installer the stub can't run.
+  assert.equal(check.claudeCli.found, true);
   assert.equal(check.python.found, false);
   assert.equal(check.slicer.found, false);
   assert.equal(check.slicer.binaryPath, "");

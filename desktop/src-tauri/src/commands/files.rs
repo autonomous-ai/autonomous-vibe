@@ -162,24 +162,44 @@ async fn import_one(source: &Path, project_root: &Path) -> IpcResult<String> {
 /// Import a `.step`/`.stp` B-rep by running the bundled `cadcode` generator on
 /// it: `scripts/cad <source> --out-dir <project> --stem <free-stem>` writes
 /// `<stem>.step`, `<stem>.stl`, and `<stem>.step.json` into the project. We
-/// reserve a collision-free `<stem>.step` first (so an import never overwrites
-/// an existing model), and return that `.step` — the catalog surfaces the
-/// sibling `.stl`/`.step.json` under it. On failure any partial artifacts are
-/// removed so a broken half-import never lands in the rail.
+/// reserve a stem free across ALL THREE outputs first (so the generator never
+/// overwrites a sibling of an existing model — e.g. a prior `bracket.stl`
+/// import when `bracket.step` happens to be free), and return the `.step` — the
+/// catalog surfaces the sibling `.stl`/`.step.json` under it. On failure any
+/// partial artifacts are removed so a broken half-import never lands in the rail.
 async fn import_step(source: &Path, project_root: &Path, stem: &str) -> IpcResult<String> {
-    let dest_step = unique_dest(project_root, stem, "step");
-    // `unique_dest` always yields a `<stem>.step` name, so the stem is valid UTF-8.
-    let out_stem = dest_step
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| IpcError::new("IMPORT_FAILED", "could not derive output name"))?
-        .to_string();
+    let out_stem = unique_step_stem(project_root, stem);
 
     if let Err(err) = generate_step_artifacts(source, project_root, &out_stem).await {
         remove_step_artifacts(project_root, &out_stem).await;
         return Err(err);
     }
-    rel_name(&dest_step, project_root)
+    rel_name(&project_root.join(format!("{out_stem}.step")), project_root)
+}
+
+/// Reserve a stem under `dir` where none of the STEP import's three outputs
+/// (`<stem>.step`, `<stem>.stl`, `<stem>.step.json`) already exist, appending
+/// `-1`, `-2`, … until all three are free. Unlike [`unique_dest`] (which guards
+/// a single extension), a STEP import writes a trio, so any pre-existing sibling
+/// under the same stem — including a separately imported `<stem>.stl` — must
+/// block the name to avoid clobbering another model.
+fn unique_step_stem(dir: &Path, stem: &str) -> String {
+    let free = |candidate: &str| {
+        !dir.join(format!("{candidate}.step")).exists()
+            && !dir.join(format!("{candidate}.stl")).exists()
+            && !dir.join(format!("{candidate}.step.json")).exists()
+    };
+    if free(stem) {
+        return stem.to_string();
+    }
+    let mut n = 1u32;
+    loop {
+        let candidate = format!("{stem}-{n}");
+        if free(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
 }
 
 /// Map an absolute artifact path back to its project-relative name, or an
@@ -519,14 +539,21 @@ mod tests {
     }
 
     #[test]
-    fn step_import_reserves_a_collision_free_step_stem() {
-        // The STEP import reserves `<stem>.step` up front so it never clobbers
-        // an existing model — same de-dup contract as the mesh path.
+    fn step_import_reserves_a_stem_free_across_all_three_outputs() {
+        // A STEP import writes <stem>.step/.stl/.step.json — so the reserved
+        // stem must dodge ANY pre-existing sibling, not just <stem>.step.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        assert_eq!(unique_dest(root, "bracket", "step"), root.join("bracket.step"));
-        std::fs::write(root.join("bracket.step"), b"").unwrap();
-        assert_eq!(unique_dest(root, "bracket", "step"), root.join("bracket-1.step"));
+        assert_eq!(unique_step_stem(root, "bracket"), "bracket");
+
+        // A separately imported `bracket.stl` (no `.step`) must still block the
+        // `bracket` stem, or the generator would overwrite that model's mesh.
+        std::fs::write(root.join("bracket.stl"), b"").unwrap();
+        assert_eq!(unique_step_stem(root, "bracket"), "bracket-1");
+
+        // Collisions on any of the trio keep bumping the suffix.
+        std::fs::write(root.join("bracket-1.step.json"), b"").unwrap();
+        assert_eq!(unique_step_stem(root, "bracket"), "bracket-2");
     }
 }
 

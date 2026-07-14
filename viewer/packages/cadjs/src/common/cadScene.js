@@ -43,7 +43,7 @@ const FOCUSED_DIMMED_SURFACE_OPACITY = 0.035;
 const HEX_COLOR_PATTERN = /^#(?:[0-9a-fA-F]{3}){1,2}$/;
 const MODEL_PART_ID = "__model__";
 const DEFAULT_THEME = Object.freeze({
-  surface: "#f4f4f5",
+  surface: "#ff5a1f",
   surfaceRoughness: 0.92,
   surfaceMetalness: 0.03,
   surfaceClearcoat: 0,

@@ -10,22 +10,22 @@ export interface MaterialPreset {
   roughness: number;
 }
 
-/** Neutral gray — a true, unbiased read of the surface. The default look. */
+/** Molten orange — the brand accent. The default look. */
 export const DEFAULT_MATERIAL_PRESET: MaterialPreset = {
-  id: "gray",
-  name: "Neutral gray",
-  color: "#cfd3da",
-  metalness: 0.1,
-  roughness: 0.65,
+  id: "brand",
+  name: "Molten orange",
+  color: "#FF6A2B",
+  metalness: 0.15,
+  roughness: 0.55,
 };
 
-/** Presets tuned to reveal different surface features: neutral for a true read,
- *  steel to pop machined facets, graphite for high-contrast crevices, resin for a
- *  soft print-like look, and the brand accent. */
+/** Presets tuned to reveal different surface features: the brand accent as the
+ *  default, neutral for a true read, steel to pop machined facets, graphite for
+ *  high-contrast crevices, and resin for a soft print-like look. */
 export const MATERIAL_PRESETS: MaterialPreset[] = [
   DEFAULT_MATERIAL_PRESET,
+  { id: "gray", name: "Neutral gray", color: "#cfd3da", metalness: 0.1, roughness: 0.65 },
   { id: "steel", name: "Steel", color: "#b8bec7", metalness: 0.9, roughness: 0.35 },
   { id: "graphite", name: "Graphite", color: "#3b404b", metalness: 0.05, roughness: 0.9 },
   { id: "resin", name: "Resin white", color: "#f2f0ec", metalness: 0.0, roughness: 0.8 },
-  { id: "brand", name: "Molten orange", color: "#FF6A2B", metalness: 0.15, roughness: 0.55 },
 ];

@@ -794,6 +794,15 @@ invoked via `python -m cad` after the cadcode skill installs its
 `scripts/` parent dir onto `PYTHONPATH`. (Internal detail; the Rust driver
 doesn't invoke this directly — the `claude` CLI does, as a tool call.)
 
+`<project_dir>` may instead be a single `.py` generator, or a `.step`/`.stp`
+file to **import**: the CLI synthesizes a one-line `main.py` that
+`importStep`s the B-rep, so an imported STEP flows through the identical
+shape path and emits the same `.step` + `.stl` + `.step.json` set (face IDs,
+validation warnings). This is the one direct-invocation exception — the app's
+STEP "Import" action (`file_import` IPC) runs `python …/cad <file.step>
+--out-dir <project> --stem <stem>` to adopt an external STEP as a first-class
+model.
+
 ### Stdout: single JSON line
 
 The skill MUST print **exactly one** JSON line to stdout containing the

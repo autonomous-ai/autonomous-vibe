@@ -778,8 +778,8 @@ function FileViewerContents({
                 variant="ghost"
                 size="icon"
                 className="size-6 text-muted-foreground"
-                aria-label="Import STL or GLB"
-                title="Import STL or GLB"
+                aria-label="Import STEP, STL, or GLB"
+                title="Import STEP, STL, or GLB"
                 onClick={() => onImportFiles()}
               >
                 <Upload className="size-4" aria-hidden="true" />

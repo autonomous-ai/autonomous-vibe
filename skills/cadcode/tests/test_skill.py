@@ -110,6 +110,53 @@ def test_example_compiles(example: Path):
         assert "topology_path" not in payload
 
 
+# -- STEP/STP import mode ---------------------------------------------------
+
+
+def test_step_file_is_imported_to_artifact_set():
+    """Passing a ``.step`` file re-meshes the B-rep into the full contract §3
+    artifact set (STEP + STL + metadata), keyed by the ``--stem`` override.
+
+    The generator synthesizes a ``main.py`` that ``importStep``s the file, so
+    this exercises the same shape path as a generated model — the app's STEP
+    "Import" action rides on exactly this."""
+    import cadquery as cq
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_p = Path(tmp)
+        source = tmp_p / "source_widget.step"
+        cq.exporters.export(
+            cq.Workplane("XY").box(20, 20, 5).faces(">Z").hole(6),
+            str(source),
+        )
+        out = tmp_p / "out"
+        payload = _run_cad(str(source), "--out-dir", str(out), "--stem", "imported")
+
+        assert payload.get("ok"), f"STEP import failed: {payload}"
+        assert payload.get("is_solid"), f"imported STEP non-solid: {payload}"
+        assert payload.get("volume_mm3", 0) > 0
+        assert (out / "imported.step").exists()
+        assert (out / "imported.stl").exists()
+        assert (out / "imported.step.json").exists()
+        # The original is only read, never rewritten in place.
+        assert source.exists()
+
+
+def test_stp_extension_is_accepted():
+    """The ``.stp`` spelling imports the same as ``.step``."""
+    import cadquery as cq
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_p = Path(tmp)
+        source = tmp_p / "part.stp"
+        cq.exporters.export(
+            cq.Workplane("XY").box(8, 8, 8), str(source), exportType="STEP"
+        )
+        payload = _run_cad(str(source), "--out-dir", str(tmp_p / "out"))
+        assert payload.get("ok"), f"STP import failed: {payload}"
+        assert (tmp_p / "out" / "part.step").exists()
+
+
 # -- Mesh tolerance flag is wired through -----------------------------------
 
 

@@ -6090,11 +6090,13 @@ export default function CadWorkspace({
     });
   }, []);
 
-  // "Import STL/GLB" from the sidebar header. Copies the user's chosen mesh
-  // files into the active project (the backend normalizes `.glb`/`.gltf` to
-  // `.stl` via trimesh, so everything lands as a renderable + sliceable `.stl`),
-  // refreshes the rail, and opens the first import once its catalog entry
-  // materializes — reusing the same deferred auto-select as a fresh build.
+  // "Import STEP/STL/GLB" from the sidebar header. Copies the user's chosen
+  // files into the active project: the backend normalizes `.glb`/`.gltf` to
+  // `.stl` via trimesh, and re-meshes a `.step`/`.stp` B-rep into the full
+  // `.step` + `.stl` + `.step.json` set via the cadcode generator — so every
+  // import lands as a renderable + sliceable model. Refreshes the rail and
+  // opens the first import once its catalog entry materializes — reusing the
+  // same deferred auto-select as a fresh build.
   const handleImportFiles = useCallback(async () => {
     try {
       const imported = await getTransport().file_import();

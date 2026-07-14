@@ -62,10 +62,10 @@ pub async fn file_save(
     Ok(Some(destination.display().to_string()))
 }
 
-/// Import one or more user-chosen 3D mesh files into the open project via the
+/// Import one or more user-chosen 3D files into the open project via the
 /// native "Open" dialog.
 ///
-/// Everything is normalized to `.stl` — the catalog/render/slice pipeline's
+/// Meshes are normalized to `.stl` — the catalog/render/slice pipeline's
 /// native mesh format. `.stl` is copied as-is; `.glb`/`.gltf` is converted to
 /// `.stl` via the bundled CPython's `trimesh`. (OrcaSlicer can't slice GLB, so a
 /// raw copy would be a print dead-end; converting on import makes an imported
@@ -73,9 +73,15 @@ pub async fn file_save(
 /// color/materials are intentionally dropped — irrelevant for single-material
 /// FDM.
 ///
-/// Returns the imported workspace-relative paths (e.g. `["dragon.stl"]`), or an
-/// empty vec if the user cancelled. Bumps the catalog revision so the viewer's
-/// asset cache-bust tokens change and the rail re-reads.
+/// A `.step`/`.stp` B-rep is run through the bundled `cadcode` generator, which
+/// re-meshes it into the full artifact set (`.step` + `.stl` + `.step.json`) so
+/// the import becomes a first-class model with selectable faces — the reason to
+/// import STEP over a bare mesh.
+///
+/// Returns the imported workspace-relative paths (e.g. `["dragon.stl"]`,
+/// `["bracket.step"]`), or an empty vec if the user cancelled. Bumps the catalog
+/// revision so the viewer's asset cache-bust tokens change and the rail
+/// re-reads.
 #[tauri::command]
 pub async fn file_import(
     app: tauri::AppHandle,
@@ -95,7 +101,7 @@ pub async fn file_import(
         dialog_app
             .dialog()
             .file()
-            .add_filter("3D models", &["stl", "glb", "gltf"])
+            .add_filter("3D models", &["stl", "glb", "gltf", "step", "stp"])
             .blocking_pick_files()
     })
     .await
@@ -117,10 +123,12 @@ pub async fn file_import(
     Ok(imported)
 }
 
-/// Place a single imported mesh into `project_root` as an `.stl`, returning its
-/// project-relative name. `.stl` copies bytes; `.glb`/`.gltf` converts via
-/// trimesh. The destination is de-duplicated so an import never clobbers a
-/// generated model or a prior import.
+/// Place a single imported file into `project_root`, returning its
+/// project-relative name. `.stl` copies bytes; `.glb`/`.gltf` converts to
+/// `.stl` via trimesh; `.step`/`.stp` is re-meshed by the cadcode generator
+/// into the `.step` + `.stl` + `.step.json` artifact set. The destination stem
+/// is de-duplicated so an import never clobbers a generated model or a prior
+/// import.
 async fn import_one(source: &Path, project_root: &Path) -> IpcResult<String> {
     let stem = source
         .file_stem()
@@ -132,23 +140,52 @@ async fn import_one(source: &Path, project_root: &Path) -> IpcResult<String> {
         .map(|e| e.to_ascii_lowercase())
         .unwrap_or_default();
 
-    let dest = unique_dest(project_root, stem, "stl");
     match ext.as_str() {
         "stl" => {
+            let dest = unique_dest(project_root, stem, "stl");
             tokio::fs::copy(source, &dest).await.map_err(IpcError::from)?;
+            rel_name(&dest, project_root)
         }
         "glb" | "gltf" => {
+            let dest = unique_dest(project_root, stem, "stl");
             convert_mesh_to_stl(source, &dest).await?;
+            rel_name(&dest, project_root)
         }
-        other => {
-            return Err(IpcError::new(
-                "IMPORT_UNSUPPORTED",
-                format!("cannot import .{other} files; supported: stl, glb, gltf"),
-            ));
-        }
+        "step" | "stp" => import_step(source, project_root, stem).await,
+        other => Err(IpcError::new(
+            "IMPORT_UNSUPPORTED",
+            format!("cannot import .{other} files; supported: stl, glb, gltf, step, stp"),
+        )),
     }
+}
 
-    paths::to_workspace_relative(&dest, project_root)
+/// Import a `.step`/`.stp` B-rep by running the bundled `cadcode` generator on
+/// it: `scripts/cad <source> --out-dir <project> --stem <free-stem>` writes
+/// `<stem>.step`, `<stem>.stl`, and `<stem>.step.json` into the project. We
+/// reserve a collision-free `<stem>.step` first (so an import never overwrites
+/// an existing model), and return that `.step` — the catalog surfaces the
+/// sibling `.stl`/`.step.json` under it. On failure any partial artifacts are
+/// removed so a broken half-import never lands in the rail.
+async fn import_step(source: &Path, project_root: &Path, stem: &str) -> IpcResult<String> {
+    let dest_step = unique_dest(project_root, stem, "step");
+    // `unique_dest` always yields a `<stem>.step` name, so the stem is valid UTF-8.
+    let out_stem = dest_step
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| IpcError::new("IMPORT_FAILED", "could not derive output name"))?
+        .to_string();
+
+    if let Err(err) = generate_step_artifacts(source, project_root, &out_stem).await {
+        remove_step_artifacts(project_root, &out_stem).await;
+        return Err(err);
+    }
+    rel_name(&dest_step, project_root)
+}
+
+/// Map an absolute artifact path back to its project-relative name, or an
+/// `IMPORT_FAILED` if it somehow escaped the project root.
+fn rel_name(dest: &Path, project_root: &Path) -> IpcResult<String> {
+    paths::to_workspace_relative(dest, project_root)
         .ok_or_else(|| IpcError::new("IMPORT_FAILED", "imported file escaped project root"))
 }
 
@@ -199,6 +236,73 @@ async fn convert_mesh_to_stl(source: &Path, dest: &Path) -> IpcResult<()> {
         .with_detail(serde_json::Value::String(stderr.trim().to_string())));
     }
     Ok(())
+}
+
+/// Re-mesh a `.step`/`.stp` into the Panda artifact set by running the cadcode
+/// generator: `python <scripts/cad> <source> --out-dir <out_dir> --stem <stem>`.
+/// The generator meshes the imported B-rep and writes `<stem>.step`,
+/// `<stem>.stl`, and `<stem>.step.json` (with face IDs + validation) into
+/// `out_dir`. It prints one JSON line and exits non-zero on failure; we surface
+/// its stderr/stdout as the error detail.
+async fn generate_step_artifacts(source: &Path, out_dir: &Path, stem: &str) -> IpcResult<()> {
+    let python = resolve_python()
+        .ok_or_else(|| IpcError::new("PYTHON_MISSING", "bundled python interpreter not found"))?;
+    let cad_script = cadcode_cad_script().ok_or_else(|| {
+        IpcError::new(
+            "IMPORT_FAILED",
+            "cadcode generator not found under ~/.claude/skills",
+        )
+    })?;
+    let output = tokio::process::Command::new(&python)
+        .arg(&cad_script)
+        .arg(source)
+        .arg("--out-dir")
+        .arg(out_dir)
+        .arg("--stem")
+        .arg(stem)
+        .output()
+        .await
+        .map_err(|e| IpcError::new("IMPORT_FAILED", format!("STEP import failed to start: {e}")))?;
+
+    // The generator exits 0 only when it emitted an `ok: true` result line; a
+    // non-zero exit (or a spawn that produced no artifacts) is a failed import.
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim().to_string()
+        } else {
+            stderr.trim().to_string()
+        };
+        return Err(
+            IpcError::new("IMPORT_FAILED", "STEP import failed")
+                .with_detail(serde_json::Value::String(detail)),
+        );
+    }
+    Ok(())
+}
+
+/// Delete any `<stem>.step`/`.stl`/`.step.json` left behind by a failed STEP
+/// import so a broken half-import never surfaces in the catalog. Best-effort.
+async fn remove_step_artifacts(dir: &Path, stem: &str) {
+    for name in [
+        format!("{stem}.step"),
+        format!("{stem}.stl"),
+        format!("{stem}.step.json"),
+    ] {
+        let _ = tokio::fs::remove_file(dir.join(name)).await;
+    }
+}
+
+/// Absolute path to the installed cadcode generator entrypoint
+/// (`~/.claude/skills/cadcode/scripts/cad`) — the same path the chat driver
+/// invokes. Skills are installed there on every app startup by
+/// [`crate::skills::install_bundled_skills`]. Returns `None` if it is absent
+/// (skills not yet installed, or `HOME` unset).
+fn cadcode_cad_script() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let script = home.join(".claude/skills/cadcode/scripts/cad");
+    script.exists().then_some(script)
 }
 
 /// Resolve a usable Python interpreter: the bundled CPython sidecar first, else
@@ -392,6 +496,37 @@ mod tests {
 
         let err = import_one(&src, &root).await.unwrap_err();
         assert_eq!(err.code, "IMPORT_UNSUPPORTED");
+    }
+
+    #[tokio::test]
+    async fn remove_step_artifacts_drops_the_whole_set() {
+        // A failed STEP import must not leave a half-written model behind: the
+        // cleanup removes the .step/.stl/.step.json trio (and no-ops on absent
+        // files) so the catalog never lists a broken import.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("part.step"), b"").unwrap();
+        std::fs::write(root.join("part.stl"), b"").unwrap();
+        // .step.json intentionally absent — removal must tolerate it.
+        std::fs::write(root.join("keep.stl"), b"").unwrap();
+
+        remove_step_artifacts(root, "part").await;
+
+        assert!(!root.join("part.step").exists());
+        assert!(!root.join("part.stl").exists());
+        // An unrelated model with a different stem is untouched.
+        assert!(root.join("keep.stl").exists());
+    }
+
+    #[test]
+    fn step_import_reserves_a_collision_free_step_stem() {
+        // The STEP import reserves `<stem>.step` up front so it never clobbers
+        // an existing model — same de-dup contract as the mesh path.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert_eq!(unique_dest(root, "bracket", "step"), root.join("bracket.step"));
+        std::fs::write(root.join("bracket.step"), b"").unwrap();
+        assert_eq!(unique_dest(root, "bracket", "step"), root.join("bracket-1.step"));
     }
 }
 

@@ -1,4 +1,4 @@
-"""``python scripts/cad <input.py | project_dir/> [--out-dir DIR]`` — primary tool.
+"""``python scripts/cad <input.py | project_dir/ | model.step> [--out-dir DIR]`` — primary tool.
 
 Hands the user's project off to ``cadpy.generation.generate_step`` inside a
 sandboxed subprocess. cadpy reads ``main.py``, calls ``gen_step()`` (or the
@@ -6,6 +6,12 @@ legacy ``result = …`` form), and writes the full Panda artifact set next to
 ``output_path``:
 
   <stem>.step  <stem>.stl  <stem>.step.json
+
+A ``.step``/``.stp`` file is also accepted as input: we synthesize a
+one-line ``main.py`` that re-imports the B-rep through CadQuery, so the
+same pipeline meshes it and writes the ``.stl`` + ``.step.json`` sidecars
+(face IDs, validation warnings) — turning an external STEP into a
+first-class Panda model. This backs the app's "Import" action for STEP.
 
 Prints a single JSON line on stdout matching contract §3 ``CadcodeResult``.
 """
@@ -26,6 +32,21 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 from common.runner import run_sandboxed_sync
 
+# Input suffixes handled as an "import an existing B-rep" request rather than a
+# CadQuery generator. Kept lowercase; callers compare `suffix.lower()`.
+STEP_SUFFIXES = frozenset({".step", ".stp"})
+
+# main.py we synthesize for a STEP/STP input: re-import the solid through
+# CadQuery so cadpy's normal shape path meshes it and writes every sidecar.
+# The path is embedded as a JSON string literal (valid Python, safe for
+# spaces/backslashes) so arbitrary import locations round-trip cleanly.
+_IMPORT_STEP_MAIN = (
+    "from cadquery import importers\n"
+    "\n"
+    "def gen_step():\n"
+    "    return importers.importStep({path})\n"
+)
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -40,10 +61,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help=(
             "Path to a CadQuery .py file (defines ``gen_step()`` or the "
-            "legacy ``result = <shape>``), OR a project directory "
-            "containing a main.py. In project mode, sibling modules and "
-            "packages (params.py, parts/, features/, etc.) are added to "
-            "sys.path so main.py can import them."
+            "legacy ``result = <shape>``), a project directory "
+            "containing a main.py, OR a .step/.stp file to import. In "
+            "project mode, sibling modules and packages (params.py, "
+            "parts/, features/, etc.) are added to sys.path so main.py "
+            "can import them. In STEP-import mode the file's B-rep is "
+            "re-meshed into the full artifact set."
         ),
     )
     p.add_argument(
@@ -89,9 +112,10 @@ def _resolve_project_and_stem(
     """Normalize input → (project_dir, stem, scratch_to_cleanup).
 
     cadpy's entry point expects a directory containing ``main.py``. A
-    user-supplied single ``.py`` file is copied into a scratch directory
-    as ``main.py``; the caller MUST remove ``scratch_to_cleanup`` after
-    the run.
+    user-supplied single ``.py`` file — or a ``.step``/``.stp`` file to
+    import — is turned into a scratch directory holding a synthesized
+    ``main.py``; the caller MUST remove ``scratch_to_cleanup`` after the
+    run.
 
     Returns ``scratch_to_cleanup=None`` for project-mode inputs.
     """
@@ -101,6 +125,17 @@ def _resolve_project_and_stem(
             return input_path, "", None  # caller will surface the error
         stem = stem_override or input_path.name
         return input_path, stem, None
+
+    if input_path.suffix.lower() in STEP_SUFFIXES:
+        # STEP-import mode: the "generator" just re-imports the B-rep, so the
+        # standard shape path meshes it and emits the .stl + .step.json
+        # sidecars. Read from the original location; artifacts land in out_dir.
+        scratch = Path(tempfile.mkdtemp(prefix="cadcode-import-"))
+        (scratch / "main.py").write_text(
+            _IMPORT_STEP_MAIN.format(path=json.dumps(str(input_path)))
+        )
+        stem = stem_override or input_path.stem
+        return scratch, stem, scratch
 
     # Single-file mode: synthesize a temp project dir containing only the
     # user's file copied to main.py. We preserve the original file's stem

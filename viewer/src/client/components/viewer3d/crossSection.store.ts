@@ -50,7 +50,10 @@ export const useCrossSectionStore = create<CrossSectionState>()((set) => ({
   ...DEFAULTS,
   showHiddenHalf: true,
   hiddenOpacity: 0.15,
-  highlightCut: false,
+  // Default on: the stencil cap gives an immediate solid-cut read during slider drags and
+  // is the fallback whenever the CSG solid can't build (non-watertight meshes). Once the
+  // CSG solid settles it takes over and the cap is suppressed (see StlModel).
+  highlightCut: true,
 
   setEnabled: (enabled) => set({ enabled }),
   setAxis: (axis) => set({ axis }),

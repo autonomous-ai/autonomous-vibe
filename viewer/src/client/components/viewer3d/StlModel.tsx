@@ -1,13 +1,15 @@
 import { useLoader } from "@react-three/fiber";
-import { type RefObject, useEffect, useMemo } from "react";
+import { type RefObject, useEffect, useMemo, useRef } from "react";
 import {
   AdditiveBlending,
+  BackSide,
   BufferGeometry,
   Color,
   DoubleSide,
   Float32BufferAttribute,
   FrontSide,
   type Mesh,
+  MeshPhysicalMaterial,
   type Plane,
 } from "three";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
@@ -16,6 +18,7 @@ import { SectionCap } from "./SectionCap";
 import { buildFeatureEdges } from "./featureEdges";
 import { DEFAULT_MATERIAL_PRESET, type MaterialPreset } from "./materialPresets";
 import { buildPartColors } from "./partColors";
+import { useSectionSolid } from "./useSectionSolid";
 
 /** Shading style for the mesh: opaque lit surface, a see-through x-ray glow, or a
  *  bare triangle-edge wireframe. */
@@ -32,6 +35,12 @@ const WIREFRAME_COLOR = "#7dd3fc";
  *  FORGE's --color-background #0E0F13) so the crease outline reads as a crisp CAD
  *  blueprint drawn onto the lit surface. */
 const FEATURE_EDGE_COLOR = "#0E0F13";
+
+/** Interior-wall tint shown through a cross-section cut (solid view only). A cool blue,
+ *  complementary to the orange cut cap, so the two never blur together: a capped solid
+ *  cut reads orange while any cavity or inner wall seen through the opening reads blue —
+ *  letting the user tell empty space from solid material at a glance. */
+const SECTION_INTERIOR_COLOR = "#60a5fa";
 
 /** Live cross-section state handed to the mesh. The two planes are stable instances
  *  mutated every frame by the section rig (so slider drags update with no re-render);
@@ -226,9 +235,54 @@ export function StlModel({
   // materials, so a solid cast shadow beneath them would read wrong.
   const solid = mode === "solid";
 
+  // Stable fallback so the CSG hook always has a ref even if the parent passed none.
+  const fallbackMeshRef = useRef<Mesh | null>(null);
+  // On slider release, generate a brand-new solid mesh for the cut via CSG (intersection with
+  // the kept half-space). Null while dragging or off, so we show the live GPU-clip preview.
+  const generatedSolid = useSectionSolid({
+    geometry: shaded,
+    meshRef: meshRef ?? fallbackMeshRef,
+    clipPlane: section?.clipPlane ?? null,
+    active: solid && !!section && !!meshRef,
+    colorsOn: hasPartColors,
+    baseColor: material.color,
+  });
+  // While the generated solid is showing, the clip-preview (clipped mesh + interior fill + cap)
+  // is hidden — but the original mesh stays mounted (invisible) so the rig can still measure
+  // bounds and drive the plane.
+  const showGenerated = solid && !!section && generatedSolid !== null;
+
+  // Material for the generated solid — mirrors the main mesh exactly so the cut solid reads in
+  // the same color. Without part colors it's a flat `material.color`, so every face (surface AND
+  // slice) is identical. With part colors it switches to vertex colors (white base): the surface
+  // shows the baked per-part tints and the slice shows the baked object color.
+  const generatedMaterial = useMemo(
+    () =>
+      new MeshPhysicalMaterial({
+        color: hasPartColors ? "#ffffff" : material.color,
+        vertexColors: hasPartColors,
+        metalness: material.metalness,
+        roughness: material.roughness,
+        clearcoat: material.clearcoat,
+        clearcoatRoughness: material.clearcoatRoughness,
+        envMapIntensity: material.envMapIntensity,
+        side: DoubleSide,
+      }),
+    [material, hasPartColors],
+  );
+
+  // Free the generated material when it changes or the model unmounts.
+  useEffect(() => () => generatedMaterial.dispose(), [generatedMaterial]);
+
   return (
     <>
-      <mesh ref={meshRef} geometry={shaded} castShadow={solid} receiveShadow={solid}>
+      <mesh
+        ref={meshRef}
+        geometry={shaded}
+        castShadow={solid}
+        receiveShadow={solid}
+        visible={!showGenerated}
+      >
         {mode === "xray" ? (
           // Fresnel glow, additive so stacked walls brighten and depthWrite off so the
           // shell never occludes itself — you see straight through to the far side.
@@ -261,7 +315,9 @@ export function StlModel({
             clearcoat={material.clearcoat}
             clearcoatRoughness={material.clearcoatRoughness}
             envMapIntensity={material.envMapIntensity}
-            side={section ? DoubleSide : FrontSide}
+            // Front faces only while sectioning so the interior back-faces are drawn by
+            // the tinted interior mesh below (distinct color); DoubleSide otherwise.
+            side={section ? FrontSide : DoubleSide}
             clippingPlanes={clip}
             // Push faces slightly back so coplanar feature lines win the depth test
             // (crisp hidden-line look). Only matters while the overlay is on.
@@ -271,6 +327,23 @@ export function StlModel({
           />
         )}
       </mesh>
+
+      {/* Interior-wall tint: when sectioning in solid view, draw the mesh's back-faces
+          (the inner surfaces revealed through the cut) in a distinct cool blue so cavities
+          and thin walls read apart from the exterior and the orange cut cap. Only the
+          interior side, clipped by the same plane; no shadows (it's inside the part).
+          Preview only — replaced by the generated solid once it's built. */}
+      {solid && section && !showGenerated && (
+        <mesh geometry={shaded}>
+          <meshStandardMaterial
+            color={SECTION_INTERIOR_COLOR}
+            metalness={0}
+            roughness={0.9}
+            side={BackSide}
+            clippingPlanes={clip}
+          />
+        </mesh>
+      )}
 
       {/* Feature-edge overlay — depth-tested so hidden creases stay hidden, drawn under the
           same parent transform as the mesh. Clipped along with the model when sectioning. */}
@@ -300,8 +373,8 @@ export function StlModel({
         </mesh>
       )}
 
-      {/* Solid contrasting cap over the exposed cut (stencil technique). */}
-      {section?.highlightCut && meshRef && (
+      {/* Solid contrasting cap over the exposed cut (stencil technique). Preview only. */}
+      {section?.highlightCut && meshRef && !showGenerated && (
         <SectionCap
           geometry={shaded}
           clipPlane={section.clipPlane}
@@ -309,6 +382,13 @@ export function StlModel({
           color={section.highlightColor}
           size={section.capSize}
         />
+      )}
+
+      {/* The generated cut: a brand-new watertight solid built by CSG on slider release, shown
+          in place of the (hidden but still-mounted) clipped original. Already solid and capped,
+          so it needs no clip planes, interior fill, or cut cap. */}
+      {solid && section && generatedSolid && (
+        <mesh geometry={generatedSolid} material={generatedMaterial} castShadow receiveShadow />
       )}
     </>
   );

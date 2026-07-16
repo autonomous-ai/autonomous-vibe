@@ -229,6 +229,13 @@ export function ModelCanvas({
     <div className="absolute inset-0 h-full w-full">
       <Canvas
         dpr={[1, 2]}
+        // On-demand rendering: the model is static most of the time, so re-drawing the full
+        // scene (+ 2048² shadow map + optional planar-reflection pass) at 60fps while nothing
+        // moves is pure waste. "demand" renders only when a frame is requested — drei's
+        // controls invalidate on camera change, React state/prop changes invalidate on commit,
+        // and the headless rigs (Bounds reset, explode ease, section sweep, light measure) call
+        // invalidate() explicitly while they animate. Idle cost drops to zero.
+        frameloop="demand"
         // Soft shadow maps (PCFSoftShadowMap) so the directional fill's cast shadow reads
         // as a soft-edged studio shadow, not a hard jagged one.
         shadows="soft"
@@ -450,6 +457,9 @@ function BoundsFramer({
 }) {
   const bounds = useBounds();
   const size = useThree((s) => s.size);
+  // On-demand loop: request the frames the reset glide and initial fit need (they run in
+  // useFrame, which only ticks on rendered frames).
+  const invalidate = useThree((s) => s.invalidate);
   const anim = useRef<ResetAnimation | null>(null);
   const userMoved = useRef(false);
   const pending = useRef(true);
@@ -525,7 +535,15 @@ function BoundsFramer({
     controls.update();
 
     if (a.t >= 1) anim.current = null;
+    // Keep the loop alive for the next glide frame (demand mode won't tick on its own).
+    else invalidate();
   });
+
+  // Kick one frame on mount so the initial pending-fit runs even if no other scene change
+  // requests it (belt-and-suspenders under the on-demand loop).
+  useEffect(() => {
+    invalidate();
+  }, [invalidate]);
 
   // Flag the first user interaction so resize re-fits stop fighting the gesture.
   useEffect(() => {
@@ -557,11 +575,12 @@ function BoundsFramer({
       userMoved.current = false;
       bounds.refresh();
       frame(true);
+      invalidate(); // start the glide under the on-demand loop
     };
     return () => {
       resetRef.current = null;
     };
-  }, [bounds, frame, resetRef]);
+  }, [bounds, frame, resetRef, invalidate]);
 
   return null;
 }

@@ -1,4 +1,4 @@
-import { useFrame } from "@react-three/fiber";
+import { useFrame, useThree } from "@react-three/fiber";
 import { type RefObject, useEffect, useRef } from "react";
 import type { BufferGeometry, Mesh } from "three";
 import type { FeatureOverlay } from "./StlModel";
@@ -29,6 +29,7 @@ export function ExplodeRig({
 }) {
   const enabled = useExplodeStore((s) => s.enabled);
   const setLeafCount = useExplodeStore((s) => s.setLeafCount);
+  const invalidate = useThree((s) => s.invalidate);
   const data = useRef<ExplodeData | null>(null);
   const applied = useRef(0); // factor currently baked into the buffer
   const lastKey = useRef(""); // factor|style|axis of the last applied offsets
@@ -62,6 +63,10 @@ export function ExplodeRig({
     };
   }, [setLeafCount]);
 
+  // On-demand loop: the slider mutates factor/style/axis without re-rendering this rig (read via
+  // getState in useFrame), so request a frame on every explode-store change to kick the ease.
+  useEffect(() => useExplodeStore.subscribe(() => invalidate()), [invalidate]);
+
   useFrame(() => {
     const mesh = meshRef.current;
     if (!mesh) return;
@@ -84,6 +89,8 @@ export function ExplodeRig({
     let next = applied.current + (targetFactor - applied.current) * EASE;
     if (Math.abs(targetFactor - next) < SNAP) next = targetFactor;
     applied.current = next;
+    // Still gliding → request the next frame (demand loop won't tick on its own).
+    if (next !== targetFactor) invalidate();
 
     // Re-apply the mesh only when the baked result would differ (factor moving, or a style/axis
     // switch). The feature overlay must also refresh when IT changed (angle slider rebuilt it, or

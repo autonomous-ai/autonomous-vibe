@@ -1,4 +1,4 @@
-import { useFrame } from "@react-three/fiber";
+import { useFrame, useThree } from "@react-three/fiber";
 import { type RefObject, useEffect, useRef } from "react";
 import { Box3, type Mesh, type Plane, Sphere, Vector3 } from "three";
 import { updateSectionPlanes } from "./sectionPlane";
@@ -27,6 +27,7 @@ interface SectionRigProps {
  */
 export function SectionRig({ meshRef, clipPlane, hiddenPlane, onRadius }: SectionRigProps) {
   const enabled = useCrossSectionStore((s) => s.enabled);
+  const invalidate = useThree((s) => s.invalidate);
   const bounds = useRef<SectionBounds | null>(null);
   const box = useRef(new Box3());
   const sphere = useRef(new Sphere());
@@ -36,6 +37,11 @@ export function SectionRig({ meshRef, clipPlane, hiddenPlane, onRadius }: Sectio
   useEffect(() => {
     bounds.current = null;
   }, [enabled]);
+
+  // On-demand loop: a slider drag mutates the store but doesn't re-render this rig (it reads
+  // params via getState in useFrame), so request a frame on every section change — that frame
+  // reruns useFrame and rewrites the clip planes. Cheap: only fires on user interaction.
+  useEffect(() => useCrossSectionStore.subscribe(() => invalidate()), [invalidate]);
 
   useFrame(() => {
     if (!enabled) return;

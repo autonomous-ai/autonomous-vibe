@@ -34,16 +34,20 @@ export function StudioLights({ meshRef }: { meshRef: RefObject<Mesh | null> }) {
   const rimRef = useRef<RectAreaLight>(null);
   const bottomRef = useRef<RectAreaLight>(null);
 
-  // Measure the model's top each frame — its base rests on y=0, so the world AABB's
-  // max.y is its height. Cheap (uses the geometry's cached bounding box) and only
-  // commits state on a real change, so it also picks up a model swap for free.
+  // Measure the model's top once per model — its base rests on y=0, so the world AABB's
+  // max.y is its height. The height only changes on a model swap, so measuring every frame
+  // (a subtree traversal + AABB compute) is wasted work; gate it on the geometry identity so
+  // it runs once when a new model settles and is skipped on every subsequent (orbit) frame.
   const box = useRef(new Box3());
+  const measuredFor = useRef<string | null>(null);
   const [modelTop, setModelTop] = useState(REFERENCE_HEIGHT);
   useFrame(() => {
     const mesh = meshRef.current;
     if (!mesh) return;
+    if (measuredFor.current === mesh.geometry.uuid) return;
     box.current.setFromObject(mesh);
     if (box.current.isEmpty()) return;
+    measuredFor.current = mesh.geometry.uuid;
     const top = box.current.max.y;
     if (Math.abs(top - modelTop) > 0.5) setModelTop(top);
   });

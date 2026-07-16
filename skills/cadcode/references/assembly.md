@@ -87,15 +87,20 @@ file writes are blocked by the sandbox, and they are unnecessary: returning the
 `cq.Assembly` (or a `{"children": [...]}` envelope / a `list` of parts) is the
 supported contract (in the Panda repo: `docs/panda-interfaces.md` §1).
 
-What you get on disk after `scripts/cad`:
+What you get on disk after `scripts/cad`. Run it with ``--stem
+<project>_assembled`` so the combined-all-parts file is self-describing (the STL
+is always the assembled scene — the name should say so):
 
-- `<project>.step` — **the archival deliverable.** Each part is preserved as
-  its own named, colored solid (XCAF labels), so it opens in FreeCAD / Fusion /
-  the slicer as separable bodies — not one fused lump.
-- `<project>.stl` — the assembled scene as a single mesh: the viewer's preview
-  and the printable mesh. cadpy writes **one** STL (the whole scene), not one
-  per part.
-- `<project>.step.json` — source hash, `is_solid`, `volume_mm3`, mesh tolerances.
+- `<project>_assembled.step` — **the archival deliverable.** Each part is
+  preserved as its own named, colored solid (XCAF labels), so it opens in FreeCAD
+  / Fusion / the slicer as separable bodies — not one fused lump.
+- `<project>_assembled.stl` — the assembled scene as a single mesh: the viewer's
+  preview and the printable mesh. cadpy writes **one** STL (the whole scene), not
+  one per part.
+- `<project>_assembled.step.json` — source hash, `is_solid`, `volume_mm3`, mesh
+  tolerances.
+
+(A single-part design combines nothing — keep the plain ``<project>`` stem.)
 
 Because the STL is the *assembled* scene, parts stacked in assembled position
 (lid on top of base) are not laid out for printing. If the user needs each part

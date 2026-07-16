@@ -405,6 +405,9 @@ python ~/.claude/skills/cadcode/scripts/check <input.py>
 Common flags on ``scripts/cad``:
 
 - ``--out-dir DIR``       where artifacts land (default: alongside input)
+- ``--stem NAME``         output filename stem (default: input/dir name). Use
+  ``<project>_assembled`` for a multi-part `cq.Assembly` so the combined-all-parts
+  file is self-describing — see step 5.
 - ``--mesh-tolerance MM`` linear meshing tolerance for the STL (default 0.05)
 - ``--angular-tolerance DEG``  angular meshing tolerance for the STL (default 3°)
 - ``--wall-clock-s S``    subprocess timeout (default 30; bump for complex parts)
@@ -483,6 +486,22 @@ python ~/.claude/skills/cadcode/scripts/cad <abs/path/to/file.py>
 
 This compiles, checks `is_solid`, exports STEP + STL + metadata, and prints
 a JSON line.
+
+**Naming the combined-all-parts file (multi-part designs).** When the design is
+a `cq.Assembly` — the returned 3D file combines every part into one assembled
+scene — name that output so its filename says so. Pass ``--stem
+<project>_assembled`` so cadpy writes ``<project>_assembled.step`` /
+``.stl`` / ``.step.json`` (and `scripts/review` writes into
+``<project>_assembled_review/``):
+
+```bash
+python ~/.claude/skills/cadcode/scripts/cad <abs/path/snap_lid_box>/ --stem snap_lid_box_assembled
+```
+
+The `_assembled` file is the **final assembled item** (all parts combined); the
+individual parts remain the separate named bodies inside that same `.step`. A
+**single-part** design combines nothing — keep the plain ``<project>`` stem, no
+suffix.
 
 ### 6. Read the failure (or the render)
 
@@ -764,7 +783,14 @@ Your final reply to the user MUST contain, in order:
 
 1. **One sentence** stating what you made (e.g., "Made a phone stand for an iPhone 15 Pro Max, 130mm tall, tilted 20°.").
 2. **Output path** — the STEP for archival inspection plus the STL absolute
-   path the user can drag into a slicer.
+   path the user can drag into a slicer. **For a multi-part / assembled design,
+   present the final assembled item separately from its component parts:** give
+   the assembled item (the whole-scene ``<project>_assembled.stl`` +
+   ``.step``, named via ``--stem`` — see step 5) as its own line first, then
+   list each named component part beneath it — name, what it is, and its
+   per-part view/STL from the STEP (`scripts/review` renders one PNG per part).
+   The final assembled item and its parts are **distinct deliverables** — never
+   collapse them into a single entry. A single-part design lists just the one item.
 3. **Bounding box + volume** so the user knows it'll fit on a 200×200mm bed.
 4. **Tweakable parameters** — the variables at the top of the `.py` and what they do.
 5. **Assumptions** — one or two bullets for anything geometry-changing you defaulted (case allowance, screw size, tilt direction).

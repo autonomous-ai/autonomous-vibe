@@ -15,6 +15,7 @@
   "dependencies": {
     "@react-three/drei": "^9.122.0",
     "@react-three/fiber": "^8.17.10",
+    "@react-three/postprocessing": "^2.19.1",
     "@tanstack/react-virtual": "^3.14.2",
     "@tauri-apps/api": "^2.11.0",
     "@vercel/blob": "^2.4.0",
@@ -25,6 +26,7 @@
     "highlight.js": "^11.11.1",
     "implicitjs": "file:./packages/implicitjs",
     "lucide-react": "^1.8.0",
+    "postprocessing": "6.35.6",
     "radix-ui": "^1.4.3",
     "react": "18.3.1",
     "react-dom": "18.3.1",

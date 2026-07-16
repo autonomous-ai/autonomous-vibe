@@ -22,10 +22,19 @@ import type {
   OrbitControls as OrbitControlsImpl,
   TrackballControls as TrackballControlsImpl,
 } from "three-stdlib";
+import { BloomEffects } from "./BloomEffects";
+import { ExplodeRig } from "./ExplodeRig";
 import { GRID_SIZE, GroundGrid } from "./GroundGrid";
+import { MeasureLayer } from "./MeasureLayer";
+import { ReflectiveFloor } from "./ReflectiveFloor";
 import { ScaleBox } from "./ScaleBox";
 import { SectionRig } from "./SectionRig";
-import { type RenderMode, type SectionSettings, StlModel } from "./StlModel";
+import {
+  type FeatureOverlay,
+  type RenderMode,
+  type SectionSettings,
+  StlModel,
+} from "./StlModel";
 import { useAppearanceStore } from "./appearance.store";
 import {
   DEFAULT_MATERIAL_PRESET,
@@ -107,6 +116,11 @@ export function ModelCanvas({
   const mode = useAppearanceStore((s) => s.mode) as RenderMode;
   const materialId = useAppearanceStore((s) => s.materialId);
   const controls = useAppearanceStore((s) => s.controls) as ControlMode;
+  const partColors = useAppearanceStore((s) => s.partColors);
+  const featureEdges = useAppearanceStore((s) => s.featureEdges);
+  const featureAngle = useAppearanceStore((s) => s.featureAngle);
+  const reflectiveFloor = useAppearanceStore((s) => s.reflectiveFloor);
+  const bloom = useAppearanceStore((s) => s.bloom);
   const material: MaterialPreset =
     MATERIAL_PRESETS.find((m) => m.id === materialId) ?? DEFAULT_MATERIAL_PRESET;
 
@@ -114,6 +128,9 @@ export function ModelCanvas({
   // Visible mesh handle — the section rig measures its world bounds and the cut cap
   // maps the world clip plane into its local space.
   const meshRef = useRef<Mesh | null>(null);
+  // Feature-edge overlay handle — published by <StlModel> when the outline is on, consumed by
+  // <ExplodeRig> so the creases explode with their parts instead of staying at the assembled pose.
+  const featureRef = useRef<FeatureOverlay | null>(null);
   // Live renderer handle for screenshots (populated by CaptureBridge inside <Canvas>).
   const glRef = useRef<WebGLRenderer | null>(null);
   // Cross-section tool state. The two clip planes are stable instances the rig mutates
@@ -237,8 +254,12 @@ export function ModelCanvas({
                   url={url}
                   mode={mode}
                   material={material}
+                  partColors={partColors}
+                  featureEdges={featureEdges}
+                  featureAngle={featureAngle}
                   section={section}
                   meshRef={meshRef}
+                  featureRef={featureRef}
                   onProgress={handleProgress}
                   onReady={handleReady}
                 />
@@ -252,6 +273,9 @@ export function ModelCanvas({
               hiddenPlane={hiddenPlane}
               onRadius={handleRadius}
             />
+            {/* Headless exploded-view controller: displaces the mesh's shared position buffer per
+                part on the CPU. Keyed by url so its shell labeling rebuilds when the model changes. */}
+            <ExplodeRig key={`explode-${url}`} meshRef={meshRef} featureRef={featureRef} />
             {/* Invisible flat box matching the ground grid's footprint, so <Bounds>
                 frames the default view to the whole grid. */}
             <mesh visible={false}>
@@ -259,9 +283,18 @@ export function ModelCanvas({
             </mesh>
             {showBed && <ScaleBox url={url} />}
           </Bounds>
+          {/* Dark glossy reflection floor beneath the grid (opt-in). OUTSIDE <Bounds>
+              for the same reason as the grid — its plane would otherwise inflate the fit.
+              Sits just below y=0 so the grid lines read on top of the reflection. */}
+          {reflectiveFloor && <ReflectiveFloor />}
           {/* Fixed-size ground grid the part rests on, always shown. Deliberately
               OUTSIDE <Bounds> so its phantom vertical extent can't wreck the fit. */}
           <GroundGrid />
+          {/* Point-to-point measurement overlay. At the Canvas root (outside <Bounds>/
+              <Center>) so its markers render at raw world coordinates — the frame the
+              raycaster returns — rather than inheriting the model's centring/rotation.
+              Reads the measure store for its enabled/points state; no-op until on. */}
+          <MeasureLayer meshRef={meshRef} />
         </Suspense>
 
         <CaptureBridge glRef={glRef} />
@@ -293,6 +326,11 @@ export function ModelCanvas({
             />
           </GizmoHelper>
         )}
+
+        {/* Bloom post-process (opt-in). Mounted last so the EffectComposer wraps the
+            fully-rendered scene; unmounted when off so the default single-pass render
+            path (and the renderer's own tone mapping) is used with no post overhead. */}
+        {bloom && <BloomEffects />}
       </Canvas>
 
       {!ready && <DownloadOverlay pct={pct} />}

@@ -1,4 +1,4 @@
-# Vibe Hardware: Create Magical Things by Chatting with AI
+# Vibe hardware: create magical things by chatting with AI
 
 With Vibe, it's this simple to make anything.
 
@@ -10,6 +10,12 @@ Send it straight to your printer. Clean, watertight parts that land on the bed r
 
 **3. Bring it to life:** 
 Pull it off the plate and into the world. The thing that only lived in your head — now in your hand.
+
+# Download the app
+
+https://autonomous.ai/vibe
+
+Available on Mac, Windows, Android, and iOS.
 
 https://github.com/user-attachments/assets/8a79be02-ea62-45d8-9db2-bfa7c33fb7e3
 

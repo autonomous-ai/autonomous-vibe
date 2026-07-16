@@ -209,8 +209,8 @@ jobs:
   # Finalize the single draft built above: drop any stray same-tag releases
   # (the empty *published* shadow an external process pre-creates, plus any
   # leftover drafts), rename the human-facing installers to plain-language names
-  # (users can't tell "aarch64" from "x64"), rebuild latest.json from the signed
-  # artifacts, then publish. Runs AFTER every build job and operates on the
+  # (users can't tell "aarch64" from "x64"), rewrite the Windows updater URL in
+  # latest.json, then publish. Runs AFTER every build job and operates on the
   # release BY ID (`needs.create-release.outputs.release_id`), never `gh release
   # view <tag>` — which is ambiguous when several releases share the tag.
   #
@@ -221,9 +221,8 @@ jobs:
   # The two macOS .app.tar.gz updater bundles are left untouched: nobody
   # downloads them by hand (Intel now ships a .dmg) and renaming them would
   # break the mac auto-updater. The Windows setup .exe IS the updater artifact,
-  # so after renaming it, latest.json is rebuilt to point the windows-* entry at
-  # the new name. Rebuilding (instead of patching tauri-action's upload) makes
-  # the feed always exist and always cover exactly the platforms that built.
+  # so after renaming it we rewrite the windows-* URLs inside latest.json and
+  # re-upload it.
   publish:
     needs: [create-release, release]
     runs-on: ubuntu-latest
@@ -247,7 +246,7 @@ jobs:
                 && echo "deleted stray release $id" || echo "could not delete $id"
             done
 
-      - name: Rename installers and (re)build latest.json
+      - name: Rename installers and patch latest.json
         shell: bash
         run: |
           set -euo pipefail
@@ -274,92 +273,26 @@ jobs:
           rename_suffix "_x64-setup.exe"      "Vibe-${VERSION}-Windows-Setup.exe"
           rename_suffix "_x64-setup.exe.sig"  "Vibe-${VERSION}-Windows-Setup.exe.sig"
 
-          # Rebuild latest.json from whatever updater artifacts actually landed in
-          # the release, rather than downloading-and-patching the one tauri-action
-          # uploaded. That per-matrix `includeUpdaterJson` upload can race
-          # (concurrent build jobs clobbering the same asset) or drop the file
-          # entirely — and the old `gh release download -p latest.json` then failed
-          # the whole publish under `set -e`, shipping a release with no updater
-          # feed so installed apps silently stopped updating. Reconstructing the
-          # feed here from the signed artifacts + their .sig guarantees latest.json
-          # ALWAYS exists and lists exactly the platforms that built. The Windows
-          # entry points at the renamed setup .exe; macOS .app.tar.gz names are
-          # unchanged. Now that only our release carries the tag, `gh release` by
-          # tag is unambiguous.
+          # The Windows updater downloads by the URL baked into latest.json, so
+          # point it at the renamed setup .exe. (macOS updater URLs are
+          # unchanged — the .app.tar.gz bundles were not renamed.) Now that only
+          # our release carries the tag, `gh release` by tag is unambiguous.
           mkdir -p dl
-          # Existing feed (if any) only carries over notes/pub_date; the platform
-          # map is always recomputed from artifacts. A missing file is fine.
-          gh release download "$TAG" -R "$REPO" -p latest.json -D dl --clobber || true
-          # Every updater signature so we can embed them.
-          gh release download "$TAG" -R "$REPO" -p '*.sig' -D dl --clobber || true
-
-          VERSION="$VERSION" python3 - <<'PY'
-          import datetime, json, os, subprocess
-
-          repo = os.environ["REPO"]; tag = os.environ["TAG"]
-          rel_id = os.environ["REL_ID"]; version = os.environ["VERSION"]
-
-          assets = json.loads(subprocess.check_output(
-              ["gh", "api", f"repos/{repo}/releases/{rel_id}/assets?per_page=100"]))
-
-          def url(name):
-              return f"https://github.com/{repo}/releases/download/{tag}/{name}"
-
-          def sig(name):
-              with open(os.path.join("dl", name + ".sig")) as f:
-                  return f.read().strip()
-
-          def artifact(suffix):
-              for a in assets:
-                  n = a["name"]
-                  if n.endswith(suffix) and not n.endswith(".sig"):
-                      return n
-              return None
-
-          # (Tauri updater platform key, updater-artifact name suffix). The
-          # Windows entry uses the renamed setup .exe (renamed just above).
-          spec = [
-              ("darwin-aarch64", "_aarch64.app.tar.gz"),
-              ("darwin-x86_64",  "_x64.app.tar.gz"),
-              ("windows-x86_64", f"Vibe-{version}-Windows-Setup.exe"),
-          ]
-          platforms = {}
-          for key, suffix in spec:
-              name = artifact(suffix)
-              if not name:
-                  print(f"skip {key}: no artifact ending in '{suffix}'")
-                  continue
-              try:
-                  platforms[key] = {"signature": sig(name), "url": url(name)}
-                  print(f"added {key}: {name}")
-              except FileNotFoundError:
-                  print(f"skip {key}: missing signature for {name}")
-
-          if not platforms:
-              raise SystemExit(
-                  "refusing to write an empty latest.json (no updater artifacts found)")
-
-          prev = {}
-          try:
-              with open("dl/latest.json") as f:
-                  prev = json.load(f)
-          except FileNotFoundError:
-              pass
-
-          data = {
-              "version": version,
-              "notes": prev.get("notes") or f"Vibe {version}",
-              "pub_date": prev.get("pub_date") or datetime.datetime.now(
-                  datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
-              "platforms": platforms,
-          }
-          with open("dl/latest.json", "w") as f:
+          gh release download "$TAG" -R "$REPO" -p latest.json -D dl --clobber
+          NEW_WIN_URL="https://github.com/${REPO}/releases/download/${TAG}/Vibe-${VERSION}-Windows-Setup.exe"
+          python3 - dl/latest.json "$NEW_WIN_URL" <<'PY'
+          import json, sys
+          path, new_url = sys.argv[1], sys.argv[2]
+          with open(path) as f:
+              data = json.load(f)
+          for key in ("windows-x86_64", "windows-x86_64-nsis"):
+              if key in data.get("platforms", {}):
+                  data["platforms"][key]["url"] = new_url
+          with open(path, "w") as f:
               json.dump(data, f, indent=2)
-          print("latest.json ->", json.dumps(data, indent=2))
           PY
-
           gh release upload "$TAG" -R "$REPO" dl/latest.json --clobber
-          echo "rebuilt and uploaded latest.json"
+          echo "patched latest.json windows-* url -> $NEW_WIN_URL"
 
       - name: Publish the release
         shell: bash

@@ -78,17 +78,19 @@ export default function ModelControl({ className }) {
     ? MODEL_CHOICES
     : localChoices;
 
-  const active = selectableChoices.some((choice) => choice.value === model)
+  // `model` is the persisted selection id. Free and Pro share a model but have
+  // distinct ids, so keying off id keeps them independently selectable.
+  const active = selectableChoices.some((choice) => choice.id === model)
     ? model
     : DEFAULT_MODEL;
 
   const pick = useCallback(
-    async (value) => {
-      if (busy || value === active) return;
+    async (id) => {
+      if (busy || id === active) return;
       setBusy(true);
       try {
-        const next = await transport.app_set_model(value);
-        setModel(next?.model ?? value);
+        const next = await transport.app_set_model(id);
+        setModel(next?.model ?? id);
       } catch {
         // Leave the prior selection in place on failure.
       } finally {
@@ -131,26 +133,26 @@ export default function ModelControl({ className }) {
         </DropdownMenuLabel>
         {localChoices.map((choice) => (
           <DropdownMenuItem
-            key={choice.value}
-            onSelect={() => void pick(choice.value)}
-            data-testid={`model-option-${choice.value}`}
+            key={choice.id}
+            onSelect={() => void pick(choice.id)}
+            data-testid={`model-option-${choice.id}`}
             className="justify-between gap-3"
           >
             <span>{choice.label}</span>
-            {choice.value === active ? <Check className="size-3.5" aria-hidden /> : null}
+            {choice.id === active ? <Check className="size-3.5" aria-hidden /> : null}
           </DropdownMenuItem>
         ))}
 
         <DropdownMenuSeparator />
         <DropdownMenuLabel className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Subscription
+          Vibe Subscription
         </DropdownMenuLabel>
         {proxyChoices.map((choice) => (
           <DropdownMenuItem
-            key={choice.value}
+            key={choice.id}
             onSelect={() => {
               if (signedInToPanda) {
-                void pick(choice.value);
+                void pick(choice.id);
               } else {
                 // Not subscribed: send them to the hosted plans page in the
                 // system browser (the desktop app has no in-app checkout).
@@ -159,8 +161,8 @@ export default function ModelControl({ className }) {
             }}
             data-testid={
               signedInToPanda
-                ? `model-option-${choice.value}`
-                : `model-option-${choice.value}-locked`
+                ? `model-option-${choice.id}`
+                : `model-option-${choice.id}-locked`
             }
             className="justify-between gap-3"
           >
@@ -172,7 +174,7 @@ export default function ModelControl({ className }) {
                 <ExternalLink className="size-3" aria-hidden />
               </span>
             )}
-            {signedInToPanda && choice.value === active ? (
+            {signedInToPanda && choice.id === active ? (
               <Check className="size-3.5" aria-hidden />
             ) : null}
           </DropdownMenuItem>

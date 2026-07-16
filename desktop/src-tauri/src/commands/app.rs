@@ -943,11 +943,26 @@ async fn store_oauth_token(token: &str) -> IpcResult<()> {
 /// `AppSettings.model` of `None` falls back to it in `build_command`.
 pub const LOCAL_MODEL_CHOICES: [&str; 2] = ["opus", "sonnet"];
 
-/// Signed-in proxy model (Panda account required). Today we only expose one.
-/// The value is a CCR-style `provider,model` string resolved by Panda's hosted
-/// proxy — it only works when the chat driver points `claude` at
-/// [`PANDA_PROXY_URL`] via `ANTHROPIC_BASE_URL` (see `claude_driver::proxy_env`).
+/// The CCR-style `provider,model` string the Panda proxy actually resolves. Both
+/// signed-in tiers below run this one model; the tier only affects quota, which
+/// the proxy enforces from the account's subscription. It only works when the
+/// chat driver points `claude` at [`PANDA_PROXY_URL`] via `ANTHROPIC_BASE_URL`
+/// (see `claude_driver::proxy_env`). The driver rewrites the selected tier key to
+/// this string before `--model` is passed to the child `claude`.
 pub const PROXY_MODEL_MINIMAX_M3: &str = "minimax,minimax/minimax-m3";
+
+/// Persisted selection keys for the signed-in proxy tiers (mirror the `vibe-free`
+/// / `vibe-pro` `id`s in modelChoices.js). They are distinct keys *only* so the
+/// composer can remember which tier was picked — both map to the same model
+/// ([`PROXY_MODEL_MINIMAX_M3`]).
+pub const PROXY_TIER_FREE: &str = "vibe-free";
+pub const PROXY_TIER_PRO: &str = "vibe-pro";
+pub const PROXY_TIER_KEYS: [&str; 2] = [PROXY_TIER_FREE, PROXY_TIER_PRO];
+
+/// True when `model` is one of the signed-in proxy tier keys.
+pub fn is_proxy_model(model: &str) -> bool {
+    PROXY_TIER_KEYS.contains(&model)
+}
 
 /// Panda's hosted Claude proxy. The chat driver sets this as `ANTHROPIC_BASE_URL`
 /// on the spawned `claude` when a signed-in user picks a proxy model, so the
@@ -959,7 +974,7 @@ pub const PANDA_PROXY_URL: &str = "https://api-panda.autonomous.ai";
 /// no trimming). `app_set_model` gates on this so settings can never hold an
 /// arbitrary `--model` string from a malformed IPC call.
 fn is_known_model(model: &str) -> bool {
-    LOCAL_MODEL_CHOICES.contains(&model) || model == PROXY_MODEL_MINIMAX_M3
+    LOCAL_MODEL_CHOICES.contains(&model) || is_proxy_model(model)
 }
 
 /// Whether a model is selectable right now, given the current Panda sign-in
@@ -969,7 +984,7 @@ pub fn is_model_available(model: &str) -> bool {
     if LOCAL_MODEL_CHOICES.contains(&model) {
         return true;
     }
-    if model == PROXY_MODEL_MINIMAX_M3 {
+    if is_proxy_model(model) {
         return crate::commands::social::social_has_token();
     }
     false
@@ -2307,7 +2322,15 @@ mod tests {
         for ok in LOCAL_MODEL_CHOICES {
             assert!(is_known_model(ok), "should accept {ok}");
         }
-        assert!(is_known_model(PROXY_MODEL_MINIMAX_M3));
+        for tier in PROXY_TIER_KEYS {
+            assert!(is_known_model(tier), "should accept {tier}");
+            assert!(is_proxy_model(tier), "should be a proxy tier: {tier}");
+        }
+        assert!(is_known_model(PROXY_TIER_FREE));
+        assert!(is_known_model(PROXY_TIER_PRO));
+        assert!(!is_proxy_model("opus"));
+        // The raw model arg is not a valid persisted selection key anymore.
+        assert!(!is_known_model(PROXY_MODEL_MINIMAX_M3));
         assert!(!is_known_model("gpt-4"));
         assert!(!is_known_model("opus "), "no trim — exact match only");
         assert!(!is_known_model(""));

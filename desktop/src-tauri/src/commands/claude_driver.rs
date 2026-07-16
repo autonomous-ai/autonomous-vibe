@@ -1457,16 +1457,22 @@ where
         .and_then(|s| s.model.clone())
         .filter(|m| crate::commands::app::is_model_available(m));
 
-    // Panda proxy models (e.g. `minimax,minimax/minimax-m3`) route the child
-    // `claude` through Panda's hosted proxy: obtain a fresh panda-social access
-    // token and append `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` to the env
-    // below. If the token can't be minted (session expired / offline), fall back
-    // to the local default model + host auth rather than run a proxy `--model`
-    // string against Anthropic's own API, which would fail.
+    // Panda proxy tiers (`vibe-free` / `vibe-pro`) route the child `claude`
+    // through Panda's hosted proxy: obtain a fresh panda-social access token and
+    // append `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` to the env below. If
+    // the token can't be minted (session expired / offline), fall back to the
+    // local default model + host auth rather than run a proxy `--model` string
+    // against Anthropic's own API, which would fail.
     let (model, proxy_token) =
-        if model.as_deref() == Some(crate::commands::app::PROXY_MODEL_MINIMAX_M3) {
+        if model.as_deref().is_some_and(crate::commands::app::is_proxy_model) {
             match crate::commands::social::proxy_access_token().await {
-                Some(token) => (model, Some(token)),
+                // Both proxy tiers (Free, Pro) resolve to the one hosted model
+                // string the proxy knows; the tier is only a UI/billing identity,
+                // so send `--model` for the real model regardless.
+                Some(token) => (
+                    Some(crate::commands::app::PROXY_MODEL_MINIMAX_M3.to_string()),
+                    Some(token),
+                ),
                 None => (None, None),
             }
         } else {

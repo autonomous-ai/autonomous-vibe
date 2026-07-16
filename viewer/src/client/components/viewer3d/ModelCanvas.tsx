@@ -43,6 +43,7 @@ import {
 } from "./materialPresets";
 import { useCrossSectionStore } from "./crossSection.store";
 import { useMediaQuery } from "./useMediaQuery";
+import { useViewerTheme } from "./useViewerTheme";
 
 /** Imperative handle the overlay calls to re-frame the model on its default view. */
 export type ResetViewerRef = MutableRefObject<(() => void) | null>;
@@ -121,6 +122,9 @@ export function ModelCanvas({
   const featureAngle = useAppearanceStore((s) => s.featureAngle);
   const reflectiveFloor = useAppearanceStore((s) => s.reflectiveFloor);
   const bloom = useAppearanceStore((s) => s.bloom);
+  // Theme-aware scene colors (background, grid, floor) — follow the app's light/dark
+  // theme so the viewer matches the surrounding chrome instead of being pinned dark.
+  const theme = useViewerTheme();
   const material: MaterialPreset =
     MATERIAL_PRESETS.find((m) => m.id === materialId) ?? DEFAULT_MATERIAL_PRESET;
 
@@ -231,10 +235,11 @@ export function ModelCanvas({
           glRef.current = gl;
         }}
       >
-        {/* Scene bg mirrors the FORGE --color-background token (#0E0F13). */}
-        <color attach="background" args={["#0E0F13"]} />
+        {/* Scene bg follows the app theme (--cad-viewer-bg): charcoal in dark, light gray
+            in light. Read via useViewerTheme so a live theme toggle recolors the canvas. */}
+        <color attach="background" args={[theme.background]} />
         <ambientLight intensity={0.75} />
-        <hemisphereLight intensity={0.4} groundColor="#0E0F13" />
+        <hemisphereLight intensity={0.4} groundColor={theme.background} />
         {/* Key light ~55° off vertical (≈35° elevation). */}
         <directionalLight position={[60, 55, 50]} intensity={1.2} />
         <directionalLight position={[-50, 20, -40]} intensity={0.45} />
@@ -286,10 +291,10 @@ export function ModelCanvas({
           {/* Dark glossy reflection floor beneath the grid (opt-in). OUTSIDE <Bounds>
               for the same reason as the grid — its plane would otherwise inflate the fit.
               Sits just below y=0 so the grid lines read on top of the reflection. */}
-          {reflectiveFloor && <ReflectiveFloor />}
+          {reflectiveFloor && <ReflectiveFloor color={theme.floor} />}
           {/* Fixed-size ground grid the part rests on, always shown. Deliberately
               OUTSIDE <Bounds> so its phantom vertical extent can't wreck the fit. */}
-          <GroundGrid />
+          <GroundGrid cellColor={theme.gridCell} sectionColor={theme.gridSection} />
           {/* Point-to-point measurement overlay. At the Canvas root (outside <Bounds>/
               <Center>) so its markers render at raw world coordinates — the frame the
               raycaster returns — rather than inheriting the model's centring/rotation.

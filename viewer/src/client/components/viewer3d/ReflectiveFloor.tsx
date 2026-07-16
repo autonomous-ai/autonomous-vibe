@@ -18,8 +18,9 @@ const FLOOR_Y = -0.05;
  *  the viewer overlay) because the extra render pass costs frame time.
  *
  *  Rendered OUTSIDE <Bounds> (like <GroundGrid>) so its plane geometry never inflates
- *  the camera fit. Sized to the grid footprint so the two line up. */
-export function ReflectiveFloor() {
+ *  the camera fit. Sized to the grid footprint so the two line up. The tint is
+ *  theme-aware (passed from ModelCanvas) and defaults to the dark-theme charcoal. */
+export function ReflectiveFloor({ color = FLOOR_COLOR }: { color?: string } = {}) {
   return (
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, FLOOR_Y, 0]}>
       <planeGeometry args={[GRID_SIZE, GRID_SIZE]} />
@@ -36,7 +37,7 @@ export function ReflectiveFloor() {
         depthScale={1.2}
         minDepthThreshold={0.4}
         maxDepthThreshold={1.4}
-        color={FLOOR_COLOR}
+        color={color}
         metalness={0.6}
         roughness={0.9}
       />

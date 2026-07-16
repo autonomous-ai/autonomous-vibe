@@ -98,6 +98,13 @@
   --gcode-axis-x: #dc2626;
   --gcode-axis-y: #16a34a;
   --gcode-axis-z: #2563eb;
+  /* CAD/STL viewer scene: theme-aware (light here, overridden in .dark). Read via
+     getComputedStyle in useViewerTheme and handed straight to WebGL, so every value
+     must be THREE.Color-parseable (hex or CSS named) — no oklch(). */
+  --cad-viewer-bg: #eceff3;
+  --cad-viewer-grid-cell: #c3c8d0;
+  --cad-viewer-grid-section: #9aa2ae;
+  --cad-viewer-floor: #d3d7dd;
   --ui-app-gradient: none;
   --ui-panel: var(--card);
   --ui-panel-strong: var(--muted);
@@ -201,6 +208,12 @@
   --gcode-viewer-bg: #09090b;
   --gcode-extrusion: hotpink;
   --gcode-travel: #990000;
+  /* CAD/STL viewer scene (dark): the original fixed charcoal backdrop, grid, and
+     reflection floor, so dark mode renders exactly as before. */
+  --cad-viewer-bg: #0e0f13;
+  --cad-viewer-grid-cell: #4b5563;
+  --cad-viewer-grid-section: #8a93a2;
+  --cad-viewer-floor: #08090c;
   --gcode-axis-x: #fa584f;
   --gcode-axis-y: #5ce97b;
   --gcode-axis-z: #5483ff;

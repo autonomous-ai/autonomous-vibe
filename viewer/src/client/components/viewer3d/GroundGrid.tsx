@@ -23,18 +23,25 @@ const FADE_STRENGTH = 0.5;
 
 /** A fixed-size ground grid at y=0 for the model to rest on. Always shown in 3D view.
  *  Constant dimensions (not derived from the model) so the floor stays a consistent
- *  reference and the cell spacing doesn't change between designs. */
-export function GroundGrid() {
+ *  reference and the cell spacing doesn't change between designs. Line colors are
+ *  theme-aware (passed from ModelCanvas); they default to the dark-theme values. */
+export function GroundGrid({
+  cellColor = CELL_COLOR,
+  sectionColor = SECTION_COLOR,
+}: {
+  cellColor?: string;
+  sectionColor?: string;
+} = {}) {
   return (
     <Grid
       position={[0, 0, 0]}
       args={[GRID_SIZE, GRID_SIZE]}
       cellSize={CELL_SIZE}
       cellThickness={0.5}
-      cellColor={CELL_COLOR}
+      cellColor={cellColor}
       sectionSize={SECTION_SIZE}
       sectionThickness={0.5}
-      sectionColor={SECTION_COLOR}
+      sectionColor={sectionColor}
       fadeDistance={FADE_DISTANCE}
       fadeStrength={FADE_STRENGTH}
       infiniteGrid={false}

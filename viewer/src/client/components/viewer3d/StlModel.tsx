@@ -222,9 +222,13 @@ export function StlModel({
   // opening shows lit interior walls even where the cap doesn't fill (holes/cavities).
   const clip = section ? [section.clipPlane] : null;
 
+  // Cast/receive shadows only in the lit solid view — x-ray and wireframe use unlit
+  // materials, so a solid cast shadow beneath them would read wrong.
+  const solid = mode === "solid";
+
   return (
     <>
-      <mesh ref={meshRef} geometry={shaded}>
+      <mesh ref={meshRef} geometry={shaded} castShadow={solid} receiveShadow={solid}>
         {mode === "xray" ? (
           // Fresnel glow, additive so stacked walls brighten and depthWrite off so the
           // shell never occludes itself — you see straight through to the far side.
@@ -243,15 +247,20 @@ export function StlModel({
           // model reads as a bare CAD schematic. No lighting so the color stays crisp.
           <meshBasicMaterial color={WIREFRAME_COLOR} wireframe clippingPlanes={clip} />
         ) : (
-          // With part colors on, the per-vertex hues drive the color (base white so they
-          // show at full strength) while the preset's finish (metalness/roughness) stays.
-          // key toggles a fresh material so the `vertexColors` shader define recompiles.
-          <meshStandardMaterial
+          // Physical (not standard) so the paint gets a clearcoat top layer and samples
+          // the studio Environment for reflections — the studio-render look. With part
+          // colors on, the per-vertex hues drive the color (base white so they show at full
+          // strength) while the preset's finish (metalness/clearcoat) stays. key toggles a
+          // fresh material so the `vertexColors` shader define recompiles.
+          <meshPhysicalMaterial
             key={hasPartColors ? "vertex-colors" : "solid"}
             color={hasPartColors ? "#ffffff" : material.color}
             vertexColors={hasPartColors}
             metalness={material.metalness}
             roughness={material.roughness}
+            clearcoat={material.clearcoat}
+            clearcoatRoughness={material.clearcoatRoughness}
+            envMapIntensity={material.envMapIntensity}
             side={section ? DoubleSide : FrontSide}
             clippingPlanes={clip}
             // Push faces slightly back so coplanar feature lines win the depth test
@@ -275,10 +284,13 @@ export function StlModel({
           material still reads as context. Off by default (the half is fully cut away). */}
       {section?.showHiddenHalf && (
         <mesh geometry={shaded}>
-          <meshStandardMaterial
+          <meshPhysicalMaterial
             color={material.color}
             metalness={material.metalness}
             roughness={material.roughness}
+            clearcoat={material.clearcoat}
+            clearcoatRoughness={material.clearcoatRoughness}
+            envMapIntensity={material.envMapIntensity}
             transparent
             opacity={section.hiddenOpacity}
             depthWrite={false}

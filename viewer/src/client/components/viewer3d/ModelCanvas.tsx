@@ -1,8 +1,11 @@
 import {
   Bounds,
   Center,
+  ContactShadows,
+  Environment,
   GizmoHelper,
   GizmoViewcube,
+  Lightformer,
   OrbitControls,
   TrackballControls,
   useBounds,
@@ -17,7 +20,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { type DirectionalLight, type Mesh, Plane, Vector3, type WebGLRenderer } from "three";
+import { ACESFilmicToneMapping, type Mesh, Plane, Vector3, type WebGLRenderer } from "three";
 import type {
   OrbitControls as OrbitControlsImpl,
   TrackballControls as TrackballControlsImpl,
@@ -41,6 +44,7 @@ import {
   MATERIAL_PRESETS,
   type MaterialPreset,
 } from "./materialPresets";
+import { StudioLights } from "./StudioLights";
 import { useCrossSectionStore } from "./crossSection.store";
 import { useMediaQuery } from "./useMediaQuery";
 import { useViewerTheme } from "./useViewerTheme";
@@ -225,9 +229,19 @@ export function ModelCanvas({
     <div className="absolute inset-0 h-full w-full">
       <Canvas
         dpr={[1, 2]}
+        // Soft shadow maps (PCFSoftShadowMap) so the directional fill's cast shadow reads
+        // as a soft-edged studio shadow, not a hard jagged one.
+        shadows="soft"
         camera={{ position: DEFAULT_CAMERA_POSITION, fov: 45, near: 0.1, far: 5000 }}
-        // preserveDrawingBuffer so the toolbar's screenshot can read the canvas.
-        gl={{ antialias: true, preserveDrawingBuffer: true }}
+        // preserveDrawingBuffer so the toolbar's screenshot can read the canvas. ACES
+        // Filmic tone mapping + a touch of exposure gives highlights a soft filmic rolloff
+        // (chrome/steel don't clip to flat white) — the studio-render grade.
+        gl={{
+          antialias: true,
+          preserveDrawingBuffer: true,
+          toneMapping: ACESFilmicToneMapping,
+          toneMappingExposure: 1.05,
+        }}
         // Enable per-material clipping planes so the cross-section tool can slice the
         // mesh on the GPU (no geometry rebuilds).
         onCreated={({ gl }) => {
@@ -238,14 +252,29 @@ export function ModelCanvas({
         {/* Scene bg follows the app theme (--cad-viewer-bg): charcoal in dark, light gray
             in light. Read via useViewerTheme so a live theme toggle recolors the canvas. */}
         <color attach="background" args={[theme.background]} />
-        <ambientLight intensity={0.75} />
-        <hemisphereLight intensity={0.4} groundColor={theme.background} />
-        {/* Key light ~55° off vertical (≈35° elevation). */}
-        <directionalLight position={[60, 55, 50]} intensity={1.2} />
-        <directionalLight position={[-50, 20, -40]} intensity={0.45} />
-        {/* Headlight pinned to the camera so the model stays lit from the viewer's
-            angle no matter how it's tumbled. */}
-        <Headlight intensity={0.9} />
+        {/* Procedural studio environment: emissive Lightformer panels baked once into an
+            env map (frames={1}) that lights the physical materials with soft IBL and paints
+            long streak highlights across metallic surfaces — the studio-softbox look without
+            shipping an HDRI. background={false} keeps the theme-aware scene color as the
+            visible backdrop; this only feeds reflections/lighting (so metals aren't black). */}
+        <Environment frames={1} resolution={256} background={false}>
+          {/* Broad top softbox — the primary streak that rakes down the body. */}
+          <Lightformer
+            intensity={2.2}
+            form="rect"
+            position={[0, 5, 0]}
+            scale={[10, 4, 1]}
+            rotation={[Math.PI / 2, 0, 0]}
+          />
+          {/* Front-right key panel. */}
+          <Lightformer intensity={1.4} form="rect" position={[5, 2, 5]} scale={[4, 6, 1]} />
+          {/* Back-left rim panel — a bright edge highlight on the silhouette. */}
+          <Lightformer intensity={1.0} form="rect" position={[-6, 3, -4]} scale={[5, 6, 1]} />
+        </Environment>
+        {/* Studio lighting rig on top of the Environment IBL: two RectAreaLight panels
+            (key + rim) that paint the streak highlights on glossy materials, plus a single
+            DirectionalLight fill that is the only shadow caster. */}
+        <StudioLights meshRef={meshRef} />
 
         <Suspense fallback={null}>
           {/* key={url} → re-suspend + re-frame when the selected design changes. */}
@@ -292,9 +321,29 @@ export function ModelCanvas({
               for the same reason as the grid — its plane would otherwise inflate the fit.
               Sits just below y=0 so the grid lines read on top of the reflection. */}
           {reflectiveFloor && <ReflectiveFloor color={theme.floor} />}
+          {/* Invisible catcher for the DirectionalLight's cast shadow — RectAreaLights
+              can't cast, so this is where the model's shadow lands. shadowMaterial is
+              transparent except where shadowed. At y=0 under the model, OUTSIDE <Bounds>
+              (like the grid) so its plane never inflates the camera fit. */}
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.001, 0]} receiveShadow>
+            <planeGeometry args={[GRID_SIZE, GRID_SIZE]} />
+            <shadowMaterial transparent opacity={0.35} />
+          </mesh>
           {/* Fixed-size ground grid the part rests on, always shown. Deliberately
               OUTSIDE <Bounds> so its phantom vertical extent can't wreck the fit. */}
           <GroundGrid cellColor={theme.gridCell} sectionColor={theme.gridSection} />
+          {/* Soft contact shadow anchoring the part to the floor — a blurred projection of
+              the model at its base (y=0), giving weight the flat grid alone can't. OUTSIDE
+              <Bounds> for the same reason as the grid. */}
+          <ContactShadows
+            position={[0, 0.02, 0]}
+            scale={GRID_SIZE}
+            resolution={1024}
+            far={GRID_SIZE}
+            blur={2.5}
+            opacity={0.55}
+            color="#000000"
+          />
           {/* Point-to-point measurement overlay. At the Canvas root (outside <Bounds>/
               <Center>) so its markers render at raw world coordinates — the frame the
               raycaster returns — rather than inheriting the model's centring/rotation.
@@ -354,17 +403,6 @@ function CaptureBridge({ glRef }: { glRef: MutableRefObject<WebGLRenderer | null
     };
   }, [gl, glRef]);
   return null;
-}
-
-/** A directional light that tracks the camera each frame, so its beam always comes
- *  from the viewer's direction and points at the model (parked at the origin by
- *  <Center>). */
-function Headlight({ intensity = 0.9 }: { intensity?: number }) {
-  const lightRef = useRef<DirectionalLight>(null);
-  useFrame((state) => {
-    lightRef.current?.position.copy(state.camera.position);
-  });
-  return <directionalLight ref={lightRef} intensity={intensity} />;
 }
 
 /** Spinner + live byte-progress shown over the canvas while the STL downloads. */

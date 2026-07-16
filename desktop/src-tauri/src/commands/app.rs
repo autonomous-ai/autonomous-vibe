@@ -941,7 +941,7 @@ async fn store_oauth_token(token: &str) -> IpcResult<()> {
 /// Local Claude models the chat composer's switcher offers. The stored value is
 /// the exact string passed to `claude --model`. `opus` is the default —
 /// `AppSettings.model` of `None` falls back to it in `build_command`.
-pub const LOCAL_MODEL_CHOICES: [&str; 2] = ["opus", "sonnet"];
+pub const LOCAL_MODEL_CHOICES: [&str; 3] = ["opus", "sonnet", "fable"];
 
 /// The CCR-style `provider,model` string the Panda proxy actually resolves. Both
 /// signed-in tiers below run this one model; the tier only affects quota, which

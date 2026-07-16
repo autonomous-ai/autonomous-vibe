@@ -11,7 +11,7 @@ import {
 test("MODEL_CHOICES lists the selectable models with the default first", () => {
   assert.deepEqual(
     MODEL_CHOICES.map((c) => c.id),
-    ["opus", "sonnet", "vibe-free", "vibe-pro"],
+    ["opus", "sonnet", "fable", "vibe-free", "vibe-pro"],
   );
   assert.equal(MODEL_CHOICES[0].id, DEFAULT_MODEL);
 });
@@ -29,11 +29,11 @@ test("Free and Pro are distinct rows that share one underlying model value", () 
 test("availableModelChoices hides proxy models unless signed in", () => {
   assert.deepEqual(
     availableModelChoices({ signedInToPanda: false }).map((c) => c.value),
-    ["opus", "sonnet"],
+    ["opus", "sonnet", "fable"],
   );
   assert.deepEqual(
     availableModelChoices({ signedInToPanda: true }).map((c) => c.id),
-    ["opus", "sonnet", "vibe-free", "vibe-pro"],
+    ["opus", "sonnet", "fable", "vibe-free", "vibe-pro"],
   );
 });
 

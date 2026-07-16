@@ -13,6 +13,7 @@
 export const MODEL_CHOICES = [
   { id: "opus", value: "opus", label: "Opus", requiresPandaSignIn: false },
   { id: "sonnet", value: "sonnet", label: "Sonnet", requiresPandaSignIn: false },
+  { id: "fable", value: "fable", label: "Fable", requiresPandaSignIn: false },
   { id: "vibe-free", value: "minimax,minimax/minimax-m3", label: "Free", requiresPandaSignIn: true },
   { id: "vibe-pro", value: "minimax,minimax/minimax-m3", label: "Pro", requiresPandaSignIn: true },
 ];

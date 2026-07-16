@@ -1,13 +1,15 @@
 name: release
 
-# Tag-triggered signed release with auto-update artifacts.
+# Two-phase signed release with auto-update artifacts.
 #
-# Pushing a tag like `v0.1.1` builds Vibe on every target platform, signs each
-# bundle with the Apple Developer ID identity (notarized + stapled) and the
-# updater key, and publishes a GitHub Release containing the installers plus
-# `latest.json`. Installed apps poll
-# `releases/latest/download/latest.json` (see tauri.conf.json → plugins.updater)
-# and auto-update to the new signed bundle.
+# 1. Push a tag like `v0.1.1` -> build Vibe on every target platform, sign each
+#    bundle with the Apple Developer ID identity (notarized + stapled) and the
+#    updater key, and upload the installers + `latest.json` into a DRAFT release.
+#    Nothing goes live yet, so installed apps keep updating off the prior release.
+# 2. Publish that draft (GitHub UI "Publish release", or the API) -> finalize it:
+#    rename the installers, patch `latest.json`, and mark it latest. Installed
+#    apps poll `releases/latest/download/latest.json` (see tauri.conf.json ->
+#    plugins.updater) and auto-update to the new signed bundle.
 #
 # Required repo secrets (Settings → Secrets and variables → Actions):
 #   TAURI_SIGNING_PRIVATE_KEY           contents of the updater private key
@@ -20,9 +22,14 @@ name: release
 # GITHUB_TOKEN is provided automatically and needs `contents: write` (below).
 
 on:
+  # Phase 1 — pushing a tag builds every platform into a DRAFT release (no publish).
   push:
     tags:
       - "v*"
+  # Phase 2 — publishing that draft (GitHub UI "Publish release", or the API)
+  # finalizes it: rename installers, patch latest.json, mark latest.
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -37,6 +44,8 @@ jobs:
   # shadows them (`gh release view <tag>` resolves to the published empty one).
   # The publish job below is the sole writer that finalizes and publishes.
   create-release:
+    # Phase 1 (tag push) only — the release event has no draft to create.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.create.outputs.release_id }}
@@ -66,6 +75,9 @@ jobs:
           echo "release_id=$id" >> "$GITHUB_OUTPUT"
 
   release:
+    # Phase 1 (tag push) only — building happens when the tag lands, not when
+    # the draft is published.
+    if: github.event_name == 'push'
     needs: create-release
     strategy:
       fail-fast: false
@@ -206,13 +218,14 @@ jobs:
           # for diagnosing any future DMG packaging failure.
           args: --verbose --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
-  # Finalize the single draft built above: drop any stray same-tag releases
-  # (the empty *published* shadow an external process pre-creates, plus any
-  # leftover drafts), rename the human-facing installers to plain-language names
-  # (users can't tell "aarch64" from "x64"), rewrite the Windows updater URL in
-  # latest.json, then publish. Runs AFTER every build job and operates on the
-  # release BY ID (`needs.create-release.outputs.release_id`), never `gh release
-  # view <tag>` — which is ambiguous when several releases share the tag.
+  # Phase 2 — finalize the release the moment its draft is published: drop any
+  # stray same-tag releases (leftover drafts, or an empty *published* shadow an
+  # external process pre-creates), rename the human-facing installers to
+  # plain-language names (users can't tell "aarch64" from "x64"), rewrite the
+  # Windows updater URL in latest.json, then mark it latest. Triggered by the
+  # `release: published` event and operates on the release BY ID straight from
+  # the event payload (`github.event.release.id`), never `gh release view <tag>`
+  # — which is ambiguous when several releases share the tag.
   #
   #   Vibe_<ver>_aarch64.dmg         -> Vibe-<ver>-macOS-Apple-Silicon.dmg
   #   Vibe_<ver>_x64.dmg             -> Vibe-<ver>-macOS-Intel.dmg
@@ -224,13 +237,16 @@ jobs:
   # so after renaming it we rewrite the windows-* URLs inside latest.json and
   # re-upload it.
   publish:
-    needs: [create-release, release]
+    # Phase 2 (release publish) only — fired when the draft built in phase 1 is
+    # published. Reads the released tag + id from the event payload, so it needs
+    # neither create-release nor the build matrix.
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
-      TAG: ${{ github.ref_name }}
-      REL_ID: ${{ needs.create-release.outputs.release_id }}
+      TAG: ${{ github.event.release.tag_name }}
+      REL_ID: ${{ github.event.release.id }}
     steps:
       - name: Drop stray same-tag releases
         shell: bash
@@ -294,10 +310,13 @@ jobs:
           gh release upload "$TAG" -R "$REPO" dl/latest.json --clobber
           echo "patched latest.json windows-* url -> $NEW_WIN_URL"
 
-      - name: Publish the release
+      - name: Mark release as latest
         shell: bash
         run: |
           set -euo pipefail
+          # The release event already flipped this out of draft; ensure it also
+          # carries the "latest" flag so releases/latest/download/latest.json
+          # resolves here (a UI publish without "set as latest" wouldn't).
           gh api --method PATCH "repos/${REPO}/releases/${REL_ID}" \
-            -F draft=false -f make_latest=true >/dev/null
-          echo "published release ${REL_ID} for ${TAG}"
+            -f make_latest=true >/dev/null
+          echo "marked release ${REL_ID} (${TAG}) as latest"

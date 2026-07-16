@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import type { ControlMode } from "./ModelCanvas";
-import { DEFAULT_MATERIAL_PRESET } from "./materialPresets";
 import type { RenderMode } from "./StlModel";
 
 /** Viewer preferences the user last chose — the shading mode (solid/x-ray), the
@@ -45,7 +44,7 @@ export const useAppearanceStore = create<AppearanceState>()(
   persist(
     (set) => ({
       mode: "solid",
-      materialId: DEFAULT_MATERIAL_PRESET.id,
+      materialId: "steel",
       controls: "trackball",
       reflectiveFloor: false,
       bloom: false,
@@ -65,6 +64,16 @@ export const useAppearanceStore = create<AppearanceState>()(
     {
       name: "panda-viewer-appearance",
       storage: createJSONStorage(() => localStorage),
+      // Bump when the default look changes so it reaches installs with a saved store.
+      // v1: steel material + random part colors as the new defaults — drop those two
+      // persisted fields on upgrade so they fall back to the current defaults once,
+      // while every other saved preference (mode, controls, edges…) is preserved.
+      version: 1,
+      migrate: (persisted) => {
+        const { materialId: _materialId, partColors: _partColors, ...rest } =
+          (persisted as Record<string, unknown>) ?? {};
+        return rest;
+      },
       partialize: (s) => ({
         mode: s.mode,
         materialId: s.materialId,

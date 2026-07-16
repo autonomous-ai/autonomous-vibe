@@ -53,8 +53,15 @@ pub fn install_bundled_skills(app: &tauri::AppHandle) {
         eprintln!("[panda] no bundled skills found; skipping skill install");
         return;
     };
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-        eprintln!("[panda] HOME unset; skipping skill install");
+    // Windows has no HOME by default; fall back to USERPROFILE like the
+    // `claude` CLI itself (and `install_panda_mcp_config` below) do. Without
+    // this, skill install silently no-ops on Windows and the chat→CAD flow
+    // finds no bundled skills.
+    let Some(home) = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+    else {
+        eprintln!("[panda] HOME/USERPROFILE unset; skipping skill install");
         return;
     };
     let dst = home.join(".claude").join("skills");

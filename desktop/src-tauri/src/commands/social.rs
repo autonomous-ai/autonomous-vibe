@@ -897,6 +897,19 @@ fn has_model(workspace: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Absolute path to this project's Claude chat-history transcript
+/// (`~/.claude/projects/<encoded-cwd>/<session>.jsonl`). The session id is the
+/// same deterministic per-project UUID the chat driver resumes, so this points
+/// at the exact JSONL for this project. `None` when the workspace has no
+/// directory name or the home dir can't be resolved; the file itself may still
+/// be absent (a project that never chatted), which the caller treats as "no
+/// transcript".
+fn project_session_jsonl(workspace: &Path) -> Option<std::path::PathBuf> {
+    let project_id = workspace.file_name()?.to_string_lossy().into_owned();
+    let session_id = crate::commands::chat::session_id_for_project(&project_id).to_string();
+    crate::commands::claude_driver::session_jsonl_path(workspace, &session_id)
+}
+
 /// Append a line to the central import log (`<app-data>/social-import.log`) and
 /// stderr. The log file makes imports inspectable even when the app is launched
 /// from Finder/Dock, where stderr goes nowhere (see the launch-PATH footgun).
@@ -1076,7 +1089,23 @@ fn zip_workspace(workspace: &Path) -> anyhow::Result<Vec<u8>> {
 
     let mut file_count = 0usize;
     let mut raw_bytes = 0u64;
-    for entry in WalkDir::new(workspace).into_iter().filter_map(Result::ok) {
+    let mut skipped = 0usize;
+    // `follow_links` so symlinked files (and directories) are included rather
+    // than silently dropped — a plain `is_file()` is false for a symlink, so
+    // without this any symlinked content would never make it into the zip.
+    // walkdir detects link cycles and surfaces them as an `Err` entry, which
+    // the match below skips gracefully.
+    for step in WalkDir::new(workspace).follow_links(true) {
+        // A directory we can't traverse (permissions, a broken link) must not
+        // silently vanish from the archive — log it and keep going.
+        let entry = match step {
+            Ok(e) => e,
+            Err(e) => {
+                skipped += 1;
+                log_line(&format!("zip: skipping unreadable path: {e}"));
+                continue;
+            }
+        };
         if !entry.file_type().is_file() {
             continue;
         }
@@ -1093,11 +1122,56 @@ fn zip_workspace(workspace: &Path) -> anyhow::Result<Vec<u8>> {
         }
 
         let rel_str = rel.to_string_lossy().replace('\\', "/");
-        let bytes = std::fs::read(path)?;
+        // A single unreadable/vanished file must NOT abort the whole publish:
+        // the workspace can be in flux (snapshots, temp files) and one locked
+        // or removed file would otherwise sink the entire upload. Skip it and
+        // keep zipping the rest.
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                skipped += 1;
+                log_line(&format!("zip: skipping {rel_str}: {e}"));
+                continue;
+            }
+        };
         raw_bytes += bytes.len() as u64;
-        writer.start_file(rel_str, options)?;
-        writer.write_all(&bytes)?;
+        if let Err(e) = writer
+            .start_file(rel_str.clone(), options)
+            .and_then(|()| writer.write_all(&bytes).map_err(Into::into))
+        {
+            // Compression failure on one entry is likewise non-fatal.
+            skipped += 1;
+            log_line(&format!("zip: skipping {rel_str}: {e}"));
+            continue;
+        }
         file_count += 1;
+    }
+
+    // The Claude chat-history transcript lives OUTSIDE the workspace tree
+    // (`~/.claude/projects/<encoded-cwd>/<session>.jsonl`), so the walk above
+    // never sees it, and the in-workspace copy is under `.panda/` (excluded).
+    // Resolve it explicitly and add it at the archive root as
+    // `conversation.jsonl` so a published design carries its conversation.
+    // Best-effort: a missing/unreadable transcript is simply omitted.
+    if let Some(session_path) = project_session_jsonl(workspace) {
+        match std::fs::read(&session_path) {
+            Ok(bytes) => {
+                raw_bytes += bytes.len() as u64;
+                if writer
+                    .start_file("conversation.jsonl", options)
+                    .and_then(|()| writer.write_all(&bytes).map_err(Into::into))
+                    .is_ok()
+                {
+                    file_count += 1;
+                } else {
+                    log_line("zip: failed to add conversation.jsonl");
+                }
+            }
+            Err(e) => log_line(&format!(
+                "zip: no chat transcript at {}: {e}",
+                session_path.display()
+            )),
+        }
     }
 
     if file_count == 0 {
@@ -1106,9 +1180,14 @@ fn zip_workspace(workspace: &Path) -> anyhow::Result<Vec<u8>> {
     let cursor = writer.finish()?;
     let zip_bytes = cursor.into_inner();
     log_line(&format!(
-        "zipped whole project: {file_count} files, {} → {} compressed",
+        "zipped whole project: {file_count} files, {} → {} compressed{}",
         human_bytes(raw_bytes),
         human_bytes(zip_bytes.len() as u64),
+        if skipped > 0 {
+            format!(" ({skipped} unreadable path(s) skipped)")
+        } else {
+            String::new()
+        },
     ));
     if zip_bytes.len() as u64 > 50 * 1024 * 1024 {
         log_line(&format!(
@@ -1366,6 +1445,34 @@ mod tests {
         // Only the bloat/version store and OS cruft are dropped.
         assert!(!names.iter().any(|n| n.contains(".panda")));
         assert!(!names.contains(&".DS_Store".to_string()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A symlinked file must be uploaded, not silently dropped — without
+    /// `follow_links` a symlink's `file_type().is_file()` is false and its
+    /// content never enters the zip. Unix-only (symlink semantics).
+    #[cfg(unix)]
+    #[test]
+    fn zips_symlinked_files() {
+        let dir = std::env::temp_dir().join(format!("panda-social-symlink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("real.py"), b"def gen_step(): ...").unwrap();
+        // A file that is actually a symlink to sibling content.
+        let target = dir.join("real.py");
+        std::os::unix::fs::symlink(&target, dir.join("linked.py")).unwrap();
+
+        let bytes = zip_workspace(&dir).unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+        assert!(names.contains(&"real.py".to_string()));
+        assert!(
+            names.contains(&"linked.py".to_string()),
+            "symlinked file must be included, got {names:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

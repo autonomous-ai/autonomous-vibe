@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  CheckCircle2,
   ExternalLink,
   Laptop,
   Loader2,
@@ -49,6 +48,10 @@ export default function WelcomeScreen({ onComplete }) {
   const [codeInput, setCodeInput] = useState("");
   const [submittingCode, setSubmittingCode] = useState(false);
   const [finishing, setFinishing] = useState(false);
+  // Bring-your-own Claude Code is the secondary path — kept collapsed behind a
+  // "Have Claude Code? Start here." link so the default screen stays focused on
+  // the primary Sign in action.
+  const [showOwnClaude, setShowOwnClaude] = useState(false);
 
   const welcomeRef = useRef(null);
   const activeFlowRef = useRef(null);
@@ -277,74 +280,73 @@ export default function WelcomeScreen({ onComplete }) {
     ? describeSocialLoginProgress(socialProgress)
     : null;
 
+  // Reveal the Claude Code panel once the user opts in, and keep it open
+  // whenever a local flow is live (progress, error, or ready-to-connect) so
+  // its controls never vanish mid-sign-in.
+  const ownExpanded =
+    showOwnClaude ||
+    canUseOwn ||
+    localState !== "idle" ||
+    Boolean(localProgressLabel) ||
+    Boolean(localError);
+
   return (
     <div
       role="dialog"
       aria-label="Welcome to Vibe"
       className="fixed inset-0 z-50 flex items-center justify-center bg-background/95 p-4"
     >
-      <div className="w-full max-w-xl rounded-lg border border-border bg-background p-6 shadow-xl">
-        <header className="flex flex-col gap-1">
-          <h1 className="text-2xl font-semibold">Welcome to Vibe</h1>
-          <p className="text-sm text-muted-foreground">
-            Vibe turns a chat into a printable model. Sign in with Vibe or
-            connect your own Claude Code to get started.
-          </p>
+      <div className="w-full max-w-md rounded-lg border border-border bg-background p-8 shadow-xl">
+        <header className="flex flex-col gap-1 text-center">
+          <Sparkles className="mx-auto size-7 text-emerald-600" />
+          <h1 className="mt-3 text-2xl font-semibold">
+            Create magical things by chatting with AI.
+          </h1>
         </header>
 
-        {/* Readiness — plain language, no CLI / version / auth jargon. Re-check
-            sits on the same line, right-aligned, so it reads as "refresh this
-            status" rather than a stray bottom action. */}
-        <div className="mt-4 flex flex-col gap-1 rounded-md border border-border bg-muted/30 p-3 text-sm">
-          <div className="flex items-center justify-between gap-3">
-            {checking ? (
-              <span className="flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="size-4 animate-spin" /> Getting things ready…
-              </span>
-            ) : canUseOwn ? (
-              <span className="flex items-center gap-2">
-                <CheckCircle2 className="size-4 text-emerald-600" /> Claude Code
-                detected — you’re ready to create
-              </span>
-            ) : (
-              <span className="flex items-center gap-2 text-muted-foreground">
-                <CheckCircle2 className="size-4 text-muted-foreground/40" />{" "}
-                Connect your own Claude Code below to get started.
-              </span>
-            )}
-            {/* Only offer Re-check while not yet ready — once Claude Code is
-                detected and signed in, refreshing the status is pointless. */}
-            {!checking && !canUseOwn ? (
+        {/* Primary action: Sign in with Vibe. */}
+        <div className="mt-8 flex flex-col gap-3">
+          {pandaSignedIn ? (
+            <Button
+              variant="default"
+              size="lg"
+              onClick={() => void finish()}
+              disabled={anyBusy || checking}
+              data-testid="continue-with-panda"
+            >
+              {finishing ? "Finishing…" : "Continue"}
+            </Button>
+          ) : (
+            <>
               <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => void runDetect()}
-                disabled={anyBusy}
-                data-testid="welcome-recheck"
-                className="-my-1 h-7 shrink-0"
+                variant="default"
+                size="lg"
+                onClick={() => void signInWithPanda()}
+                disabled={anyBusy || checking}
+                data-testid="panda-sign-in"
               >
-                Re-check
+                {socialState === "signing_in" ? (
+                  <>
+                    <Loader2 className="mr-2 size-4 animate-spin" />
+                    {socialProgressLabel ?? "Signing in…"}
+                  </>
+                ) : socialState === "error" ? (
+                  "Try again"
+                ) : (
+                  "Sign in"
+                )}
               </Button>
-            ) : null}
-          </div>
-          {checkError ? (
-            <span className="text-destructive" role="alert">
-              {checkError}
-            </span>
-          ) : null}
-        </div>
-
-        <div className="mt-3 flex flex-col gap-3 rounded-md border border-border bg-card/60 p-4">
-          <div className="flex items-start gap-2">
-            <Sparkles className="mt-0.5 size-4 shrink-0 text-emerald-600" />
-            <div className="space-y-1">
-              <p className="font-medium">Sign in with Vibe</p>
-              <p className="text-sm text-muted-foreground">
-                Use Vibe account features and cloud workflows, while still being
-                able to use your own Claude Code in the app.
-              </p>
-            </div>
-          </div>
+              {socialState === "signing_in" ? (
+                <Button
+                  variant="ghost"
+                  onClick={() => void cancelSocialLogin()}
+                  data-testid="panda-sign-in-cancel"
+                >
+                  Cancel
+                </Button>
+              ) : null}
+            </>
+          )}
 
           {socialProgressLabel ? (
             <div
@@ -373,63 +375,57 @@ export default function WelcomeScreen({ onComplete }) {
               {socialError}
             </p>
           ) : null}
-
-          {pandaSignedIn ? (
-            <Button
-              variant="default"
-              onClick={() => void finish()}
-              disabled={anyBusy || checking}
-              data-testid="continue-with-panda"
-            >
-              {finishing ? "Finishing…" : "Continue with Vibe"}
-            </Button>
-          ) : (
-            <div className="flex items-center gap-2">
-              <Button
-                variant="default"
-                onClick={() => void signInWithPanda()}
-                disabled={anyBusy || checking}
-                data-testid="panda-sign-in"
-              >
-                {socialState === "signing_in" ? (
-                  <>
-                    <Loader2 className="mr-2 size-4 animate-spin" />
-                    {socialProgressLabel ?? "Signing in…"}
-                  </>
-                ) : socialState === "error" ? (
-                  "Try Vibe sign-in again"
-                ) : (
-                  "Sign in with Vibe"
-                )}
-              </Button>
-              {socialState === "signing_in" ? (
-                <Button
-                  variant="ghost"
-                  onClick={() => void cancelSocialLogin()}
-                  data-testid="panda-sign-in-cancel"
-                >
-                  Cancel
-                </Button>
-              ) : null}
-            </div>
-          )}
         </div>
 
-        {/* Primary: use your own Claude Code */}
-        <div className="mt-4 flex flex-col gap-3 rounded-md border border-primary/40 bg-primary/5 p-4">
+        {/* Secondary path: bring your own Claude Code, revealed on demand. */}
+        {!ownExpanded ? (
+          <button
+            type="button"
+            onClick={() => setShowOwnClaude(true)}
+            disabled={anyBusy}
+            data-testid="reveal-own-claude"
+            className="mx-auto mt-6 block text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline disabled:opacity-50"
+          >
+            Have Claude Code?{" "}
+            <span className="text-primary">Start here.</span>
+          </button>
+        ) : (
+        <div className="mt-6 flex flex-col gap-3 rounded-md border border-border bg-card/60 p-4">
           <div className="flex items-start gap-2">
             <Laptop className="mt-0.5 size-4 shrink-0 text-primary" />
             <div className="space-y-1">
-              <p className="font-medium">Use your own Claude Code</p>
+              <p className="font-medium">Have Claude Code? Start here.</p>
               <p className="text-sm text-muted-foreground">
-                {canUseOwn
-                  ? "Claude Code is detected and signed in — connect it to start creating."
-                  : ownBlockedReason === "not_signed_in"
-                    ? "Claude Code is installed. Sign in to connect it."
-                    : "Install Claude Code, then sign in — Vibe detects it automatically."}
+                {checking
+                  ? "Getting things ready…"
+                  : canUseOwn
+                    ? "Claude Code is detected and signed in — connect it to start creating."
+                    : ownBlockedReason === "not_signed_in"
+                      ? "Claude Code is installed. Sign in to connect it."
+                      : "Install Claude Code, then sign in — Vibe detects it automatically."}
               </p>
             </div>
+            {/* Re-check while not yet ready — once detected and signed in,
+                refreshing the status is pointless. */}
+            {!checking && !canUseOwn ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void runDetect()}
+                disabled={anyBusy}
+                data-testid="welcome-recheck"
+                className="-my-1 ml-auto h-7 shrink-0"
+              >
+                Re-check
+              </Button>
+            ) : null}
           </div>
+
+          {checkError ? (
+            <p className="text-sm text-destructive" role="alert">
+              {checkError}
+            </p>
+          ) : null}
 
           {/* Guided sign-in progress (installed-but-not-signed-in path). */}
           {localProgressLabel ? (
@@ -564,7 +560,7 @@ export default function WelcomeScreen({ onComplete }) {
             </div>
           ) : null}
         </div>
-
+        )}
       </div>
     </div>
   );

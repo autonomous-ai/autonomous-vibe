@@ -1,4 +1,5 @@
 import {
+  AdaptiveDpr,
   Bounds,
   Center,
   ContactShadows,
@@ -273,6 +274,15 @@ export function ModelCanvas({
     <div className="absolute inset-0 h-full w-full">
       <Canvas
         dpr={[1, 2]}
+        // Adaptive resolution: full (retina) dpr while the scene is still, dropped toward
+        // `performance.min` of that while the user is actively orbiting/panning. The controls
+        // call performance.regress() on every change (see `regress` below), <AdaptiveDpr> reads
+        // performance.current and re-sizes the drawing buffer to match, and it re-sharpens the
+        // instant motion settles (debounce). On a Retina display an orbit frame is a near-mirror
+        // MeshPhysicalMaterial (two specular lobes) + env sampling + clipping over 4× the pixels
+        // of dpr 1 — halving the buffer during motion is the single biggest orbit-fps win while
+        // leaving the resting image at full quality.
+        performance={{ min: 0.5 }}
         // On-demand rendering: the model is static most of the time, so re-drawing the full
         // scene (+ 2048² shadow map + optional planar-reflection pass) at 60fps while nothing
         // moves is pure waste. "demand" renders only when a frame is requested — drei's
@@ -309,18 +319,34 @@ export function ModelCanvas({
             shipping an HDRI. background={false} keeps the theme-aware scene color as the
             visible backdrop; this only feeds reflections/lighting (so metals aren't black). */}
         <Environment frames={1} resolution={256} background={false}>
+          {/* Broad, dim ambient fill wrapping the model. A high-metalness preset (steel) is a
+              near-mirror — it has no diffuse response, so ONLY the env map lights it, and the
+              three streak panels below leave most of the reflected hemisphere unlit (black),
+              which reads as a dark, murky metal. These large low-intensity panels (front, back,
+              floor) raise that reflected floor to a soft studio gray so metals read bright and
+              legible in every direction, while the bright panels still paint the directional
+              streak highlights on top. */}
+          <Lightformer intensity={0.55} form="rect" position={[0, 3, 12]} scale={[26, 18, 1]} />
+          <Lightformer intensity={0.5} form="rect" position={[0, 3, -12]} scale={[26, 18, 1]} />
+          <Lightformer
+            intensity={0.45}
+            form="rect"
+            position={[0, -9, 0]}
+            scale={[26, 26, 1]}
+            rotation={[-Math.PI / 2, 0, 0]}
+          />
           {/* Broad top softbox — the primary streak that rakes down the body. */}
           <Lightformer
-            intensity={2.2}
+            intensity={2.6}
             form="rect"
             position={[0, 5, 0]}
             scale={[10, 4, 1]}
             rotation={[Math.PI / 2, 0, 0]}
           />
           {/* Front-right key panel. */}
-          <Lightformer intensity={1.4} form="rect" position={[5, 2, 5]} scale={[4, 6, 1]} />
+          <Lightformer intensity={1.6} form="rect" position={[5, 2, 5]} scale={[4, 6, 1]} />
           {/* Back-left rim panel — a bright edge highlight on the silhouette. */}
-          <Lightformer intensity={1.0} form="rect" position={[-6, 3, -4]} scale={[5, 6, 1]} />
+          <Lightformer intensity={1.2} form="rect" position={[-6, 3, -4]} scale={[5, 6, 1]} />
         </Environment>
         {/* Studio lighting rig on top of the Environment IBL: two RectAreaLight panels
             (key + rim) that paint the streak highlights on glossy materials, plus a single
@@ -414,10 +440,15 @@ export function ModelCanvas({
 
         <CaptureBridge glRef={glRef} />
 
+        {/* Drop the drawing-buffer resolution while the camera is in motion (see <AdaptiveDpr>
+            and the Canvas `performance` prop). `regress` makes the control flag a performance
+            regression on every change — including the damping tail — so the buffer stays small
+            for the whole gesture and re-sharpens once it settles. */}
         {controls === "orbit" ? (
           <OrbitControls
             ref={controlsRef as MutableRefObject<OrbitControlsImpl | null>}
             makeDefault
+            regress
             enableDamping
             dampingFactor={0.12}
             rotateSpeed={0.9}
@@ -426,10 +457,15 @@ export function ModelCanvas({
           <TrackballControls
             ref={controlsRef as MutableRefObject<TrackballControlsImpl | null>}
             makeDefault
+            regress
             rotateSpeed={3}
             dynamicDampingFactor={0.12}
           />
         )}
+
+        {/* Re-size the drawing buffer to match performance.current — full dpr at rest, halved
+            during camera motion. Cheap component; the actual dpr math lives in drei. */}
+        <AdaptiveDpr />
 
         {isDesktop && (
           <GizmoHelper alignment="bottom-right" margin={[60, 120]}>

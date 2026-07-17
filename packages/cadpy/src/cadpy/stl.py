@@ -49,14 +49,19 @@ def _safe_part_name(raw: str | None, seen: dict[str, int], *, fallback: str) -> 
     return base if count == 1 else f"{base}-{count}"
 
 
-def export_part_stls_from_scene(scene: LoadedStepScene, out_dir: Path) -> list[tuple[str, Path]]:
+def export_part_stls_from_scene(
+    scene: LoadedStepScene, out_dir: Path
+) -> list[tuple[str, Path, object]]:
     """Write one STL per leaf occurrence, each in its own build frame (at origin).
 
     Used for assemblies so every named part is individually reviewable/printable
-    alongside the assembled ``<stem>.stl``. Returns ``[(part_name, stl_path), ...]``
-    in scene order. The scene's prototype shapes must already be meshed.
+    alongside the assembled ``<stem>.stl``. Returns
+    ``[(part_name, stl_path, prototype_shape), ...]`` in scene order; the
+    prototype shape is the un-located OCCT shape written to ``stl_path``, handed
+    back so the caller can compute per-part geometry facts for a metadata
+    sidecar. The scene's prototype shapes must already be meshed.
     """
-    results: list[tuple[str, Path]] = []
+    results: list[tuple[str, Path, object]] = []
     seen: dict[str, int] = {}
     for index, node in enumerate(scene_leaf_occurrences(scene)):
         if node.prototype_key is None or node.prototype_key not in scene.prototype_shapes:
@@ -69,5 +74,5 @@ def export_part_stls_from_scene(scene: LoadedStepScene, out_dir: Path) -> list[t
         shape = scene_occurrence_prototype_shape(scene, node)
         target_path = out_dir / f"{name}.stl"
         export_shape_stl(shape, target_path)
-        results.append((name, target_path))
+        results.append((name, target_path, shape))
     return results

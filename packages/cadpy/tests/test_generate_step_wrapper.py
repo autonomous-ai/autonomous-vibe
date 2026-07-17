@@ -284,6 +284,32 @@ class GenerateStepWrapperTests(unittest.TestCase):
             meta_parts = {p["name"]: p["stlPath"] for p in metadata["parts"]}
             self.assertEqual(meta_parts["base"], "widget_parts/base.stl")
             self.assertEqual(meta_parts["lid"], "widget_parts/lid.stl")
+            meta_json = {p["name"]: p["jsonPath"] for p in metadata["parts"]}
+            self.assertEqual(meta_json["base"], "widget_parts/base.stl.json")
+            self.assertEqual(meta_json["lid"], "widget_parts/lid.stl.json")
+
+            # Each per-part STL gets its own JSON metadata sidecar (contract §1).
+            base_meta = json.loads((parts_dir / "base.stl.json").read_text(encoding="utf-8"))
+            self.assertEqual(base_meta["generator"], "cadpy")
+            self.assertEqual(base_meta["entryKind"], "part")
+            self.assertEqual(base_meta["name"], "base")
+            self.assertEqual(base_meta["index"], 0)
+            self.assertEqual(base_meta["partOf"], "widget")
+            self.assertEqual(base_meta["stl"]["path"], "base.stl")
+            self.assertEqual(base_meta["source"]["kind"], "python")
+            self.assertIn("hash", base_meta["source"])
+            self.assertIn("angularTolerance", base_meta["mesh"])
+            self.assertTrue(base_meta["validation"]["isSolid"])
+            self.assertGreater(base_meta["validation"]["volumeMm3"], 0.0)
+            # 20 x 20 x 4 box → bounding-box dimensions.
+            dims = base_meta["dimensionsMm"]
+            self.assertAlmostEqual(dims[0], 20.0, places=3)
+            self.assertAlmostEqual(dims[1], 20.0, places=3)
+            self.assertAlmostEqual(dims[2], 4.0, places=3)
+            self.assertEqual(base_meta["description"], "")
+            lid_meta = json.loads((parts_dir / "lid.stl.json").read_text(encoding="utf-8"))
+            self.assertEqual(lid_meta["index"], 1)
+            self.assertEqual(lid_meta["name"], "lid")
 
             # The lid part is exported at its build origin (centered ~0), not at
             # the assembled z≈50.

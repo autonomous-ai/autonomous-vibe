@@ -2726,6 +2726,68 @@ def _write_metadata_sidecar(
     )
 
 
+def _write_part_metadata_sidecar(
+    *,
+    metadata_path: Path,
+    script_path: Path,
+    name: str,
+    index: int,
+    part_of: str,
+    stl_name: str,
+    is_solid: bool,
+    volume_mm3: float,
+    bbox: dict[str, list[float]],
+    mesh_tolerance: float,
+    mesh_angular_tolerance: float,
+    description: str = "",
+) -> None:
+    """Write ``<part>.stl.json`` beside a per-part STL — one metadata sidecar
+    per individual 3D file, mirroring the integrated ``<stem>.step.json``.
+
+    Carries the same source/generator identity as the parent sidecar plus this
+    part's own identity (``name``, ``index``, ``partOf``), geometry facts
+    (``isSolid``, ``volumeMm3``, ``bbox``), bounding-box ``dimensionsMm``
+    (``[dx, dy, dz]``), and the mesh settings used to triangulate it.
+    ``description`` is a reserved, human-readable slot (empty by default).
+    """
+    identity = python_source_hash(script_path)
+    dimensions_mm = [
+        float(bbox["max"][axis]) - float(bbox["min"][axis]) for axis in range(3)
+    ]
+    payload: dict[str, object] = {
+        "generator": "cadpy",
+        "entryKind": "part",
+        "name": name,
+        "description": description,
+        "index": int(index),
+        "partOf": part_of,
+        "source": {
+            "kind": "python",
+            "path": str(script_path),
+            "hash": identity.source_hash,
+            "fingerprint": identity.source_fingerprint,
+        },
+        "stl": {
+            "path": stl_name,
+        },
+        "mesh": {
+            "tolerance": float(mesh_tolerance),
+            "angularTolerance": float(mesh_angular_tolerance),
+        },
+        "dimensionsMm": dimensions_mm,
+        "validation": {
+            "isSolid": bool(is_solid),
+            "volumeMm3": float(volume_mm3),
+            "bbox": bbox,
+        },
+    }
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+
 def _write_shape_step_payload_with_source(
     envelope: dict[str, object],
     *,
@@ -2960,7 +3022,7 @@ def generate_step(
     # part — each at its own build origin, ready to review/print individually
     # alongside the assembled <stem>.stl. Single-solid projects skip this.
     parts_dir = parent / f"{stem}_parts"
-    part_outputs: list[tuple[str, Path]] = []
+    part_outputs: list[tuple[str, Path, object]] = []
     try:
         if len(scene_leaf_occurrences(scene)) > 1:
             part_outputs = export_part_stls_from_scene(scene, parts_dir)
@@ -2969,12 +3031,41 @@ def generate_step(
             f"failed to write per-part STLs for {output_path_p.name}: "
             f"{type(exc).__name__}: {exc}"
         ) from exc
-    # Paths in metadata/payload are relative to the sidecar directory so the
-    # catalog can resolve them regardless of where the workspace lives.
-    parts_meta = [
-        {"name": name, "stlPath": f"{parts_dir.name}/{path.name}"}
-        for name, path in part_outputs
-    ]
+
+    # One JSON metadata sidecar per per-part STL — geometry facts, source
+    # identity, part identity, and mesh settings for each individual 3D file
+    # (contract §1). Written beside the part as ``<part>.stl.json``.
+    parts_meta: list[dict[str, str]] = []
+    try:
+        for index, (name, path, shape) in enumerate(part_outputs):
+            part_metadata_path = path.with_name(f"{path.name}.json")
+            _write_part_metadata_sidecar(
+                metadata_path=part_metadata_path,
+                script_path=script_path,
+                name=name,
+                index=index,
+                part_of=stem,
+                stl_name=path.name,
+                is_solid=_is_solid_shape(shape),
+                volume_mm3=_volume_mm3_from_shape(shape),
+                bbox=_bbox_dict_from_shape(shape),
+                mesh_tolerance=mesh_tolerance,
+                mesh_angular_tolerance=mesh_angular_tolerance,
+            )
+            # Paths in metadata/payload are relative to the sidecar directory so
+            # the catalog can resolve them regardless of where the workspace lives.
+            parts_meta.append(
+                {
+                    "name": name,
+                    "stlPath": f"{parts_dir.name}/{path.name}",
+                    "jsonPath": f"{parts_dir.name}/{part_metadata_path.name}",
+                }
+            )
+    except Exception as exc:
+        raise ExportError(
+            f"failed to write per-part metadata for {output_path_p.name}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
 
     # Deterministic geometry sanity checks (floating bodies, slivers, invalid
     # B-reps). Advisory — never fails generation; surfaced for the skill loop
@@ -3028,7 +3119,7 @@ def generate_step(
         "mesh_tolerance": float(mesh_tolerance),
         "mesh_angular_tolerance": float(mesh_angular_tolerance),
         "parts": [
-            {"name": name, "stl_path": str(path)} for name, path in part_outputs
+            {"name": name, "stl_path": str(path)} for name, path, _shape in part_outputs
         ],
         "warnings": warnings,
     }

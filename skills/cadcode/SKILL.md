@@ -426,6 +426,10 @@ pipeline:
   viewer renders as the preview.
 - `<name>.step.json` — source hash, generator metadata, validation summary
   (``is_solid``, ``volume_mm3``, mesh tolerances).
+- `<name>_parts/<part>.stl` + `<name>_parts/<part>.stl.json` — assemblies
+  only: one STL per named part at its build origin, each with its own JSON
+  metadata sidecar (part name, index, `partOf`, geometry facts,
+  `dimensionsMm`, mesh settings) mirroring the integrated `.step.json`.
 
 Prints a single JSON line on stdout:
 ``{ok, step_path, stl_path, metadata_path, is_solid, volume_mm3, bbox,

@@ -144,19 +144,43 @@ shown relative to `output_path`'s parent.
 | `<stem>.stl` | yes | Printable mesh + the viewer's preview mesh (assembled scene) |
 | `<stem>.step.json` | yes | Source hash, generator metadata, validation summary |
 | `<stem>_parts/<part>.stl` | assemblies only | One STL per named part, at its own build origin (review/print individually) |
+| `<stem>_parts/<part>.stl.json` | assemblies only | Per-part metadata sidecar — one JSON per per-part STL |
 
 `<stem>` is the basename of `output_path`. The driver's mtime snapshotter
-(contract §3) watches all three extensions.
+(contract §3) watches all these extensions.
 
 **Per-part STLs (additive).** When `gen_step()` returns an assembly with more
 than one leaf part, the wrapper also writes one STL per named part under
 `<stem>_parts/`, each in its own build frame (not assembled position) so it can
 be reviewed and printed individually. The `<stem>.step.json` gains a `parts`
-array — `[{ "name": str, "stlPath": "<stem>_parts/<part>.stl" }]`, with
-`stlPath` relative to the sidecar's directory — and `generate_step()`'s return
-dict gains `parts: [{ "name", "stl_path" }]`. Single-solid projects omit both
-(no `_parts/` dir). The Tauri catalog surfaces these on the integrated `.stl`
+array — `[{ "name": str, "stlPath": "<stem>_parts/<part>.stl", "jsonPath":
+"<stem>_parts/<part>.stl.json" }]`, with paths relative to the sidecar's
+directory — and `generate_step()`'s return dict gains
+`parts: [{ "name", "stl_path" }]`. Single-solid projects omit both (no
+`_parts/` dir). The Tauri catalog surfaces these on the integrated `.stl`
 entry's `artifact.parts` (contract §2); the viewer groups them under the model.
+
+**Per-part metadata sidecars (additive).** Alongside each `<part>.stl` the
+wrapper writes a `<part>.stl.json` — one metadata sidecar per individual 3D
+file, mirroring the integrated `<stem>.step.json`. Each carries the same
+`generator` / `source` identity as the parent sidecar plus the part's own
+identity and geometry:
+
+```jsonc
+{
+  "generator": "cadpy",
+  "entryKind": "part",
+  "name": "base",                 // part name (matches the STL stem)
+  "description": "",              // reserved human-readable slot (empty by default)
+  "index": 0,                     // position in scene order
+  "partOf": "widget",            // <stem> of the integrated model
+  "source": { "kind": "python", "path": "...", "hash": "...", "fingerprint": "..." },
+  "stl": { "path": "base.stl" },  // sibling STL, relative to this sidecar
+  "mesh": { "tolerance": 0.02, "angularTolerance": 0.6 },
+  "dimensionsMm": [20.0, 20.0, 4.0], // bbox extents [dx, dy, dz]
+  "validation": { "isSolid": true, "volumeMm3": 1600.0, "bbox": { "min": [...], "max": [...] } }
+}
+```
 
 ### Error contract
 
@@ -913,9 +937,11 @@ For each artifact event, the driver emits a `chat_event`:
 ├── model.step               ← cadpy STEP
 ├── model.step.json          ← cadpy metadata (+ parts[] for assemblies)
 ├── model.stl                ← cadpy mesh (slice-input + viewer preview)
-├── model_parts/             ← assemblies only: one STL per named part
+├── model_parts/             ← assemblies only: one STL + JSON sidecar per named part
 │   ├── base.stl
-│   └── lid.stl
+│   ├── base.stl.json
+│   ├── lid.stl
+│   └── lid.stl.json
 ├── model.gcode              ← OrcaSlicer output
 └── chat.jsonl               ← Panda-managed chat history (one event per line)
 ```

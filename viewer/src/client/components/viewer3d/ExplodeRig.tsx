@@ -27,7 +27,6 @@ export function ExplodeRig({
    *  crease outline stays glued to its part while exploded. Null when the overlay is off. */
   featureRef?: RefObject<FeatureOverlay | null>;
 }) {
-  const enabled = useExplodeStore((s) => s.enabled);
   const setLeafCount = useExplodeStore((s) => s.setLeafCount);
   const invalidate = useThree((s) => s.invalidate);
   const data = useRef<ExplodeData | null>(null);
@@ -63,13 +62,20 @@ export function ExplodeRig({
     };
   }, [setLeafCount]);
 
-  // On-demand loop: the slider mutates factor/style/axis without re-rendering this rig (read via
-  // getState in useFrame), so request a frame on every explode-store change to kick the ease.
+  // On-demand loop: the toggle/slider mutate the store without re-rendering this rig (all params —
+  // enabled included — are read via getState in useFrame), so request a frame on every explode-store
+  // change to kick the ease. `enabled` is read live rather than from a hook closure on purpose: the
+  // subscribe→invalidate frame can run before React commits the re-render, so a closure-gated
+  // `enabled` would still read false on that first frame, skip the ease, and leave the demand loop
+  // idle until an unrelated click — the "needs a click to explode" bug. getState always sees the
+  // committed toggle.
   useEffect(() => useExplodeStore.subscribe(() => invalidate()), [invalidate]);
 
   useFrame(() => {
     const mesh = meshRef.current;
     if (!mesh) return;
+
+    const { enabled, factor, style, axis } = useExplodeStore.getState();
 
     // Build once, on the first frame the tool is on (heavy: weld + connected-component labeling).
     if (enabled && !data.current) {
@@ -80,7 +86,6 @@ export function ExplodeRig({
     const d = data.current;
     if (!d) return;
 
-    const { factor, style, axis } = useExplodeStore.getState();
     // A single-shell model has nothing to separate — keep it assembled (matches meshStep, which
     // disables the tool below 2 parts). The panel shows the single-part note instead.
     const targetFactor = enabled && d.leafCount >= 2 ? factor : 0;

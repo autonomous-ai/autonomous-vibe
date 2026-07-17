@@ -103,6 +103,50 @@ interface ResetAnimation {
   goalUp: Vector3;
 }
 
+/** Camera-independent shadow throttling. Both the directional light and the model are
+ *  static while the user only orbits the camera, yet three re-renders the full 2048²
+ *  shadow map on *every* rendered frame (`shadowMap.autoUpdate` defaults on) — an entire
+ *  extra depth pass over the mesh per orbit frame, the single biggest source of orbit lag.
+ *  We turn auto-update off and flag the shadow map for re-render only on frames where the
+ *  camera isn't being dragged — i.e. the frames where the geometry might actually have
+ *  moved (initial load, explode ease, section sweep). While orbiting, the last shadow map
+ *  is reused, which stays correct because nothing but the camera moved. */
+function ShadowSync() {
+  const gl = useThree((s) => s.gl);
+  const controls = useThree((s) => s.controls) as {
+    addEventListener?: (type: string, cb: () => void) => void;
+    removeEventListener?: (type: string, cb: () => void) => void;
+  } | null;
+  const invalidate = useThree((s) => s.invalidate);
+  const interacting = useRef(false);
+
+  useEffect(() => {
+    gl.shadowMap.autoUpdate = false;
+    gl.shadowMap.needsUpdate = true; // bake once immediately
+    if (!controls?.addEventListener || !controls.removeEventListener) return;
+    const onStart = () => {
+      interacting.current = true;
+    };
+    // On drag end, refresh the shadow once (via a settle frame) so it reflects any
+    // geometry pose the reused map missed, then resume normal per-frame updates.
+    const onEnd = () => {
+      interacting.current = false;
+      invalidate();
+    };
+    controls.addEventListener("start", onStart);
+    controls.addEventListener("end", onEnd);
+    return () => {
+      controls.removeEventListener?.("start", onStart);
+      controls.removeEventListener?.("end", onEnd);
+    };
+  }, [gl, controls, invalidate]);
+
+  useFrame(() => {
+    if (!interacting.current) gl.shadowMap.needsUpdate = true;
+  });
+  return null;
+}
+
 /** WebGL viewport for one design. Reads its appearance (shading/material/controls)
  *  from the persisted appearance store so the surrounding chrome stays thin. */
 export function ModelCanvas({
@@ -282,6 +326,8 @@ export function ModelCanvas({
             (key + rim) that paint the streak highlights on glossy materials, plus a single
             DirectionalLight fill that is the only shadow caster. */}
         <StudioLights meshRef={meshRef} />
+        {/* Throttle the directional shadow map so it isn't re-rendered on every orbit frame. */}
+        <ShadowSync />
 
         <Suspense fallback={null}>
           {/* key={url} → re-suspend + re-frame when the selected design changes. */}
@@ -342,7 +388,15 @@ export function ModelCanvas({
           {/* Soft contact shadow anchoring the part to the floor — a blurred projection of
               the model at its base (y=0), giving weight the flat grid alone can't. OUTSIDE
               <Bounds> for the same reason as the grid. */}
+          {/* The contact shadow is a top-down projection of the model onto the floor — it
+              depends only on the geometry, never on the camera. drei re-bakes it (a 1024²
+              render + a multi-tap blur) on every rendered frame by default, so orbiting pays
+              for a full extra pass it can't see. `frames={1}` bakes it exactly once; keying
+              on `url` re-bakes when a new model loads. (Explode/section poses reuse the
+              assembled blob — an acceptable trade for smooth orbit, the common interaction.) */}
           <ContactShadows
+            key={url}
+            frames={1}
             position={[0, 0.02, 0]}
             scale={GRID_SIZE}
             resolution={1024}

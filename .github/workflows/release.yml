@@ -227,9 +227,9 @@ jobs:
   # the event payload (`github.event.release.id`), never `gh release view <tag>`
   # — which is ambiguous when several releases share the tag.
   #
-  #   Vibe_<ver>_aarch64.dmg         -> Vibe-<ver>-macOS-Apple-Silicon.dmg
-  #   Vibe_<ver>_x64.dmg             -> Vibe-<ver>-macOS-Intel.dmg
-  #   Vibe_<ver>_x64-setup.exe       -> Vibe-<ver>-Windows-Setup.exe    (+ .sig)
+  #   Vibe_<ver>_aarch64.dmg         -> Vibe-macOS-Apple-Silicon.dmg
+  #   Vibe_<ver>_x64.dmg             -> Vibe-macOS-Intel.dmg
+  #   Vibe_<ver>_x64-setup.exe       -> Vibe-Windows-Setup.exe    (+ .sig)
   #
   # The two macOS .app.tar.gz updater bundles are left untouched: nobody
   # downloads them by hand (Intel now ships a .dmg) and renaming them would
@@ -266,7 +266,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${TAG#v}"
 
           # Rename the release asset whose name ends in $1 to the exact name $2.
           # Matching by suffix keeps this version-independent and resilient to
@@ -284,10 +283,10 @@ jobs:
             echo "renamed *$suffix -> $new"
           }
 
-          rename_suffix "_aarch64.dmg"        "Vibe-${VERSION}-macOS-Apple-Silicon.dmg"
-          rename_suffix "_x64.dmg"            "Vibe-${VERSION}-macOS-Intel.dmg"
-          rename_suffix "_x64-setup.exe"      "Vibe-${VERSION}-Windows-Setup.exe"
-          rename_suffix "_x64-setup.exe.sig"  "Vibe-${VERSION}-Windows-Setup.exe.sig"
+          rename_suffix "_aarch64.dmg"        "Vibe-macOS-Apple-Silicon.dmg"
+          rename_suffix "_x64.dmg"            "Vibe-macOS-Intel.dmg"
+          rename_suffix "_x64-setup.exe"      "Vibe-Windows-Setup.exe"
+          rename_suffix "_x64-setup.exe.sig"  "Vibe-Windows-Setup.exe.sig"
 
           # The Windows updater downloads by the URL baked into latest.json, so
           # point it at the renamed setup .exe. (macOS updater URLs are
@@ -295,7 +294,7 @@ jobs:
           # our release carries the tag, `gh release` by tag is unambiguous.
           mkdir -p dl
           gh release download "$TAG" -R "$REPO" -p latest.json -D dl --clobber
-          NEW_WIN_URL="https://github.com/${REPO}/releases/download/${TAG}/Vibe-${VERSION}-Windows-Setup.exe"
+          NEW_WIN_URL="https://github.com/${REPO}/releases/download/${TAG}/Vibe-Windows-Setup.exe"
           python3 - dl/latest.json "$NEW_WIN_URL" <<'PY'
           import json, sys
           path, new_url = sys.argv[1], sys.argv[2]

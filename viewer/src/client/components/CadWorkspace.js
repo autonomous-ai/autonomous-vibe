@@ -14,6 +14,7 @@ import StatusToast from "./workbench/StatusToast";
 import UrdfFileSheet from "./workbench/UrdfFileSheet";
 import ViewerAlertDialog from "./workbench/ViewerAlertDialog";
 import ViewerLoadingOverlay from "./workbench/ViewerLoadingOverlay";
+import BuildBlueprintOverlay from "./viewer3d/BuildBlueprintOverlay";
 import FloatingToolBar from "./workbench/FloatingToolBar";
 import RegionNotePopover from "./workbench/RegionNotePopover";
 import { isRegionStroke, regionStrokes } from "cadjs/lib/viewer/drawingTools";
@@ -848,6 +849,13 @@ export default function CadWorkspace({
     ));
   }, []);
   const [previewMode, setPreviewMode] = useState(false);
+  // Live build stage: keep the blueprint overlay up across the whole pre-model
+  // flow for the active project — while it's generating (`buildLive`) *or* paused
+  // on a question/plan (`awaitingAnswer`) — and suppress the "No model to preview
+  // yet" empty state underneath. It ends the moment the first model is on screen.
+  const activeProjectAwaitingAnswer = awaitingAnswerProjectIds.has(currentProjectId);
+  const liveBuildStageActive =
+    (buildLive || activeProjectAwaitingAnswer) && !previewMode;
   const [tabToolsWidth, setTabToolsWidth] = useState(readInitialFileSheetWidth);
   const [fileSheetWidthIsCustom, setFileSheetWidthIsCustom] = useState(readInitialFileSheetWidthIsCustom);
   const [drawingTool, setDrawingTool] = useState(DRAWING_TOOL.FREEHAND);
@@ -7400,6 +7408,7 @@ export default function CadWorkspace({
           selectedKey={selectedKey}
           missingFileRef={missingFileRef}
           previewMode={previewMode}
+          suppressEmptyState={liveBuildStageActive}
           viewportFrameInsets={viewportFrameInsets}
           viewerAlert={viewerAlert}
           drawToolActive={drawToolActive}
@@ -7565,6 +7574,16 @@ export default function CadWorkspace({
                 viewerLoading={effectiveViewerLoading}
                 previewMode={previewMode}
               />
+
+              {/* Live build stage: draft the blueprint across the whole pre-model
+                  flow — generating, or paused on a question/plan — and fade it out
+                  (crossfading into the 3D view) the moment the first model lands. */}
+              {liveBuildStageActive ? (
+                <BuildBlueprintOverlay
+                  visible={!selectedKey}
+                  title={currentProjectName}
+                />
+              ) : null}
             </div>
 
             {selectedFileSheetKind === "dxf" ? (

@@ -66,6 +66,7 @@ export default function CadRenderPane({
   selectedKey,
   missingFileRef = "",
   previewMode,
+  suppressEmptyState = false,
   showBed = false,
   viewportFrameInsets,
   viewerAlert,
@@ -253,6 +254,11 @@ export default function CadRenderPane({
               draggable={false}
             />
           </div>
+        ) : suppressEmptyState ? (
+          // Live build stage owns the viewport (the blueprint overlay is drawn on
+          // top by CadWorkspace) — keep an empty background so the placeholder text
+          // doesn't show through mid-generation.
+          <div className="absolute inset-0 bg-background" />
         ) : (
           <div className="absolute inset-0 grid place-items-center bg-background text-center">
             <p className="px-6 text-sm text-muted-foreground">No model to preview yet.</p>

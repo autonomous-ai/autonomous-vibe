@@ -1,7 +1,28 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { useChatStore } from "@/store/chat";
 import { findActiveTurn, buildManifestFromTurn } from "./buildManifest.js";
+
+// Rotating flavor quips — draftsman-speak that ticks over every couple seconds
+// so an empty-ish blueprint never sits dead. Purely decorative (aria-hidden).
+const FLAVOR_QUIPS = [
+  "Sharpening pencils…",
+  "Aligning to the grid…",
+  "Consulting the datum plane…",
+  "Chamfering the edges…",
+  "Measuring twice, cutting once…",
+  "Tolerancing the fits…",
+  "Extruding along the normal…",
+  "Filleting sharp corners…",
+  "Checking wall thickness…",
+  "Snapping to the origin…",
+  "Deburring the vertices…",
+  "Warming up the calipers…",
+  "Unrolling the blueprint…",
+  "Negotiating with the constraints…",
+  "Squaring up the section view…",
+  "Dusting off the T-square…",
+];
 
 // Live build stage — the pre-artifact phase. While the model is still writing
 // CAD source (no geometry on disk yet) the viewport would otherwise be a dead
@@ -124,10 +145,29 @@ function StepRow({ step, index }) {
  *             the parent keeps this mounted briefly after it flips false so the
  *             fade-out overlaps the 3D materialize fade-in.
  */
+// Cycles a randomly-picked flavor quip every ~2.4s while `active`, never
+// repeating twice in a row. Returns "" when inactive so nothing renders.
+function useFlavorQuip(active) {
+  const [index, setIndex] = useState(() => Math.floor(Math.random() * FLAVOR_QUIPS.length));
+  useEffect(() => {
+    if (!active) return undefined;
+    const id = setInterval(() => {
+      setIndex((prev) => {
+        let next = prev;
+        while (next === prev) next = Math.floor(Math.random() * FLAVOR_QUIPS.length);
+        return next;
+      });
+    }, 2400);
+    return () => clearInterval(id);
+  }, [active]);
+  return active ? FLAVOR_QUIPS[index] : "";
+}
+
 export default function BuildBlueprintOverlay({ visible, title }) {
   const history = useChatStore((state) => state.history);
   const manifest = useMemo(() => buildManifestFromTurn(findActiveTurn(history)), [history]);
   const { steps, currentStep } = manifest;
+  const quip = useFlavorQuip(visible);
 
   return (
     <div
@@ -154,11 +194,17 @@ export default function BuildBlueprintOverlay({ visible, title }) {
             ) : null}
           </div>
 
-          <div className="mb-5 flex items-center gap-2 font-mono text-[13px]" style={{ color: bp(0.85) }}>
+          <div className="mb-2 flex items-center gap-2 font-mono text-[13px]" style={{ color: bp(0.85) }}>
             <span aria-hidden="true" className="shrink-0 animate-pulse">▸</span>
             <span className="sr-only">{currentStep}</span>
             <SlideText value={currentStep} />
           </div>
+
+          {quip ? (
+            <div className="mb-5 flex items-center gap-2 pl-[1.1rem] font-mono text-[11px] italic" style={{ color: bp(0.45) }}>
+              <SlideText value={quip} />
+            </div>
+          ) : null}
 
           {steps.length > 0 ? (
             <ul className="flex flex-col gap-3">

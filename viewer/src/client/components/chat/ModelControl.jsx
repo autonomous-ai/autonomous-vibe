@@ -18,6 +18,20 @@ import {
   MODEL_CHOICES,
 } from "./modelChoices.js";
 
+// A subscription counts as "paid" (so we drop the Upgrade CTA) only when the
+// plan is Pro/Studio *and* the subscription is in an active-ish state. Anything
+// else — Free, canceled, past-due, or no subscription — still sees "Upgrade to
+// Pro".
+const PAID_PLANS = new Set(["pro", "studio"]);
+const ACTIVE_PLAN_STATUSES = new Set(["active", "trialing"]);
+
+function hasActivePaidPlan(profile) {
+  if (!profile) return false;
+  const plan = String(profile.plan ?? "").toLowerCase();
+  const status = String(profile.planStatus ?? "").toLowerCase();
+  return PAID_PLANS.has(plan) && ACTIVE_PLAN_STATUSES.has(status);
+}
+
 /**
  * Compact pill in the chat composer footer showing which Claude model the next
  * turn will use, with a dropdown to switch between the offered models. The
@@ -30,6 +44,9 @@ export default function ModelControl({ className }) {
   // to the default for display when unset/unrecognized.
   const [model, setModel] = useState(null);
   const [signedInToPanda, setSignedInToPanda] = useState(false);
+  // Whether the account is on an active paid (Pro/Studio) plan. Drives whether
+  // the "Upgrade to Pro" CTA shows — Free accounts (and signed-out users) see it.
+  const [paidPlan, setPaidPlan] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -41,8 +58,22 @@ export default function ModelControl({ className }) {
     if (settingsRes.status === "fulfilled") {
       setModel(settingsRes.value?.model ?? DEFAULT_MODEL);
     }
-    if (socialRes.status === "fulfilled") {
-      setSignedInToPanda(Boolean(socialRes.value));
+
+    const signedIn =
+      socialRes.status === "fulfilled" && Boolean(socialRes.value);
+    setSignedInToPanda(signedIn);
+
+    // Only signed-in accounts carry a subscription; resolve the plan to decide
+    // whether to keep offering the upgrade.
+    if (!signedIn) {
+      setPaidPlan(false);
+      return;
+    }
+    try {
+      const profile = await transport.social_profile();
+      setPaidPlan(hasActivePaidPlan(profile));
+    } catch {
+      setPaidPlan(false);
     }
   }, []);
 
@@ -73,7 +104,12 @@ export default function ModelControl({ className }) {
   }, [refresh]);
 
   const localChoices = MODEL_CHOICES.filter((choice) => !choice.requiresPandaSignIn);
-  const proxyChoices = MODEL_CHOICES.filter((choice) => choice.requiresPandaSignIn);
+  // Show the Pro row only for accounts already on an active paid plan; Free
+  // accounts see the "Upgrade to Pro" CTA in its place instead.
+  const proxyChoices = MODEL_CHOICES.filter(
+    (choice) =>
+      choice.requiresPandaSignIn && (choice.id !== "vibe-pro" || paidPlan),
+  );
   const selectableChoices = signedInToPanda
     ? MODEL_CHOICES
     : localChoices;
@@ -129,7 +165,7 @@ export default function ModelControl({ className }) {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="cad-solid-popover min-w-40">
         <DropdownMenuLabel className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Local Claude
+          Bring your own model
         </DropdownMenuLabel>
         {localChoices.map((choice) => (
           <DropdownMenuItem
@@ -166,19 +202,24 @@ export default function ModelControl({ className }) {
             }
             className="justify-between gap-3"
           >
-            {signedInToPanda ? (
-              <span>{choice.label}</span>
-            ) : (
-              <span className="inline-flex items-center gap-1 font-medium text-orange-500 underline underline-offset-2">
-                {choice.label}
-                <ExternalLink className="size-3" aria-hidden />
-              </span>
-            )}
+            <span>{choice.label}</span>
             {signedInToPanda && choice.id === active ? (
               <Check className="size-3.5" aria-hidden />
             ) : null}
           </DropdownMenuItem>
         ))}
+        {paidPlan ? null : (
+          <DropdownMenuItem
+            onSelect={() => void transport.social_open_pricing()}
+            data-testid="model-upgrade-pro"
+            className="justify-center"
+          >
+            <span className="inline-flex items-center gap-1 rounded-full border border-orange-500/60 px-2 py-0.5 text-xs font-medium text-orange-500">
+              Upgrade to Pro
+              <ExternalLink className="size-3" aria-hidden />
+            </span>
+          </DropdownMenuItem>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );

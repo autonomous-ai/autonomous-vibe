@@ -949,7 +949,7 @@ pub struct AppSettings {
     /// Claude model passed to `claude --model`, set from the chat composer's
     /// model switcher (`app_set_model`). One of `MODEL_CHOICES`. `None` (absent
     /// in legacy settings files) means the built-in default — `build_command`
-    /// resolves `None → "opus"`, so old settings need no migration.
+    /// resolves `None → "fable"`, so old settings need no migration.
     #[serde(default)]
     pub model: Option<String>,
 }

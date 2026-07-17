@@ -473,7 +473,7 @@ pub fn build_command(cfg: &ClaudeRunConfig) -> Vec<String> {
         cmd.push("--no-session-persistence".into());
     }
     cmd.push("--model".into());
-    cmd.push(cfg.model.clone().unwrap_or_else(|| "opus".into()));
+    cmd.push(cfg.model.clone().unwrap_or_else(|| "fable".into()));
     // Run every phase at low reasoning effort. Quality on CAD turns comes from
     // the plan → build → review-fix iteration loop, not from a high per-turn
     // effort budget — low effort is faster/cheaper and the review phase
@@ -1513,7 +1513,7 @@ where
                     &format!(
                         "▶ turn {:?}  model={}  mode={}  session={sid} ({})",
                         phase,
-                        cfg.model.as_deref().unwrap_or("opus"),
+                        cfg.model.as_deref().unwrap_or("fable"),
                         phase.permission_mode(),
                         if resume { "resume" } else { "new" },
                     ),

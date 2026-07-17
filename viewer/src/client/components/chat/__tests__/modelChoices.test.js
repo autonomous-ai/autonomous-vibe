@@ -8,12 +8,13 @@ import {
   MODEL_CHOICES,
 } from "../modelChoices.js";
 
-test("MODEL_CHOICES lists the selectable models with the default first", () => {
+test("MODEL_CHOICES lists the selectable models led by Fable, the default", () => {
   assert.deepEqual(
     MODEL_CHOICES.map((c) => c.id),
-    ["opus", "sonnet", "fable", "vibe-free", "vibe-pro"],
+    ["fable", "opus", "sonnet", "vibe-free", "vibe-pro"],
   );
-  assert.equal(MODEL_CHOICES[0].id, DEFAULT_MODEL);
+  assert.equal(DEFAULT_MODEL, "fable");
+  assert.ok(MODEL_CHOICES.some((c) => c.id === DEFAULT_MODEL));
 });
 
 test("Free and Pro are distinct rows that share one underlying model value", () => {
@@ -29,25 +30,26 @@ test("Free and Pro are distinct rows that share one underlying model value", () 
 test("availableModelChoices hides proxy models unless signed in", () => {
   assert.deepEqual(
     availableModelChoices({ signedInToPanda: false }).map((c) => c.value),
-    ["opus", "sonnet", "fable"],
+    ["fable", "opus", "sonnet"],
   );
   assert.deepEqual(
     availableModelChoices({ signedInToPanda: true }).map((c) => c.id),
-    ["opus", "sonnet", "fable", "vibe-free", "vibe-pro"],
+    ["fable", "opus", "sonnet", "vibe-free", "vibe-pro"],
   );
 });
 
 test("labelForModel returns the friendly label for a known selection id", () => {
   assert.equal(labelForModel("opus"), "Opus");
   assert.equal(labelForModel("sonnet"), "Sonnet");
+  assert.equal(labelForModel("fable"), "Fable");
   assert.equal(labelForModel("vibe-free"), "Free");
   assert.equal(labelForModel("vibe-pro"), "Pro");
 });
 
 test("labelForModel falls back to the default label for unset or unknown ids", () => {
-  assert.equal(labelForModel(undefined), "Opus");
-  assert.equal(labelForModel(""), "Opus");
-  assert.equal(labelForModel("gpt-4"), "Opus");
+  assert.equal(labelForModel(undefined), "Fable");
+  assert.equal(labelForModel(""), "Fable");
+  assert.equal(labelForModel("gpt-4"), "Fable");
   // The raw model string is no longer a selection id.
-  assert.equal(labelForModel("minimax,minimax/minimax-m3"), "Opus");
+  assert.equal(labelForModel("minimax,minimax/minimax-m3"), "Fable");
 });

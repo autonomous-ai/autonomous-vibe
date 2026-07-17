@@ -9,18 +9,20 @@
 // Free and Pro deliberately share one `value` (same model; quota is enforced by
 // the backend per subscription). They stay distinct rows only because their
 // `id`s differ — that's what lets the switcher remember which tier you picked.
-// Opus stays first so it reads as the default.
+// The switcher only renders the "Pro" row for accounts already on an active Pro
+// plan; Free accounts see an "Upgrade to Pro" CTA in its place (see
+// ModelControl.jsx).
 export const MODEL_CHOICES = [
+  { id: "fable", value: "fable", label: "Fable", requiresPandaSignIn: false },
   { id: "opus", value: "opus", label: "Opus", requiresPandaSignIn: false },
   { id: "sonnet", value: "sonnet", label: "Sonnet", requiresPandaSignIn: false },
-  { id: "fable", value: "fable", label: "Fable", requiresPandaSignIn: false },
   { id: "vibe-free", value: "minimax,minimax/minimax-m3", label: "Free", requiresPandaSignIn: true },
   { id: "vibe-pro", value: "minimax,minimax/minimax-m3", label: "Pro", requiresPandaSignIn: true },
 ];
 
 // Default selection when AppSettings.model is unset; matches the driver's
-// `None → "opus"`. This is an `id`, like everything persisted.
-export const DEFAULT_MODEL = MODEL_CHOICES[0].id;
+// `None → "fable"`. This is an `id`, like everything persisted.
+export const DEFAULT_MODEL = "fable";
 
 export function availableModelChoices({ signedInToPanda = false } = {}) {
   return MODEL_CHOICES.filter(
@@ -32,5 +34,7 @@ export function availableModelChoices({ signedInToPanda = false } = {}) {
 // for an unset or unrecognized id so a legacy/garbage setting still renders.
 export function labelForModel(modelId) {
   const found = MODEL_CHOICES.find((choice) => choice.id === modelId);
-  return (found ?? MODEL_CHOICES[0]).label;
+  if (found) return found.label;
+  const fallback = MODEL_CHOICES.find((choice) => choice.id === DEFAULT_MODEL);
+  return (fallback ?? MODEL_CHOICES[0]).label;
 }

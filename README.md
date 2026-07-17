@@ -11,6 +11,9 @@ Send it straight to your printer. Clean, watertight parts that land on the bed r
 **3. Bring it to life:** 
 Pull it off the plate and into the world. The thing that only lived in your head — now in your hand.
 
+<img width="1757" height="1409" alt="image" src="https://github.com/user-attachments/assets/a89e7d1c-6ada-4cde-a58e-874aba70c89a" />
+
+
 # Download the app
 
 https://autonomous.ai/vibe

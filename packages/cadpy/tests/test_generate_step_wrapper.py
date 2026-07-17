@@ -250,6 +250,11 @@ class GenerateStepWrapperTests(unittest.TestCase):
                 """
                 import cadquery as cq
 
+                PART_DESCRIPTIONS = {
+                    "base": "Bottom plate that the lid seats onto.",
+                    "lid": "Top cover.",
+                }
+
                 def gen_step():
                     base = cq.Workplane().box(20, 20, 4)
                     lid = cq.Workplane().box(20, 20, 2)
@@ -306,10 +311,14 @@ class GenerateStepWrapperTests(unittest.TestCase):
             self.assertAlmostEqual(dims[0], 20.0, places=3)
             self.assertAlmostEqual(dims[1], 20.0, places=3)
             self.assertAlmostEqual(dims[2], 4.0, places=3)
-            self.assertEqual(base_meta["description"], "")
+            # PART_DESCRIPTIONS in main.py populates the per-part description.
+            self.assertEqual(
+                base_meta["description"], "Bottom plate that the lid seats onto."
+            )
             lid_meta = json.loads((parts_dir / "lid.stl.json").read_text(encoding="utf-8"))
             self.assertEqual(lid_meta["index"], 1)
             self.assertEqual(lid_meta["name"], "lid")
+            self.assertEqual(lid_meta["description"], "Top cover.")
 
             # The lid part is exported at its build origin (centered ~0), not at
             # the assembled z≈50.

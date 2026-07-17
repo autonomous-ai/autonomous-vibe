@@ -61,7 +61,11 @@ from cadpy.render import (
     relative_to_repo,
 )
 from cadpy.source_hash import PythonSourceHash, python_source_hash
-from cadpy.stl import export_part_stl_from_scene, export_part_stls_from_scene
+from cadpy.stl import (
+    PartExport,
+    export_part_stl_from_scene,
+    export_part_stls_from_scene,
+)
 from cadpy.step_metadata import read_text_to_cad_step_metadata
 from cadpy.threemf import export_part_3mf_from_scene
 from cadpy.step_scene import (
@@ -2492,17 +2496,40 @@ def _is_solid_shape(shape: object) -> bool:
     return solid_map.Extent() > 0
 
 
+def _coerce_part_descriptions(raw: object) -> dict[str, str]:
+    """Normalize a project's module-level ``PART_DESCRIPTIONS`` into a
+    ``{part_name: description}`` map, dropping malformed entries.
+
+    Projects may declare per-part descriptions in ``main.py`` keyed by the
+    assembly part name (``.add(name=...)``). Never raises — a malformed
+    declaration must not break generation; unusable entries are skipped.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not key.strip():
+            continue
+        if not isinstance(value, str) or not value.strip():
+            continue
+        out[key.strip()] = value.strip()
+    return out
+
+
 def _resolve_envelope_for_project(
     project_dir: Path,
     *,
     script_path: Path,
-) -> dict[str, object]:
+) -> tuple[dict[str, object], dict[str, str]]:
     """Load ``main.py``, run ``gen_step()`` (or pick up legacy ``result``),
-    and return the normalized envelope.
+    and return ``(normalized_envelope, part_descriptions)``.
 
     The runtime contract requires:
       * a callable module-level ``gen_step()`` — preferred path,
       * OR a module-level ``result = <shape>`` binding — back-compat path.
+
+    ``part_descriptions`` is the project's optional module-level
+    ``PART_DESCRIPTIONS`` map (``{part_name: description}``), empty when absent.
 
     Wraps the lower-level normalizer so all failures land as
     ``GenerationError`` subclasses.
@@ -2551,10 +2578,15 @@ def _resolve_envelope_for_project(
             f"{script_path.name} defines neither gen_step() nor a module-level `result`"
         )
 
+    part_descriptions = _coerce_part_descriptions(
+        getattr(module, "PART_DESCRIPTIONS", None)
+    )
+
     try:
-        return _normalize_step_payload(raw, script_path=script_path)
+        envelope = _normalize_step_payload(raw, script_path=script_path)
     except TypeError as exc:
         raise ShapeValidationError(str(exc)) from exc
+    return envelope, part_descriptions
 
 
 def _build_synthetic_spec_for_wrapper(
@@ -2921,7 +2953,9 @@ def generate_step(
         )
 
     script_path = project_dir_p / "main.py"
-    envelope = _resolve_envelope_for_project(project_dir_p, script_path=script_path)
+    envelope, part_descriptions = _resolve_envelope_for_project(
+        project_dir_p, script_path=script_path
+    )
 
     # Project-declared warnings (e.g. functional/assembly checks) ride on the
     # envelope; pop them out before the spec/shape writers see the envelope, and
@@ -3022,7 +3056,7 @@ def generate_step(
     # part — each at its own build origin, ready to review/print individually
     # alongside the assembled <stem>.stl. Single-solid projects skip this.
     parts_dir = parent / f"{stem}_parts"
-    part_outputs: list[tuple[str, Path, object]] = []
+    part_outputs: list[PartExport] = []
     try:
         if len(scene_leaf_occurrences(scene)) > 1:
             part_outputs = export_part_stls_from_scene(scene, parts_dir)
@@ -3033,31 +3067,40 @@ def generate_step(
         ) from exc
 
     # One JSON metadata sidecar per per-part STL — geometry facts, source
-    # identity, part identity, and mesh settings for each individual 3D file
-    # (contract §1). Written beside the part as ``<part>.stl.json``.
+    # identity, part identity, mesh settings, and any author-supplied
+    # description for each individual 3D file (contract §1). Written beside the
+    # part as ``<part>.stl.json``.
     parts_meta: list[dict[str, str]] = []
     try:
-        for index, (name, path, shape) in enumerate(part_outputs):
-            part_metadata_path = path.with_name(f"{path.name}.json")
+        for index, part in enumerate(part_outputs):
+            part_metadata_path = part.path.with_name(f"{part.path.name}.json")
+            # Match the project's PART_DESCRIPTIONS by the authored occurrence
+            # name first, then the filesystem-safe stem, so either key works.
+            description = (
+                part_descriptions.get(part.source_name)
+                or part_descriptions.get(part.name)
+                or ""
+            )
             _write_part_metadata_sidecar(
                 metadata_path=part_metadata_path,
                 script_path=script_path,
-                name=name,
+                name=part.name,
                 index=index,
                 part_of=stem,
-                stl_name=path.name,
-                is_solid=_is_solid_shape(shape),
-                volume_mm3=_volume_mm3_from_shape(shape),
-                bbox=_bbox_dict_from_shape(shape),
+                stl_name=part.path.name,
+                is_solid=_is_solid_shape(part.shape),
+                volume_mm3=_volume_mm3_from_shape(part.shape),
+                bbox=_bbox_dict_from_shape(part.shape),
                 mesh_tolerance=mesh_tolerance,
                 mesh_angular_tolerance=mesh_angular_tolerance,
+                description=description,
             )
             # Paths in metadata/payload are relative to the sidecar directory so
             # the catalog can resolve them regardless of where the workspace lives.
             parts_meta.append(
                 {
-                    "name": name,
-                    "stlPath": f"{parts_dir.name}/{path.name}",
+                    "name": part.name,
+                    "stlPath": f"{parts_dir.name}/{part.path.name}",
                     "jsonPath": f"{parts_dir.name}/{part_metadata_path.name}",
                 }
             )
@@ -3119,7 +3162,7 @@ def generate_step(
         "mesh_tolerance": float(mesh_tolerance),
         "mesh_angular_tolerance": float(mesh_angular_tolerance),
         "parts": [
-            {"name": name, "stl_path": str(path)} for name, path, _shape in part_outputs
+            {"name": part.name, "stl_path": str(part.path)} for part in part_outputs
         ],
         "warnings": warnings,
     }

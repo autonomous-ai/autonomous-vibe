@@ -101,9 +101,12 @@ is always the assembled scene — the name should say so):
   tolerances.
 - `<project>_assembled_parts/<part>.stl` + matching `<part>.stl.json` — one STL
   per named part at its own build origin (ready to review/print individually),
-  each with a JSON metadata sidecar (part name, index, `partOf`, geometry facts,
-  `dimensionsMm`, mesh settings). The assembled `.step.json` `parts[]` array
-  points at both via `stlPath` / `jsonPath`.
+  each with a JSON metadata sidecar (part name, `description`, index, `partOf`,
+  geometry facts, `dimensionsMm`, mesh settings). The assembled `.step.json`
+  `parts[]` array points at both via `stlPath` / `jsonPath`. Populate each
+  part's `description` with an optional module-level
+  ``PART_DESCRIPTIONS = {"<part name>": "<description>"}`` map in `main.py`,
+  keyed by the assembly ``.add(name=...)``.
 
 (A single-part design combines nothing — keep the plain ``<project>`` stem.)
 

@@ -428,8 +428,11 @@ pipeline:
   (``is_solid``, ``volume_mm3``, mesh tolerances).
 - `<name>_parts/<part>.stl` + `<name>_parts/<part>.stl.json` — assemblies
   only: one STL per named part at its build origin, each with its own JSON
-  metadata sidecar (part name, index, `partOf`, geometry facts,
-  `dimensionsMm`, mesh settings) mirroring the integrated `.step.json`.
+  metadata sidecar (part name, `description`, index, `partOf`, geometry facts,
+  `dimensionsMm`, mesh settings) mirroring the integrated `.step.json`. The
+  per-part `description` comes from an optional module-level
+  ``PART_DESCRIPTIONS = {"<part name>": "<description>"}`` map in `main.py`
+  (keyed by the assembly ``.add(name=...)``); absent → `""`.
 
 Prints a single JSON line on stdout:
 ``{ok, step_path, stl_path, metadata_path, is_solid, volume_mm3, bbox,

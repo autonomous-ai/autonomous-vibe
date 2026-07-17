@@ -171,7 +171,7 @@ identity and geometry:
   "generator": "cadpy",
   "entryKind": "part",
   "name": "base",                 // part name (matches the STL stem)
-  "description": "",              // reserved human-readable slot (empty by default)
+  "description": "Bottom plate.", // author-supplied via main.py PART_DESCRIPTIONS (else "")
   "index": 0,                     // position in scene order
   "partOf": "widget",            // <stem> of the integrated model
   "source": { "kind": "python", "path": "...", "hash": "...", "fingerprint": "..." },
@@ -181,6 +181,11 @@ identity and geometry:
   "validation": { "isSolid": true, "volumeMm3": 1600.0, "bbox": { "min": [...], "max": [...] } }
 }
 ```
+
+`description` is populated from an optional module-level `PART_DESCRIPTIONS`
+map in `main.py` — `{ "<part name>": "<description>" }`, keyed by the assembly
+part name (`.add(name=...)`) — and is `""` when the project declares none. A
+malformed map never fails generation (unusable entries are skipped).
 
 ### Error contract
 

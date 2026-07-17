@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from OCP.StlAPI import StlAPI_Writer
@@ -49,30 +50,46 @@ def _safe_part_name(raw: str | None, seen: dict[str, int], *, fallback: str) -> 
     return base if count == 1 else f"{base}-{count}"
 
 
+@dataclass(frozen=True)
+class PartExport:
+    """One per-part STL written for an assembly.
+
+    ``name`` is the filesystem-safe stem shared by the STL and its JSON sidecar.
+    ``source_name`` is the original occurrence name as authored (the assembly
+    ``.add(name=...)``), before slugging — used to look up an author-supplied
+    description. ``shape`` is the un-located OCCT prototype shape written to
+    ``path`` (handed back so the caller can compute per-part geometry facts).
+    """
+
+    name: str
+    source_name: str
+    path: Path
+    shape: object
+
+
 def export_part_stls_from_scene(
     scene: LoadedStepScene, out_dir: Path
-) -> list[tuple[str, Path, object]]:
+) -> list[PartExport]:
     """Write one STL per leaf occurrence, each in its own build frame (at origin).
 
     Used for assemblies so every named part is individually reviewable/printable
-    alongside the assembled ``<stem>.stl``. Returns
-    ``[(part_name, stl_path, prototype_shape), ...]`` in scene order; the
-    prototype shape is the un-located OCCT shape written to ``stl_path``, handed
-    back so the caller can compute per-part geometry facts for a metadata
-    sidecar. The scene's prototype shapes must already be meshed.
+    alongside the assembled ``<stem>.stl``. Returns one :class:`PartExport` per
+    named part in scene order. The scene's prototype shapes must already be
+    meshed.
     """
-    results: list[tuple[str, Path, object]] = []
+    results: list[PartExport] = []
     seen: dict[str, int] = {}
     for index, node in enumerate(scene_leaf_occurrences(scene)):
         if node.prototype_key is None or node.prototype_key not in scene.prototype_shapes:
             continue
-        name = _safe_part_name(
-            node.name or node.source_name, seen, fallback=f"part{index + 1}"
-        )
+        source_name = node.name or node.source_name or ""
+        name = _safe_part_name(source_name, seen, fallback=f"part{index + 1}")
         # Prototype (un-located) shape → part sits at its own build origin, not in
         # assembled position, so it is ready to drop on the print bed.
         shape = scene_occurrence_prototype_shape(scene, node)
         target_path = out_dir / f"{name}.stl"
         export_shape_stl(shape, target_path)
-        results.append((name, target_path, shape))
+        results.append(
+            PartExport(name=name, source_name=source_name, path=target_path, shape=shape)
+        )
     return results

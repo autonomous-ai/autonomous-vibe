@@ -489,6 +489,55 @@ pub fn build_command(cfg: &ClaudeRunConfig) -> Vec<String> {
     cmd
 }
 
+/// macOS: wrap the `claude` child in a Seatbelt sandbox that denies it (and its
+/// descendants — node, python, git, …) access to OTHER apps' data containers.
+/// This suppresses the "Vibe would like to access data from other apps"
+/// (`kTCCServiceSystemPolicyAppData`) prompt: a Seatbelt deny sits at the kernel
+/// sandbox layer, ABOVE TCC, so the access fails silently and the dialog never
+/// appears — the same mechanism the slicer uses for its Apple-Music prompt.
+///
+/// The base is `(allow default)`, so everything the turn legitimately needs
+/// keeps working (the workspace, `~/.claude`, `/tmp`, network, the toolchain).
+/// We only DENY the three user-Library subtrees that this prompt guards and that
+/// the CAD toolchain never needs — other apps' `Containers`, `Group Containers`,
+/// and `Application Support` — then RE-ALLOW Panda's own app-data dir (which
+/// holds the project workspace the turn reads and writes) so generation is
+/// unaffected. Rule order matters: the specific Panda allow comes last so it
+/// wins over the broad Application Support deny (Seatbelt is last-match-wins).
+///
+/// Returns the wrapped `(program, args)` — `sandbox-exec -p <profile> <claude>
+/// <args…>`. Falls back to the unwrapped command if the home dir can't be
+/// resolved or `sandbox-exec` is missing. Off-macOS this is a no-op.
+#[cfg(target_os = "macos")]
+fn maybe_sandbox_claude(program: &Path, args: &[String]) -> (PathBuf, Vec<String>) {
+    let sandbox_exec = PathBuf::from("/usr/bin/sandbox-exec");
+    let Some(home) = home_dir() else {
+        return (program.to_path_buf(), args.to_vec());
+    };
+    if !sandbox_exec.exists() {
+        return (program.to_path_buf(), args.to_vec());
+    }
+    let home = home.display();
+    let appdata = crate::paths::app_data_dir();
+    let appdata = appdata.display();
+    let profile = format!(
+        "(version 1)\n\
+         (allow default)\n\
+         (deny file-read* file-write* (subpath \"{home}/Library/Containers\"))\n\
+         (deny file-read* file-write* (subpath \"{home}/Library/Group Containers\"))\n\
+         (deny file-read* file-write* (subpath \"{home}/Library/Application Support\"))\n\
+         (allow file-read* file-write* (subpath \"{appdata}\"))\n"
+    );
+    let mut wrapped = vec!["-p".to_string(), profile, program.display().to_string()];
+    wrapped.extend_from_slice(args);
+    (sandbox_exec, wrapped)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn maybe_sandbox_claude(program: &Path, args: &[String]) -> (PathBuf, Vec<String>) {
+    (program.to_path_buf(), args.to_vec())
+}
+
 /// Build the stream-json user message piped to `claude`'s stdin when the turn
 /// carries reference images. Returns `None` when there are no images (the
 /// prompt then goes as a positional arg in text-input mode). The message mirrors
@@ -1531,9 +1580,12 @@ where
     // stream-json user message on stdin (so the VLM sees the pixels); otherwise
     // the prompt is a positional arg and stdin stays closed.
     let stdin_payload = stream_json_input(&cfg);
-    let mut command = Command::new(&claude_path);
+    // On macOS, wrap in a Seatbelt sandbox that denies other-app data access so
+    // the "…access data from other apps" prompt can't fire (no-op elsewhere).
+    let (program, spawn_args) = maybe_sandbox_claude(&claude_path, &argv[1..]);
+    let mut command = Command::new(&program);
     command
-        .args(&argv[1..])
+        .args(&spawn_args)
         .current_dir(workspace_dir)
         .stdin(if stdin_payload.is_some() {
             Stdio::piped()
@@ -2247,9 +2299,12 @@ async fn drain_review_child(
 ) {
     let argv = build_command(cfg);
     let env = build_env(cfg);
-    let mut command = Command::new(claude_path);
+    // Same macOS Seatbelt wrap as the main turn — this review phase also cds into
+    // the workspace and runs the toolchain, so it must not pop the prompt either.
+    let (program, spawn_args) = maybe_sandbox_claude(claude_path, &argv[1..]);
+    let mut command = Command::new(&program);
     command
-        .args(&argv[1..])
+        .args(&spawn_args)
         .current_dir(workspace_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

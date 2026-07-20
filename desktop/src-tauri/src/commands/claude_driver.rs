@@ -1809,6 +1809,35 @@ where
         });
     }
 
+    // Plan-turn fallback: proceed even when the model never emits `ExitPlanMode`.
+    // Every phase runs with `--dangerously-skip-permissions` (not real
+    // `--permission-mode plan`), so `ExitPlanMode` is not actually in the tool
+    // list — on macOS the model calls it regardless and the loop kills the child
+    // on `plan_proposed`, but on Windows the model instead notices it "does not
+    // have an ExitPlanMode tool", may hallucinate another tool, and gives up. The
+    // turn then reaches EOF with output but no `PlanProposed`, leaving the chat
+    // stuck on "PLANNING" with no approve button. When a plan turn produced output
+    // yet neither proposed a plan nor asked a question, synthesize `PlanProposed`
+    // from the persisted transcript (the same recovery used for empty-plan
+    // ExitPlanMode) so the approve → build flow proceeds exactly as if the tool
+    // had fired. Skipped when the recovered plan is empty (the model genuinely
+    // produced nothing substantial) — the existing no-response handling stands.
+    if matches!(phase, TurnPhase::Plan)
+        && !cancelled
+        && saw_output
+        && !state.plan_proposed
+        && !state.questions_asked
+    {
+        let plan = recover_plan_from_session(workspace_dir, &session_id.to_string());
+        if !plan.trim().is_empty() {
+            state.plan_proposed = true;
+            on_event(ChatEvent::PlanProposed {
+                turn_id: turn_id.to_string(),
+                plan,
+            });
+        }
+    }
+
     // Post-turn workspace diff. Emit artifact_changed for everything
     // new or with bumped mtime. We do this even when cancelled — the
     // user still wants to see any artifacts produced before cancel.

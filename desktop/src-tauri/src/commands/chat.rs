@@ -634,6 +634,19 @@ fn parse_session_history(contents: &str) -> Vec<ChatHistoryEntry> {
     history
 }
 
+/// The originating user prompt for a project: the first human-typed message in
+/// the session transcript. Reuses [`parse_session_history`], so the build/revert
+/// notes, `isMeta` injections, and the synthetic approve-plan preamble are already
+/// stripped — this is exactly the text the user typed to start the design. `None`
+/// when the transcript has no real user message yet. Used by the social publish
+/// flow to record the design's `prompt`.
+pub(crate) fn first_user_prompt(contents: &str) -> Option<String> {
+    parse_session_history(contents)
+        .into_iter()
+        .find(|entry| entry.role == ChatRole::User)
+        .map(|entry| entry.content)
+}
+
 /// Collect human-visible text from a message `content` field. Claude Code
 /// stores user prompts as a bare string and assistant turns as a block array;
 /// keep `text` blocks (joining a multi-block turn with blank lines) and ignore
@@ -791,6 +804,31 @@ mod tests {
         assert!(history[0].at > 0, "ISO timestamp must parse to epoch millis");
         assert_eq!(history[1].role, ChatRole::Assistant);
         assert_eq!(history[1].content, "Sure, here is the plan.");
+    }
+
+    #[test]
+    fn first_user_prompt_returns_the_first_real_user_message() {
+        // Meta injections, orphan tool_results, and the synthetic approve-plan
+        // prompt are all skipped; the first thing the user actually typed wins.
+        let jsonl = concat!(
+            r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"<system-reminder>noise</system-reminder>"},"timestamp":"2026-06-03T05:00:00.000Z"}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":"make a phone stand"},"timestamp":"2026-06-03T05:00:01.000Z"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Sure."}]},"timestamp":"2026-06-03T05:00:02.000Z"}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":"and make it taller"},"timestamp":"2026-06-03T05:00:03.000Z"}"#,
+            "\n",
+        );
+        assert_eq!(first_user_prompt(jsonl).as_deref(), Some("make a phone stand"));
+        // No user message yet → None (server falls back to its own extraction).
+        assert_eq!(first_user_prompt(""), None);
+        assert_eq!(
+            first_user_prompt(
+                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]},"timestamp":"2026-06-03T05:00:00.000Z"}"#
+            ),
+            None
+        );
     }
 
     #[test]

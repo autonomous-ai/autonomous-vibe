@@ -910,6 +910,25 @@ fn project_session_jsonl(workspace: &Path) -> Option<std::path::PathBuf> {
     crate::commands::claude_driver::session_jsonl_path(workspace, &session_id)
 }
 
+/// The originating prompt for this project — the first user message in the Claude
+/// session transcript ([`project_session_jsonl`]), with build/revert notes and the
+/// synthetic approve-plan preamble stripped. Passed to the import API as `prompt`
+/// so a published design records what the user actually typed, rather than leaving
+/// the server to re-derive it from the uploaded transcript. `None` (field omitted,
+/// server falls back to its own extraction) when there is no transcript or no user
+/// message in it yet.
+fn first_user_prompt(workspace: &Path) -> Option<String> {
+    let path = project_session_jsonl(workspace)?;
+    let contents = std::fs::read_to_string(path).ok()?;
+    let prompt = crate::commands::chat::first_user_prompt(&contents)?;
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        None
+    } else {
+        Some(prompt.to_string())
+    }
+}
+
 /// Append a line to the central import log (`<app-data>/social-import.log`) and
 /// stderr. The log file makes imports inspectable even when the app is launched
 /// from Finder/Dock, where stderr goes nowhere (see the launch-PATH footgun).
@@ -1001,9 +1020,17 @@ async fn import(
         .file_name("design.zip")
         .mime_str("application/zip")
         .map_err(ImportError::other)?;
-    let form = reqwest::multipart::Form::new()
+    let mut form = reqwest::multipart::Form::new()
         .part("file", part)
         .text("status", IMPORT_STATUS);
+    // Record the originating prompt (first user message in the Claude session) so
+    // the design carries what the user typed. Omitted when there's no transcript
+    // yet — the server then falls back to extracting it from the uploaded
+    // `conversation.jsonl`.
+    if let Some(prompt) = first_user_prompt(workspace) {
+        log_line(&format!("import prompt: {:?}", truncate_for_log(&prompt, 120)));
+        form = form.text("prompt", prompt);
+    }
 
     let resp = client
         .post(IMPORT_URL)
@@ -1196,6 +1223,17 @@ fn zip_workspace(workspace: &Path) -> anyhow::Result<Vec<u8>> {
         ));
     }
     Ok(zip_bytes)
+}
+
+/// Trim a string to at most `max` chars for a log line, appending an ellipsis
+/// when truncated (char-boundary safe, so multi-byte prompts don't panic).
+fn truncate_for_log(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(max).collect();
+        format!("{head}…")
+    }
 }
 
 /// Compact human-readable byte size for the import log.

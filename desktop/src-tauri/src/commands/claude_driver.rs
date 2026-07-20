@@ -892,6 +892,7 @@ async fn generate_project_title(claude_path: PathBuf, user_message: String) -> O
     // the main turn on the first plan turn, so an in-place binary swap by either
     // process can crash the other's spawn (see `build_env`).
     command.env("DISABLE_AUTOUPDATER", "1");
+    crate::commands::hide_console_tokio(&mut command);
 
     let output =
         match tokio::time::timeout(std::time::Duration::from_secs(20), command.output()).await {
@@ -1548,6 +1549,7 @@ where
     for (k, v) in &env {
         command.env(k, v);
     }
+    crate::commands::hide_console_tokio(&mut command);
 
     let mut child: Child = match command.spawn() {
         Ok(c) => c,
@@ -2257,6 +2259,7 @@ async fn drain_review_child(
     for (k, v) in &env {
         command.env(k, v);
     }
+    crate::commands::hide_console_tokio(&mut command);
 
     let mut child: Child = match command.spawn() {
         Ok(c) => c,

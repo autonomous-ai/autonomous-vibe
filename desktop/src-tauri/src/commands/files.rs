@@ -235,11 +235,14 @@ fn unique_dest(dir: &Path, stem: &str, ext: &str) -> PathBuf {
 async fn convert_mesh_to_stl(source: &Path, dest: &Path) -> IpcResult<()> {
     let python = resolve_python()
         .ok_or_else(|| IpcError::new("PYTHON_MISSING", "bundled python interpreter not found"))?;
-    let output = tokio::process::Command::new(&python)
+    let mut command = tokio::process::Command::new(&python);
+    command
         .arg("-c")
         .arg("import sys,trimesh; trimesh.load(sys.argv[1],force='mesh').export(sys.argv[2])")
         .arg(source)
-        .arg(dest)
+        .arg(dest);
+    crate::commands::hide_console_tokio(&mut command);
+    let output = command
         .output()
         .await
         .map_err(|e| IpcError::new("IMPORT_FAILED", format!("conversion failed to start: {e}")))?;
@@ -273,13 +276,16 @@ async fn generate_step_artifacts(source: &Path, out_dir: &Path, stem: &str) -> I
             "cadcode generator not found under ~/.claude/skills",
         )
     })?;
-    let output = tokio::process::Command::new(&python)
+    let mut command = tokio::process::Command::new(&python);
+    command
         .arg(&cad_script)
         .arg(source)
         .arg("--out-dir")
         .arg(out_dir)
         .arg("--stem")
-        .arg(stem)
+        .arg(stem);
+    crate::commands::hide_console_tokio(&mut command);
+    let output = command
         .output()
         .await
         .map_err(|e| IpcError::new("IMPORT_FAILED", format!("STEP import failed to start: {e}")))?;

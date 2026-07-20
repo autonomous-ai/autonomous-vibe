@@ -22,11 +22,15 @@ from __future__ import annotations
 
 import json
 import os
-import resource
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+try:
+    import resource  # Unix-only; absent on Windows.
+except ImportError:  # pragma: no cover - platform-dependent
+    resource = None
 
 
 # Modules user code must never import, even if they happen to be in
@@ -109,6 +113,10 @@ def _enforce_rlimits(wall_clock_s: float = WALL_CLOCK_TIMEOUT_S) -> None:
     # raising --wall-clock-s can't help because it never reached this limit.
     # Budget the CPU cap as the wall deadline × cores so the parent's
     # wall-clock timeout is the real deadline; this stays a runaway backstop.
+    if resource is None:
+        # Windows: no rlimits available. The parent's wall-clock kill in
+        # run_sandboxed_sync remains the real deadline; nothing to enforce here.
+        return
     ncores = os.cpu_count() or 1
     cpu_limit = max(CPU_TIMEOUT_S, int(wall_clock_s * ncores))
     resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
@@ -524,6 +532,10 @@ def run_sandboxed_sync(
         str(wall_clock_s),
     ]
 
+    # Windows: our parent (the GUI app → claude → this python) has no console,
+    # so spawning the worker python would pop a visible cmd window without
+    # CREATE_NO_WINDOW. The flag is a no-op / absent off Windows.
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         proc = subprocess.run(
             cmd,
@@ -531,6 +543,7 @@ def run_sandboxed_sync(
             capture_output=True,
             text=True,
             timeout=wall_clock_s,
+            creationflags=creationflags,
         )
     except subprocess.TimeoutExpired as e:
         return {

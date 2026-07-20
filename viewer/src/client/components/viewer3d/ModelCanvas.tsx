@@ -282,7 +282,11 @@ export function ModelCanvas({
         // MeshPhysicalMaterial (two specular lobes) + env sampling + clipping over 4× the pixels
         // of dpr 1 — halving the buffer during motion is the single biggest orbit-fps win while
         // leaving the resting image at full quality.
-        performance={{ min: 0.5 }}
+        // `debounce` is how long after motion settles before R3F re-sharpens (raises
+        // performance.current back to max). R3F's default is 200ms, which leaves a
+        // noticeable low-res lag after you stop orbiting; drop it to 60ms so the image
+        // snaps back to full retina almost the instant the rotation freezes.
+        performance={{ min: 0.5, debounce: 10 }}
         // On-demand rendering: the model is static most of the time, so re-drawing the full
         // scene (+ 2048² shadow map + optional planar-reflection pass) at 60fps while nothing
         // moves is pure waste. "demand" renders only when a frame is requested — drei's

@@ -81,7 +81,9 @@ pub enum TurnPhase {
 }
 
 impl TurnPhase {
-    /// The `--permission-mode` value passed to `claude -p`.
+    /// The permission mode this phase conceptually runs in. No longer passed as
+    /// a CLI flag (every turn uses `--dangerously-skip-permissions` instead);
+    /// kept for the debug-stream log line and tests.
     pub fn permission_mode(self) -> &'static str {
         match self {
             TurnPhase::Plan | TurnPhase::Implement | TurnPhase::Review => "bypassPermissions",
@@ -122,7 +124,9 @@ pub struct ClaudeRunConfig {
     /// instead of relying on the model to `Read` the file (which it may skip,
     /// and which the CLI's Read size cap can block for large images).
     pub images: Vec<PathBuf>,
-    /// The workflow phase → drives `--permission-mode` + system prompt.
+    /// The workflow phase → drives the `--append-system-prompt` text (and the
+    /// plan/build read-only vs write distinction is enforced there, not by a CLI
+    /// permission flag — every turn runs `--dangerously-skip-permissions`).
     pub phase: TurnPhase,
 }
 
@@ -397,14 +401,14 @@ pub fn build_command(cfg: &ClaudeRunConfig) -> Vec<String> {
         },
         "--verbose".into(),
         "--include-partial-messages".into(),
-        "--permission-mode".into(),
-        cfg.phase.permission_mode().into(),
-        // Belt-and-suspenders: `bypassPermissions` already suppresses Claude
-        // Code's own tool prompts, but `--dangerously-skip-permissions`
-        // bypasses ALL permission checks unconditionally. Safe here — every
-        // turn is non-interactive (`-p`), the workspace is scoped via
-        // `--add-dir`, and the cadcode skill runs sandboxed (RLIMIT_AS /
-        // RLIMIT_CPU / import allow-list). The process is never root (the app
+        // `--dangerously-skip-permissions` bypasses ALL of Claude Code's own
+        // tool-permission checks unconditionally — the single, canonical way to
+        // run fully unattended. We pass it ALONE (no `--permission-mode`): some
+        // `claude` versions reject the two together, and the skip flag already
+        // implies the most permissive mode, so `--permission-mode` is redundant.
+        // Safe here — every turn is non-interactive (`-p`), the workspace is
+        // scoped via `--add-dir`, and the cadcode skill runs sandboxed (RLIMIT_AS
+        // / RLIMIT_CPU / import allow-list). The process is never root (the app
         // runs as the logged-in user), which the flag also requires.
         "--dangerously-skip-permissions".into(),
         "--add-dir".into(),
@@ -2939,10 +2943,11 @@ mod tests {
         // Plan now runs with full permission so it can perform read-only
         // analysis (e.g. compute CoM from an existing STEP) to back the plan;
         // the prompt — not the CLI — bars writing source / generating parts.
-        let pm = cmd.iter().position(|a| a == "--permission-mode").unwrap();
-        assert_eq!(cmd[pm + 1], "bypassPermissions");
-        // Full permission bypass so no tool prompt can ever stall a headless turn.
+        // Permission is granted by `--dangerously-skip-permissions` ALONE;
+        // `--permission-mode` is dropped (redundant, and rejected by some
+        // `claude` versions when combined with the skip flag).
         assert!(cmd.iter().any(|a| a == "--dangerously-skip-permissions"));
+        assert!(!cmd.iter().any(|a| a == "--permission-mode"));
         // append-system-prompt is the planning prompt
         let sp = cmd.iter().position(|a| a == "--append-system-prompt").unwrap();
         assert!(cmd[sp + 1].starts_with(PLAN_SYSTEM_PROMPT));
@@ -2968,11 +2973,12 @@ mod tests {
             phase: TurnPhase::Implement,
         };
         let cmd = build_command(&cfg);
-        let pm = cmd.iter().position(|a| a == "--permission-mode").unwrap();
         // Build phase must run unattended: acceptEdits still prompts for Bash,
         // which blocks the cadcode generator (a `python … cad` Bash command).
-        assert_eq!(cmd[pm + 1], "bypassPermissions");
+        // `--dangerously-skip-permissions` alone grants that; `--permission-mode`
+        // is dropped (redundant, and rejected by some `claude` versions here).
         assert!(cmd.iter().any(|a| a == "--dangerously-skip-permissions"));
+        assert!(!cmd.iter().any(|a| a == "--permission-mode"));
         let sp = cmd.iter().position(|a| a == "--append-system-prompt").unwrap();
         assert!(cmd[sp + 1].starts_with(IMPLEMENT_SYSTEM_PROMPT));
         assert!(cmd[sp + 1].contains("APPROVED"));
